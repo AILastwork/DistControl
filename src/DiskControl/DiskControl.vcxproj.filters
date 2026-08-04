@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{A8F4C0A1-04E7-45D2-A8EF-86BB6F684622}</UniqueIdentifier>
+      <Extensions>cpp;c;cc;cxx</Extensions>
+    </Filter>
+    <Filter Include="Header Files">
+      <UniqueIdentifier>{6F0F29BC-A874-47F1-A760-00A2D95CB254}</UniqueIdentifier>
+      <Extensions>h;hpp;hxx</Extensions>
+    </Filter>
+    <Filter Include="Resource Files">
+      <UniqueIdentifier>{2F3F9C0C-7366-4F65-B8D5-0A06CE76464A}</UniqueIdentifier>
+      <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav</Extensions>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="DeviceAccessService.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="DeviceParser.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="IpcClient.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="MainWindow.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="PolicyManager.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="UsageStateStore.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="WinMain.cpp"><Filter>Source Files</Filter></ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="DeviceAccessService.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="DeviceParser.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="IpcClient.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="MainWindow.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="PolicyManager.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="resource.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="UsageStateStore.h"><Filter>Header Files</Filter></ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="DiskControl.rc"><Filter>Resource Files</Filter></ResourceCompile>
+  </ItemGroup>
+</Project>

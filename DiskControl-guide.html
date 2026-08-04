@@ -1,0 +1,630 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DiskControl — инструкция</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f5f7fb;
+      --panel: #ffffff;
+      --ink: #18202d;
+      --muted: #5c6678;
+      --line: #d8deea;
+      --accent: #155ab6;
+      --accent-soft: #e8f0ff;
+      --ok: #17693b;
+      --warn: #a45b00;
+      --bad: #a32020;
+      --code: #111827;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font: 15px/1.55 "Segoe UI", Arial, sans-serif;
+    }
+
+    header {
+      background: #10233f;
+      color: #fff;
+      padding: 34px 28px 28px;
+      border-bottom: 4px solid #2c7be5;
+    }
+
+    header h1 {
+      margin: 0 0 8px;
+      font-size: 32px;
+      line-height: 1.15;
+      letter-spacing: 0;
+    }
+
+    header p {
+      margin: 0;
+      color: #d9e6fb;
+      max-width: 980px;
+    }
+
+    main {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    nav {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 18px 20px;
+      margin-bottom: 20px;
+    }
+
+    nav h2 {
+      margin-top: 0;
+    }
+
+    nav a {
+      display: inline-block;
+      margin: 4px 14px 4px 0;
+      color: var(--accent);
+      text-decoration: none;
+      font-weight: 600;
+    }
+
+    section {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 22px;
+      margin: 18px 0;
+    }
+
+    h2 {
+      margin: 0 0 12px;
+      font-size: 22px;
+      line-height: 1.25;
+    }
+
+    h3 {
+      margin: 22px 0 8px;
+      font-size: 17px;
+    }
+
+    p {
+      margin: 8px 0 12px;
+    }
+
+    ul, ol {
+      margin: 8px 0 14px 22px;
+      padding: 0;
+    }
+
+    li {
+      margin: 5px 0;
+    }
+
+    code {
+      background: #eef2f7;
+      color: var(--code);
+      padding: 1px 5px;
+      border-radius: 4px;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 0.95em;
+    }
+
+    pre {
+      margin: 12px 0;
+      padding: 14px 16px;
+      overflow: auto;
+      background: #101827;
+      color: #eff6ff;
+      border-radius: 8px;
+      font: 13px/1.45 Consolas, "Courier New", monospace;
+    }
+
+    pre code {
+      background: transparent;
+      color: inherit;
+      padding: 0;
+      border-radius: 0;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 12px 0;
+      background: #fff;
+    }
+
+    th, td {
+      border: 1px solid var(--line);
+      padding: 9px 10px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: #edf3fb;
+      font-weight: 700;
+    }
+
+    .note {
+      border-left: 4px solid var(--accent);
+      background: var(--accent-soft);
+      padding: 12px 14px;
+      margin: 14px 0;
+      border-radius: 0 8px 8px 0;
+    }
+
+    .warn {
+      border-left-color: var(--warn);
+      background: #fff6e7;
+    }
+
+    .ok {
+      border-left-color: var(--ok);
+      background: #eaf7ef;
+    }
+
+    .bad {
+      border-left-color: var(--bad);
+      background: #fff0f0;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+      gap: 12px;
+    }
+
+    .mini {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      background: #fbfcff;
+    }
+
+    .mini strong {
+      display: block;
+      margin-bottom: 4px;
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>DiskControl</h1>
+    <p>Инструкция по текущей версии: пользовательская утилита, админская утилита, файл доступа <code>allow.json</code>, служба <code>dkclient</code> и корректное отображение пользователя в DistKontrolUSB.</p>
+  </header>
+
+  <main>
+    <nav>
+      <h2>Содержание</h2>
+      <a href="#purpose">Назначение</a>
+      <a href="#parts">Состав</a>
+      <a href="#install">Установка</a>
+      <a href="#service-account">Служба под пользователем</a>
+      <a href="#user-app">Пользовательская утилита</a>
+      <a href="#admin-app">Админка</a>
+      <a href="#policy">allow.json</a>
+      <a href="#files">Файлы</a>
+      <a href="#diagnostics">Диагностика</a>
+      <a href="#build">Сборка</a>
+      <a href="#limits">Ограничения</a>
+    </nav>
+
+    <section id="purpose">
+      <h2>1. Назначение</h2>
+      <p><strong>DiskControl</strong> — это C++/Win32-утилита поверх штатного клиента DistKontrolUSB. Она показывает пользователю только разрешенные USB-токены, подключает и отключает их через локальный канал <code>\\.\pipe\dkclient</code>, а администратору дает удобный интерфейс для формирования файла доступа.</p>
+
+      <div class="note ok">
+        <strong>Ключевой проверенный вывод:</strong> чтобы в родном окне DistKontrolUSB занятый токен отображался не как <code>СИСТЕМА</code>, процесс <code>dkcl64.exe</code> должен быть запущен службой под пользовательской учетной записью. Мы это проверили вручную: после запуска службы под доменным пользователем DistKontrolUSB начал показывать логин пользователя.
+      </div>
+
+      <p>PowerShell-скрипты в проекте сейчас остаются как установочные, диагностические и прототипные инструменты. Основной рабочий путь — C++ приложения:</p>
+      <ul>
+        <li><code>DiskControl.exe</code> — обычная пользовательская утилита.</li>
+        <li><code>DiskControl.Admin.exe</code> — админская утилита для настройки доступа.</li>
+        <li><code>dkcl64.exe</code> — штатный клиент DistKontrolUSB, установленный как служба <code>dkclient</code>.</li>
+      </ul>
+    </section>
+
+    <section id="parts">
+      <h2>2. Как это устроено</h2>
+      <div class="grid">
+        <div class="mini">
+          <strong>DiskControl.exe</strong>
+          Пользователь видит текущего пользователя сверху, список разрешенных токенов, кнопки <code>Обновить</code>, <code>Подключить</code>, <code>Отключить</code>. Политика читается из <code>allow.json</code>.
+        </div>
+        <div class="mini">
+          <strong>DiskControl.Admin.exe</strong>
+          Администратор видит все токены, ищет по endpoint/имени/продукту, отмечает галочками доступ для выбранного пользователя и сохраняет конфигурацию.
+        </div>
+        <div class="mini">
+          <strong>dkcl64.exe</strong>
+          Штатный клиент DistKontrolUSB. В нашей схеме запускается как Windows-служба <code>dkclient</code> под учеткой пользователя установки.
+        </div>
+        <div class="mini">
+          <strong>allow.json</strong>
+          Основной файл политики доступа. По умолчанию лежит в <code>C:\ProgramData\DiskControl\allow.json</code>. Пользователи читают, администраторы изменяют.
+        </div>
+      </div>
+
+      <h3>Поток работы</h3>
+      <ol>
+        <li>Служба <code>dkclient</code> запускает <code>dkcl64.exe -n --config="C:\Program Files\DiskControl\dkcl.ini"</code>.</li>
+        <li><code>dkcl64.exe</code> поднимает локальный канал <code>\\.\pipe\dkclient</code>.</li>
+        <li><code>DiskControl.exe</code> читает <code>allow.json</code> и показывает только разрешенные текущему Windows-пользователю токены.</li>
+        <li>При подключении отправляется команда <code>USE,&lt;endpoint&gt;</code>, при отключении — <code>STOP USING,&lt;endpoint&gt;</code>.</li>
+        <li>Родной DistKontrolUSB видит, что токен занят учеткой, под которой работает служба <code>dkclient</code>.</li>
+      </ol>
+    </section>
+
+    <section id="install">
+      <h2>3. Установка</h2>
+      <p>Обычный вариант для рабочего места — запустить установщик:</p>
+      <pre><code>dist\DiskControl-Setup.exe</code></pre>
+
+      <p>Установщик запрашивает права администратора через UAC, затем показывает учетную запись службы, пароль и папку общего состояния таймеров. По умолчанию в поле <code>Account</code> подставляется текущая учетная запись Windows. Ее можно оставить или заменить на нужный формат, например:</p>
+      <pre><code>OSNOVA\a.nikitin
+a.s.nikitin@osnova.local</code></pre>
+
+      <div class="note warn">
+        Пароль нужен не DiskControl как приложению, а Windows Service Control Manager: без пароля Windows не создаст службу под обычной пользовательской учеткой. Установщик передает пароль в Windows при создании службы. В командную строку пароль не записывается.
+      </div>
+
+      <p>В поле папки таймеров рекомендуется указать один UNC-путь для всех рабочих мест, например <code>\\SERVER\DiskControlState</code>. У пользователей должны быть права чтения, создания и изменения файлов в этой папке. Если поле оставить пустым, используется локальный <code>C:\ProgramData\DiskControl\usage.json</code>, и общий таймер между компьютерами работать не будет.</p>
+
+      <h3>Что делает установщик</h3>
+      <ul>
+        <li>Копирует <code>DiskControl.exe</code>, <code>DiskControl.Admin.exe</code>, <code>dkcl64.exe</code>, <code>dkcl.ini</code> и документацию в <code>C:\Program Files\DiskControl</code>.</li>
+        <li>Создает <code>C:\ProgramData\DiskControl</code>, пустой безопасный <code>allow.json</code> и папку <code>logs</code>. Демонстрационный <code>allowlist.example.json</code> никогда не назначается как рабочая политика.</li>
+        <li>Создает или проверяет <code>usage.json</code> в выбранной локальной либо общей сетевой папке и записывает его путь в <code>allow.json</code>.</li>
+        <li>Настраивает ACL: обычным пользователям чтение/запуск клиентской части, администраторам изменение.</li>
+        <li>Отдельно ограничивает запуск <code>dkcl64.exe</code>: SYSTEM и администраторы получают полный доступ, выбранная учетная запись службы получает чтение/запуск, группа Users не получает общий запуск этого EXE.</li>
+        <li>Выдает выбранной учетной записи право <code>Log on as a service</code>.</li>
+        <li>Создает службу <code>dkclient</code> под выбранной учетной записью.</li>
+        <li>Запускает службу, если не указан режим <code>-NoStartService</code>.</li>
+        <li>Создает ярлыки в меню Пуск и ярлык <code>DiskControl</code> на общем рабочем столе.</li>
+        <li>Регистрирует удаление через Windows “Программы и компоненты”.</li>
+      </ul>
+
+      <h3>Ручная установка из консоли</h3>
+      <p>Если нужен запасной путь без графического EXE, можно открыть PowerShell/Command Prompt от администратора и выполнить:</p>
+      <pre><code>install.cmd</code></pre>
+      <p>Скрипт спросит пароль для учетной записи службы. Дополнительные варианты:</p>
+      <pre><code>install.cmd -NoStartService
+install.cmd -NoDesktopShortcut
+install.cmd -SkipBuild</code></pre>
+    </section>
+
+    <section id="service-account">
+      <h2>4. Почему служба должна работать под пользователем</h2>
+      <p>Мы проверили поведение DistKontrolUSB: кто запускает <code>dkcl64.exe</code>, тот и отображается как владелец занятого токена. Если <code>dkcl64.exe</code> работает как <code>LocalSystem</code>, родной клиент на других компьютерах показывает <code>СИСТЕМА</code>. Если служба работает под <code>OSNOVA\a.nikitin</code> или UPN-учеткой, отображается логин пользователя.</p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Как запущен dkcl64.exe</th>
+            <th>Что увидит DistKontrolUSB</th>
+            <th>Вывод</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>LocalSystem</code></td>
+            <td><code>СИСТЕМА</code></td>
+            <td>Не подходит для понятного учета занятости.</td>
+          </tr>
+          <tr>
+            <td>Пользовательская учетная запись</td>
+            <td>Логин пользователя</td>
+            <td>Нужный режим для рабочих мест.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>Проверка</h3>
+      <pre><code>sc.exe qc dkclient
+sc.exe query dkclient</code></pre>
+      <p>В <code>sc.exe qc dkclient</code> важны поля:</p>
+      <ul>
+        <li><code>SERVICE_START_NAME</code> — должна быть пользовательская учетная запись, не <code>LocalSystem</code>.</li>
+        <li><code>BINARY_PATH_NAME</code> — должен указывать на <code>C:\Program Files\DiskControl\dkcl64.exe</code> с параметром <code>--config</code>.</li>
+      </ul>
+
+      <div class="note warn">
+        Если на одном компьютере работают разные люди по очереди, служба все равно стартует под одной выбранной учеткой. Для динамической смены пользователя нужен отдельный следующий этап: брокер/служба DiskControl, которая умеет запускать клиент в пользовательской сессии или официально менять clientId, если это поддерживается API производителя.
+      </div>
+      <div class="note">
+        Ограничение запуска <code>dkcl64.exe</code> снимает общий доступ группы Users, но выбранная учетная запись службы все равно получает право чтения/запуска. Если эта учетная запись совпадает с интерактивным пользователем, технически именно этот пользователь также сможет запустить файл напрямую. Для строгого запрета нужен отдельный сервисный аккаунт или следующий этап с защищающей службой.
+      </div>
+    </section>
+
+    <section id="user-app">
+      <h2>5. Пользовательская утилита</h2>
+      <p><code>DiskControl.exe</code> запускается обычным пользователем. Вверху показывается текущий Windows-пользователь. Ниже отображается дерево токенов в стиле DistKontrolUSB: сначала группа <code>...-Gr-XX</code>, внутри разрешенные пользователю токены из <code>allow.json</code>.</p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Действие</th>
+            <th>Назначение</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>Обновить</code></td>
+            <td>Перечитать список токенов из <code>dkclient</code> и заново применить политику.</td>
+          </tr>
+          <tr>
+            <td>Двойной клик по свободному токену</td>
+            <td>Перед подключением еще раз проверяет токен по политике и отправляет <code>USE,&lt;endpoint&gt;</code>.</td>
+          </tr>
+          <tr>
+            <td>Двойной клик по токену, подключенному вами</td>
+            <td>Отправляет <code>STOP USING,&lt;endpoint&gt;</code>, обновляет локальное состояние использования и перечитывает список.</td>
+          </tr>
+          <tr>
+            <td>Двойной клик по токену, занятому другим пользователем</td>
+            <td>Не отключает чужой токен, а показывает в строке статуса, кем он занят.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>При сворачивании окно остаётся на панели задач: режим трея отключён. При закрытии программы все токены, подключённые текущим пользователем через клиент, автоматически освобождаются.</p>
+      <p>Для каждого подключённого токена отображается обратный таймер 20 минут. После его окончания появляется вопрос о продолжении. Ответ «Да» запускает следующие 20 минут, ответ «Нет» освобождает токен. Если ответа нет одну минуту, токен освобождается автоматически.</p>
+    </section>
+
+    <section id="admin-app">
+      <h2>6. Админская утилита</h2>
+      <p><code>DiskControl.Admin.exe</code> запускается с правами администратора. Она нужна для формирования и редактирования <code>allow.json</code>.</p>
+
+      <h3>Основной сценарий</h3>
+      <ol>
+        <li>Запустить <code>DiskControl Admin</code>.</li>
+        <li>В поле <code>Пользователь</code> указать логин, например <code>OSNOVA\a.nikitin</code>.</li>
+        <li>Нажать <code>Обновить</code>, чтобы увидеть слева разрешённые токены, а справа токены, которые можно добавить.</li>
+        <li>Двойным кликом перенести нужные токены из правой части в левую. Двойной клик по токену слева убирает его из доступа.</li>
+        <li>Нажать <code>Сохранить доступ</code>.</li>
+      </ol>
+
+      <p>Левая часть окна становится списком <code>allowedDevices</code> выбранного пользователя. Перемещение между частями меняет только подготовленный список; запись в файл выполняется кнопкой <code>Сохранить доступ</code>.</p>
+
+      <h3>Поиск</h3>
+      <p>Поле <code>Поиск</code> фильтрует список по:</p>
+      <ul>
+        <li><code>Endpoint</code>, например <code>distkontrolusb64-1-Gr-01.1124</code>;</li>
+        <li>имени токена, например <code>ИНТЕГРАЛ</code>;</li>
+        <li>продукту, например <code>Rutoken lite</code>.</li>
+      </ul>
+
+      <h3>Открытие другого конфига</h3>
+      <p>Кнопка <code>Открыть конфиг</code> позволяет выбрать другой JSON-файл. Если внутри некорректный JSON, админка заменяет его на пустой валидный <code>allow.json</code>, а старое содержимое сохраняет рядом как <code>*.invalid-*.bak</code>.</p>
+
+      <h3>Сортировка</h3>
+      <p>Клик по заголовку столбца сортирует таблицу по этому столбцу. Повторный клик меняет направление сортировки.</p>
+
+      <h3>Экспорт CSV/JSON</h3>
+      <p>Экспорт — это не файл настройки доступа. Это выгрузка текущего списка для сверки, Excel, отправки в поддержку или сравнения состояний. Конфигурацией доступа остается <code>allow.json</code>, который формируется кнопкой <code>Сохранить доступ</code>.</p>
+    </section>
+
+    <section id="policy">
+      <h2>7. Файл allow.json</h2>
+      <p>Основной файл политики лежит здесь:</p>
+      <pre><code>C:\ProgramData\DiskControl\allow.json</code></pre>
+
+      <p>Пример структуры:</p>
+      <pre><code>{
+  "pipeName": "dkclient",
+  "refreshSeconds": 5,
+  "usageStatePath": "C:\\ProgramData\\DiskControl\\usage.json",
+  "userAssignments": [
+    {
+      "users": [
+        "OSNOVA\\a.nikitin"
+      ],
+      "groups": [],
+      "allowedDevices": [
+        {
+          "endpoint": "distkontrolusb64-1-Gr-01.1124",
+          "nickname": "ИНТЕГРАЛ УК ООО",
+          "product": "Rutoken lite"
+        }
+      ]
+    }
+  ]
+}</code></pre>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Поле</th>
+            <th>Что означает</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>pipeName</code></td>
+            <td>Имя локального канала DistKontrolUSB. Сейчас используется <code>dkclient</code>.</td>
+          </tr>
+          <tr>
+            <td><code>refreshSeconds</code></td>
+            <td>Период автообновления, если используется в интерфейсе.</td>
+          </tr>
+          <tr>
+            <td><code>usageStatePath</code></td>
+            <td>Единственный источник начала 20-минутного интервала и владельца токена для всех экземпляров DiskControl. Для общей работы на разных компьютерах здесь должен быть один и тот же UNC-путь.</td>
+          </tr>
+          <tr>
+            <td><code>userAssignments</code></td>
+            <td>Список назначений: пользователи/группы и разрешенные им токены.</td>
+          </tr>
+          <tr>
+            <td><code>users</code></td>
+            <td>Логины Windows: <code>DOMAIN\user</code>, короткое имя или SID.</td>
+          </tr>
+          <tr>
+            <td><code>groups</code></td>
+            <td>Группы Windows. Можно оставить пустым массивом.</td>
+          </tr>
+          <tr>
+            <td><code>allowedDevices</code></td>
+            <td>Токены, которые пользователь увидит и сможет подключать через DiskControl.</td>
+          </tr>
+          <tr>
+            <td><code>endpoint</code></td>
+            <td>Главный идентификатор токена из DistKontrolUSB.</td>
+          </tr>
+          <tr>
+            <td><code>nickname</code></td>
+            <td>Имя токена. Если заполнено, используется как дополнительная проверка.</td>
+          </tr>
+          <tr>
+            <td><code>product</code></td>
+            <td>Продукт, например <code>Rutoken lite</code>. Если заполнено, тоже проверяется.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="note">
+        Поля <code>clientExecutable</code> больше нет в плане и в новой политике. Путь к <code>dkcl64.exe</code> находится в настройке службы Windows, а не в <code>allow.json</code>.
+      </div>
+    </section>
+
+    <section id="files">
+      <h2>8. Где лежат файлы</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Путь</th>
+            <th>Назначение</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>C:\Program Files\DiskControl\DiskControl.exe</code></td>
+            <td>Пользовательская утилита.</td>
+          </tr>
+          <tr>
+            <td><code>C:\Program Files\DiskControl\DiskControl.Admin.exe</code></td>
+            <td>Админская утилита.</td>
+          </tr>
+          <tr>
+            <td><code>C:\Program Files\DiskControl\dkcl64.exe</code></td>
+            <td>Штатный клиент DistKontrolUSB, запускается службой <code>dkclient</code>. Запуск ограничен ACL: не для всей группы Users, а для администраторов, SYSTEM и учетной записи службы.</td>
+          </tr>
+          <tr>
+            <td><code>C:\Program Files\DiskControl\dkcl.ini</code></td>
+            <td>Конфиг штатного клиента <code>dkcl64.exe</code>. Наша политика доступа хранится отдельно.</td>
+          </tr>
+          <tr>
+            <td><code>C:\ProgramData\DiskControl\allow.json</code></td>
+            <td>Основной файл доступа.</td>
+          </tr>
+          <tr>
+            <td><code>usage.json</code> по пути из <code>usageStatePath</code></td>
+            <td>Общее состояние владельцев и таймеров. Может находиться в <code>C:\ProgramData\DiskControl</code> или в общей сетевой папке.</td>
+          </tr>
+          <tr>
+            <td><code>C:\ProgramData\DiskControl\logs</code></td>
+            <td>Логи запуска, действий, установки и диагностики.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="diagnostics">
+      <h2>9. Диагностика</h2>
+      <p>Отдельная диагностическая утилита больше не добавляется при установке. Для проверки состояния используем логи DiskControl и стандартные команды Windows.</p>
+
+      <p>Быстрая ручная проверка:</p>
+      <pre><code>sc.exe query dkclient
+sc.exe qc dkclient
+dir C:\ProgramData\DiskControl\logs</code></pre>
+
+      <h3>Если DistKontrolUSB снова показывает “СИСТЕМА”</h3>
+      <ol>
+        <li>Проверить <code>sc.exe qc dkclient</code>.</li>
+        <li>Убедиться, что <code>SERVICE_START_NAME</code> не <code>LocalSystem</code>, а нужный пользователь.</li>
+        <li>Остановить старые процессы <code>dkcl64.exe</code>, если они запущены не от службы.</li>
+        <li>Перезапустить службу <code>dkclient</code>.</li>
+      </ol>
+
+      <h3>Если служба не запускается</h3>
+      <ul>
+        <li>Проверить пароль учетной записи службы.</li>
+        <li>Проверить, не заблокирована ли учетная запись и не истек ли пароль.</li>
+        <li>Проверить право <code>Log on as a service</code>.</li>
+        <li>Проверить, что путь к <code>dkcl64.exe</code> и <code>dkcl.ini</code> существует.</li>
+      </ul>
+
+      <h3>Если админка или пользовательская утилита сразу закрывается</h3>
+      <ul>
+        <li>Открыть <code>C:\ProgramData\DiskControl\logs</code>.</li>
+        <li>Найти свежий <code>startup-YYYYMMDD.log</code>.</li>
+        <li>Проверить, не запускается ли старый EXE из старой папки.</li>
+        <li>Проверить, не блокирует ли запуск антивирус/AppLocker/SmartScreen.</li>
+      </ul>
+    </section>
+
+    <section id="build">
+      <h2>10. Сборка и пакет</h2>
+      <p>Сборка приложений:</p>
+      <pre><code>build-vs.cmd Debug
+build-vs.cmd Release</code></pre>
+
+      <p>Тесты:</p>
+      <pre><code>test-vs.cmd</code></pre>
+
+      <p>Сборка установщика и переносимого архива:</p>
+      <pre><code>build-installer.cmd</code></pre>
+
+      <p>Результаты:</p>
+      <pre><code>dist\DiskControl-Setup.exe
+dist\DiskControl-Installer.zip</code></pre>
+
+      <h3>SmartScreen</h3>
+      <p>Если Windows показывает “Система Windows защитила ваш компьютер”, это не ошибка кода. SmartScreen не доверяет неподписанному или новому EXE. Для нормального распространения нужен сертификат подписи кода и накопление репутации у Microsoft.</p>
+      <pre><code>build-installer.cmd -CertificateThumbprint "THUMBPRINT"</code></pre>
+      <pre><code>build-installer.cmd -CertificatePath "C:\Certs\company-code-signing.pfx" -CertificatePassword "PASSWORD"</code></pre>
+    </section>
+
+    <section id="uninstall">
+      <h2>11. Удаление</h2>
+      <p>Удалить DiskControl можно через Windows “Приложения”, через ярлык <code>Uninstall DiskControl</code> в меню Пуск или командой:</p>
+      <pre><code>uninstall.cmd</code></pre>
+
+      <p>По умолчанию папка <code>C:\ProgramData\DiskControl</code> сохраняется, чтобы не потерять <code>allow.json</code> и логи. Если нужно удалить и данные:</p>
+      <pre><code>uninstall.cmd -RemoveData</code></pre>
+    </section>
+
+    <section id="limits">
+      <h2>12. Текущие ограничения и следующий этап</h2>
+      <ul>
+        <li><code>allow.json</code> ограничивает поведение нашей утилиты DiskControl. Для строгой защиты от обхода через сторонние инструменты нужны дополнительные меры Windows: права на запуск, AppLocker/WDAC, скрытие штатного GUI или отдельная защищающая служба.</li>
+        <li>Служба <code>dkclient</code> работает под одной учетной записью. Это хорошо для рабочего места, закрепленного за пользователем. Для терминального сценария с несколькими пользователями нужна отдельная архитектура.</li>
+        <li><code>usage.json</code> помогает нашей утилите показывать владельца, но родной DistKontrolUSB ориентируется на учетку процесса <code>dkcl64.exe</code>.</li>
+        <li>Установщик без подписи может предупреждаться SmartScreen.</li>
+      </ul>
+
+      <h3>Что делать дальше</h3>
+      <ol>
+        <li>Проверить новый установщик на тестовом компьютере.</li>
+        <li>Убедиться, что служба создалась под нужным пользователем и DistKontrolUSB показывает логин.</li>
+        <li>Проверить сценарий админки: поиск, галочки, сохранение доступа, повторное открытие <code>allow.json</code>.</li>
+        <li>После стабилизации решить вопрос строгой защиты от обхода и подписи установщика.</li>
+      </ol>
+    </section>
+  </main>
+</body>
+</html>

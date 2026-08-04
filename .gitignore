@@ -1,0 +1,49 @@
+# Build outputs
+build/
+dist/
+**/build/
+**/obj/
+*.exe
+*.dll
+*.lib
+*.pdb
+*.ilk
+*.iobj
+*.ipdb
+*.log
+*.tlog
+
+# Local Codex/workspace state
+.agents/
+.codex/
+.snapshots/
+lineage-*.html
+
+# Local/vendor binaries and packaged archives
+dkcl64.exe
+DKCLHelper-source-code.zip
+*.zip
+*.7z
+
+# Real local policy/config/data files
+allowlist.json
+allowlist*.json
+allow.json
+policy.json
+usage*.json
+usage*.lock
+dkcl.ini
+
+# DistKontrol inventory and diagnostics captured from the real environment
+dk-list-raw*.txt
+dk-usb-list*.csv
+dk-usb-list*.json
+diagnose*.txt
+diagnose*.log
+
+# User/local scratch files
+источник.txt
+*.bak
+*.backup
+*.old
+*.orig
