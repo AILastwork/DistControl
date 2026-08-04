@@ -1,5 +1,18 @@
 # DiskControl
 
+## Готовая сборка
+
+Скачать ZIP:
+[DiskControl-0.1.0-win64.zip](https://github.com/AILastwork/DistControl/raw/main/release-assets/DiskControl-0.1.0-win64.zip)
+
+Checksum:
+[DiskControl-0.1.0-win64.zip.sha256](https://github.com/AILastwork/DistControl/raw/main/release-assets/DiskControl-0.1.0-win64.zip.sha256)
+
+Внутри архива:
+
+- `DiskControl-Setup.exe`
+- `SHA256SUMS.txt`
+
 `DiskControl` — небольшая программа для Windows, которая показывает и
 подключает только разрешённые USB-ключи через клиент `DistKontrolUSB`.
 

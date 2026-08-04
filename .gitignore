@@ -25,6 +25,11 @@ DKCLHelper-source-code.zip
 *.zip
 *.7z
 
+# Published download artifacts
+!release-assets/
+!release-assets/*.zip
+!release-assets/*.sha256
+
 # Real local policy/config/data files
 allowlist.json
 allowlist*.json
