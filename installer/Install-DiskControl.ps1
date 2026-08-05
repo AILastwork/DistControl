@@ -31,7 +31,7 @@ try {
 catch {
 }
 $ProductName = "DiskControl"
-$ProductVersion = "0.2.0"
+$ProductVersion = "0.2.1"
 $Publisher = "DiskControl"
 $SourceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $ReleaseDir = Join-Path $SourceRoot "build\x64\Release"
@@ -618,12 +618,23 @@ function Set-PolicyVpnConfiguration {
         return
     }
     Write-Step "Configure VPN policy metadata and token mapping: profileId=$VpnProfileId; token=$VpnTokenIdentity"
-    if ($DryRun) {
-        return
-    }
 
     try {
-        $policy = Get-Content -LiteralPath $PolicyPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if (Test-Path -LiteralPath $PolicyPath) {
+            $policy = Get-Content -LiteralPath $PolicyPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        }
+        elseif ($DryRun) {
+            $policy = [pscustomobject]@{
+                pipeName = "dkclient"
+                refreshSeconds = 5
+                usageStatePath = $UsageStatePath
+                userAssignments = @()
+            }
+        }
+        else {
+            throw "Policy file does not exist: $PolicyPath"
+        }
+
         $fullTunnel = [string]::Equals($VpnFullTunnel, "1", [StringComparison]::OrdinalIgnoreCase) -or
             [string]::Equals($VpnFullTunnel, "true", [StringComparison]::OrdinalIgnoreCase)
         $profile = [pscustomobject]@{
@@ -637,25 +648,27 @@ function Set-PolicyVpnConfiguration {
             enabled = $true
         }
 
-        $profiles = New-Object System.Collections.Generic.List[object]
+        # Windows PowerShell 5.1 cannot reliably expand Generic.List[object]
+        # through @(...), so keep this as a native PowerShell object array.
+        $profiles = @()
         $replaced = $false
         foreach ($existingProfile in @($policy.vpnProfiles)) {
             if ($existingProfile -and [string]::Equals([string]$existingProfile.id, $VpnProfileId, [StringComparison]::OrdinalIgnoreCase)) {
-                $profiles.Add($profile)
+                $profiles += $profile
                 $replaced = $true
             }
             elseif ($existingProfile) {
-                $profiles.Add($existingProfile)
+                $profiles += $existingProfile
             }
         }
         if (-not $replaced) {
-            $profiles.Add($profile)
+            $profiles += $profile
         }
         if ($policy.PSObject.Properties["vpnProfiles"]) {
-            $policy.vpnProfiles = @($profiles)
+            $policy.vpnProfiles = $profiles
         }
         else {
-            $policy | Add-Member -MemberType NoteProperty -Name "vpnProfiles" -Value @($profiles)
+            $policy | Add-Member -MemberType NoteProperty -Name "vpnProfiles" -Value $profiles
         }
 
         $mapped = 0
@@ -679,7 +692,9 @@ function Set-PolicyVpnConfiguration {
         }
 
         $text = $policy | ConvertTo-Json -Depth 32
-        [System.IO.File]::WriteAllText($PolicyPath, $text + [Environment]::NewLine, $script:Utf8NoBomEncoding)
+        if (-not $DryRun) {
+            [System.IO.File]::WriteAllText($PolicyPath, $text + [Environment]::NewLine, $script:Utf8NoBomEncoding)
+        }
         if (-not [string]::IsNullOrWhiteSpace($VpnTokenIdentity) -and $mapped -eq 0) {
             Write-InstallWarning "VPN profile was created, but token '$VpnTokenIdentity' was not found in current allow.json. Assign it later in DiskControl Admin."
         }
