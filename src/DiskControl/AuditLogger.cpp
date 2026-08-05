@@ -4,13 +4,18 @@
 
 #include <windows.h>
 
+#include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <mutex>
 #include <sstream>
 
 namespace {
 namespace fs = std::filesystem;
+
+std::atomic<unsigned long long> gOperationSequence{0};
+std::mutex gLogMutex;
 
 std::string wideToUtf8(const std::wstring& value) {
     if (value.empty()) {
@@ -67,6 +72,22 @@ std::wstring timestamp() {
     return stream.str();
 }
 
+std::wstring traceTimestamp() {
+    SYSTEMTIME time{};
+    GetLocalTime(&time);
+
+    std::wostringstream stream;
+    stream << std::setfill(L'0')
+        << time.wYear << L"-"
+        << std::setw(2) << time.wMonth << L"-"
+        << std::setw(2) << time.wDay << L" "
+        << std::setw(2) << time.wHour << L":"
+        << std::setw(2) << time.wMinute << L":"
+        << std::setw(2) << time.wSecond << L"."
+        << std::setw(3) << time.wMilliseconds;
+    return stream.str();
+}
+
 std::wstring logFileName() {
     SYSTEMTIME time{};
     GetLocalTime(&time);
@@ -80,15 +101,50 @@ std::wstring logFileName() {
         << L".csv";
     return stream.str();
 }
+
+std::wstring traceFileName() {
+    SYSTEMTIME time{};
+    GetLocalTime(&time);
+
+    std::wostringstream stream;
+    stream << std::setfill(L'0')
+        << L"trace-"
+        << time.wYear
+        << std::setw(2) << time.wMonth
+        << std::setw(2) << time.wDay
+        << L".log";
+    return stream.str();
+}
 }
 
 void AuditLogger::log(const AuditEvent& event) {
     try {
+        const std::lock_guard<std::mutex> lock(gLogMutex);
         if (tryWrite(defaultLogDirectory(), event)) {
             return;
         }
 
         tryWrite(fallbackLogDirectory(), event);
+    }
+    catch (...) {
+    }
+}
+
+std::wstring AuditLogger::createOperationId(const std::wstring& prefix) {
+    const unsigned long long sequence = ++gOperationSequence;
+    std::wostringstream stream;
+    stream << prefix << L"-" << GetCurrentProcessId() << L"-"
+        << std::setfill(L'0') << std::setw(6) << sequence;
+    return stream.str();
+}
+
+void AuditLogger::trace(const std::wstring& operationId, const std::wstring& message) {
+    try {
+        const std::lock_guard<std::mutex> lock(gLogMutex);
+        if (tryWriteTrace(defaultLogDirectory(), operationId, message)) {
+            return;
+        }
+        tryWriteTrace(fallbackLogDirectory(), operationId, message);
     }
     catch (...) {
     }
@@ -167,6 +223,37 @@ bool AuditLogger::tryWrite(const std::wstring& directory, const AuditEvent& even
             << csvEscape(event.details)
             << '\n';
 
+        return true;
+    }
+    catch (...) {
+        return false;
+    }
+}
+
+bool AuditLogger::tryWriteTrace(
+    const std::wstring& directory,
+    const std::wstring& operationId,
+    const std::wstring& message) {
+    try {
+        fs::create_directories(directory);
+        const fs::path filePath = fs::path(directory) / traceFileName();
+        const bool newFile = !fs::exists(filePath) || fs::file_size(filePath) == 0;
+
+        std::ofstream stream(filePath, std::ios::binary | std::ios::app);
+        if (!stream) {
+            return false;
+        }
+        if (newFile) {
+            stream << "\xEF\xBB\xBF";
+            stream << wideToUtf8(
+                L"Журнал пошаговой диагностики DiskControl. Пароли и общие ключи VPN не записываются.\r\n");
+        }
+
+        const std::wstring line = L"[" + traceTimestamp() + L"] [PID " +
+            std::to_wstring(GetCurrentProcessId()) + L"] [TID " +
+            std::to_wstring(GetCurrentThreadId()) + L"] [" +
+            (operationId.empty() ? L"БЕЗ-ОПЕРАЦИИ" : operationId) + L"] " + message + L"\r\n";
+        stream << wideToUtf8(line);
         return true;
     }
     catch (...) {

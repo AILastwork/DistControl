@@ -3,7 +3,10 @@
 #include "PolicyManager.h"
 
 #include <cstddef>
+#include <functional>
 #include <string>
+
+using VpnProgressCallback = std::function<void(const std::wstring& message)>;
 
 struct VpnVerificationResult {
     std::wstring profileName;
@@ -25,8 +28,12 @@ public:
         const std::wstring& preSharedKey);
     static bool isConnected(const std::wstring& profileName);
     static size_t localPhysicalRouteCount();
-    static VpnVerificationResult connectAndVerify(const VpnProfile& profile);
-    static VpnVerificationResult verifyConnected(const VpnProfile& profile);
+    static VpnVerificationResult connectAndVerify(
+        const VpnProfile& profile,
+        const VpnProgressCallback& progress = {});
+    static VpnVerificationResult verifyConnected(
+        const VpnProfile& profile,
+        const VpnProgressCallback& progress = {});
 
 private:
     static std::wstring queryPublicIp(const std::wstring& url);

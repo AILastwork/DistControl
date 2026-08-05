@@ -75,6 +75,23 @@ std::string narrowAscii(const std::wstring& text) {
     return result;
 }
 
+std::wstring widenError(const char* text) {
+    std::wstring result;
+    if (!text) {
+        return result;
+    }
+    while (*text) {
+        result.push_back(static_cast<unsigned char>(*text++));
+    }
+    return result;
+}
+
+void reportProgress(const VpnProgressCallback& progress, const std::wstring& message) {
+    if (progress) {
+        progress(message);
+    }
+}
+
 std::runtime_error rasError(const char* operation, DWORD error) {
     wchar_t message[512]{};
     if (RasGetErrorStringW(error, message, static_cast<DWORD>(std::size(message))) != ERROR_SUCCESS) {
@@ -476,7 +493,10 @@ size_t VpnManager::localPhysicalRouteCount() {
     return captureLocalPhysicalRoutes().size();
 }
 
-VpnVerificationResult VpnManager::connectAndVerify(const VpnProfile& profile) {
+VpnVerificationResult VpnManager::connectAndVerify(
+    const VpnProfile& profile,
+    const VpnProgressCallback& progress) {
+    reportProgress(progress, L"Начинаем проверку VPN-профиля «" + profile.name + L"».");
     if (!profile.enabled) {
         throw std::runtime_error("VPN profile is disabled by policy.");
     }
@@ -493,11 +513,17 @@ VpnVerificationResult VpnManager::connectAndVerify(const VpnProfile& profile) {
     VpnVerificationResult result;
     result.profileName = profile.name;
     result.alreadyConnected = isConnected(profile.name);
+    reportProgress(progress, result.alreadyConnected
+        ? L"VPN-профиль уже подключён. Повторное соединение не требуется."
+        : L"VPN-профиль пока не подключён. Готовим соединение Windows RAS.");
     const std::set<std::wstring> localRoutesBefore = captureLocalPhysicalRoutes();
     rememberLocalRouteBaseline(profile.name, localRoutesBefore, !result.alreadyConnected);
+    reportProgress(progress, L"Сохранено локальных маршрутов перед VPN: " +
+        std::to_wstring(localRoutesBefore.size()) + L".");
 
     HRASCONN openedConnection = nullptr;
     if (!result.alreadyConnected) {
+        reportProgress(progress, L"Читаем сохранённые в Windows логин и пароль VPN.");
         RASCREDENTIALSW credentials{};
         credentials.dwSize = sizeof(credentials);
         credentials.dwMask = RASCM_UserName | RASCM_Password | RASCM_Domain;
@@ -522,6 +548,7 @@ VpnVerificationResult VpnManager::connectAndVerify(const VpnProfile& profile) {
         }
         SecureZeroMemory(credentials.szPassword, sizeof(credentials.szPassword));
 
+        reportProgress(progress, L"Передаём Windows команду подключения VPN.");
         error = RasDialW(nullptr, nullptr, &parameters, 0, nullptr, &openedConnection);
         SecureZeroMemory(parameters.szPassword, sizeof(parameters.szPassword));
         if (error != ERROR_SUCCESS) {
@@ -530,22 +557,27 @@ VpnVerificationResult VpnManager::connectAndVerify(const VpnProfile& profile) {
             }
             throw rasError("VPN connection", error);
         }
+        reportProgress(progress, L"Windows сообщила об успешном подключении VPN.");
     }
 
     try {
-        VpnVerificationResult verified = verifyConnected(profile);
+        VpnVerificationResult verified = verifyConnected(profile, progress);
         verified.alreadyConnected = result.alreadyConnected;
+        reportProgress(progress, L"VPN полностью проверен и готов для подключения токена.");
         return verified;
     }
     catch (...) {
         if (openedConnection) {
+            reportProgress(progress, L"Проверка VPN не пройдена. Отключаем созданное этой операцией VPN-соединение.");
             RasHangUpW(openedConnection);
         }
         throw;
     }
 }
 
-VpnVerificationResult VpnManager::verifyConnected(const VpnProfile& profile) {
+VpnVerificationResult VpnManager::verifyConnected(
+    const VpnProfile& profile,
+    const VpnProgressCallback& progress) {
     if (!profile.enabled) {
         throw std::runtime_error("VPN profile is disabled by policy.");
     }
@@ -565,20 +597,28 @@ VpnVerificationResult VpnManager::verifyConnected(const VpnProfile& profile) {
     VpnVerificationResult result;
     result.profileName = profile.name;
     result.alreadyConnected = true;
+    reportProgress(progress, L"Проверяем, что VPN не нарушил маршруты локальной сети.");
     result.preservedLocalRouteCount = verifyLocalRoutePreservation(profile.name);
+    reportProgress(progress, L"Локальная сеть доступна. Проверено маршрутов: " +
+        std::to_wstring(result.preservedLocalRouteCount) + L".");
     std::runtime_error lastError("VPN public IP check failed.");
     for (int attempt = 0; attempt < kPublicIpAttempts; ++attempt) {
         try {
+            reportProgress(progress, L"Запрашиваем фактический внешний IP. Попытка " +
+                std::to_wstring(attempt + 1) + L" из " + std::to_wstring(kPublicIpAttempts) + L".");
             result.publicIp = queryPublicIp(profile.ipCheckUrl);
             if (!isExpectedPublicIp(result.publicIp, profile.expectedPublicIps)) {
                 throw std::runtime_error(
                     "VPN public IP mismatch. Actual=" + narrowAscii(result.publicIp) +
                     "; expected=" + narrowAscii(expectedIpsText(profile.expectedPublicIps)) + ".");
             }
+            reportProgress(progress, L"Внешний IP подтверждён: " + result.publicIp + L".");
             return result;
         }
         catch (const std::runtime_error& error) {
             lastError = error;
+            reportProgress(progress, L"Проверка внешнего IP не удалась. Техническая причина: " +
+                widenError(error.what()));
             if (attempt + 1 < kPublicIpAttempts) {
                 Sleep(1200);
             }

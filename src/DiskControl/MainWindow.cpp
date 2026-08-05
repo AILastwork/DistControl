@@ -1720,26 +1720,37 @@ void MainWindow::manageVpnForSelectedDevice() {
 }
 
 void MainWindow::startTokenAction(DeviceViewModel device, bool connect) {
+    const std::wstring operationId = AuditLogger::createOperationId(connect ? L"CONNECT" : L"DISCONNECT");
+    AuditLogger::trace(operationId,
+        std::wstring(L"Интерфейс принял команду пользователя: ") +
+            (connect ? L"подключить" : L"отключить") + L" токен «" + device.nickname +
+            L"», endpoint=" + device.endpoint + L".");
     if (vpnWatchdogRunning_) {
+        AuditLogger::trace(operationId, L"Операция не начата: сейчас выполняется фоновая проверка VPN.");
         updateStatus(L"Дождитесь окончания проверки VPN.");
         return;
     }
     if (refreshing_) {
+        AuditLogger::trace(operationId, L"Операция не начата: ещё обновляется список токенов.");
         updateStatus(L"Дождитесь окончания обновления списка устройств.");
         return;
     }
     if (connect && !ensureVpnCredentials(device, false)) {
+        AuditLogger::trace(operationId,
+            L"Операция не начата: учётные данные VPN не подтверждены или пользователь закрыл окно ввода.");
         return;
     }
 
     bool expected = false;
     if (!tokenActionRunning_.compare_exchange_strong(expected, true)) {
+        AuditLogger::trace(operationId, L"Операция не начата: другая команда с токеном уже выполняется.");
         updateStatus(L"Операция с токеном уже выполняется...");
         return;
     }
 
     if (refreshing_) {
         tokenActionRunning_ = false;
+        AuditLogger::trace(operationId, L"Операция отменена: одновременно началось обновление списка токенов.");
         updateStatus(L"Дождитесь окончания обновления списка устройств.");
         return;
     }
@@ -1749,6 +1760,8 @@ void MainWindow::startTokenAction(DeviceViewModel device, bool connect) {
         const auto failure = tokenActionFailureTicks_.find(device.endpoint);
         if (failure != tokenActionFailureTicks_.end() && now - failure->second < kTokenActionFailureCooldownMs) {
             tokenActionRunning_ = false;
+            AuditLogger::trace(operationId,
+                L"Операция отложена: после предыдущей ошибки ещё действует минутная защита от частых повторов.");
             updateStatus(L"Недавняя попытка подключения этого токена завершилась ошибкой. Подождите минуту и нажмите «Обновить».");
             return;
         }
@@ -1757,17 +1770,20 @@ void MainWindow::startTokenAction(DeviceViewModel device, bool connect) {
     KillTimer(hwnd_, IDT_DELAYED_REFRESH);
     setMainControlsEnabled(false);
     updateStatus(connect ? L"Подключение токена..." : L"Отключение токена...");
+    AuditLogger::trace(operationId, L"Кнопки временно заблокированы, операция передана в фоновый поток.");
 
     if (tokenActionThread_.joinable()) {
         tokenActionThread_.join();
     }
 
-    tokenActionThread_ = std::thread([this, device, connect]() {
+    tokenActionThread_ = std::thread([this, device, connect, operationId]() {
         std::wstring status;
         std::wstring errorText;
         bool vpnError = false;
         try {
-            status = connect ? service_.useDevice(device) : service_.stopUsingOwnedDevice(device);
+            status = connect
+                ? service_.useDevice(device, operationId)
+                : service_.stopUsingOwnedDevice(device, operationId);
         }
         catch (const std::exception& error) {
             vpnError = containsAscii(error.what(), "VPN ");
@@ -1780,6 +1796,7 @@ void MainWindow::startTokenAction(DeviceViewModel device, bool connect) {
             pendingTokenActionStatus_ = std::move(status);
             pendingTokenActionError_ = std::move(errorText);
             pendingTokenActionEndpoint_ = device.endpoint;
+            pendingTokenActionOperationId_ = operationId;
             pendingTokenActionConnect_ = connect;
             pendingTokenActionVpnError_ = vpnError;
         }
@@ -1798,6 +1815,7 @@ void MainWindow::finishTokenAction() {
     std::wstring status;
     std::wstring errorText;
     std::wstring endpoint;
+    std::wstring operationId;
     bool connect = false;
     bool vpnError = false;
     {
@@ -1805,11 +1823,13 @@ void MainWindow::finishTokenAction() {
         status = std::move(pendingTokenActionStatus_);
         errorText = std::move(pendingTokenActionError_);
         endpoint = std::move(pendingTokenActionEndpoint_);
+        operationId = std::move(pendingTokenActionOperationId_);
         connect = pendingTokenActionConnect_;
         vpnError = pendingTokenActionVpnError_;
         pendingTokenActionStatus_.clear();
         pendingTokenActionError_.clear();
         pendingTokenActionEndpoint_.clear();
+        pendingTokenActionOperationId_.clear();
         pendingTokenActionConnect_ = false;
         pendingTokenActionVpnError_ = false;
     }
@@ -1822,6 +1842,8 @@ void MainWindow::finishTokenAction() {
             tokenActionFailureTicks_[endpoint] = GetTickCount64();
         }
         updateStatus(errorText.c_str());
+        AuditLogger::trace(operationId,
+            L"Интерфейс получил ошибку операции и показал её пользователю: " + errorText);
         scheduleDelayedRefresh();
         return;
     }
@@ -1838,6 +1860,8 @@ void MainWindow::finishTokenAction() {
 
     updateStatus(status.c_str());
     updateTreeTimerText();
+    AuditLogger::trace(operationId,
+        L"Интерфейс применил успешный результат и запланировал контрольное обновление списка через 1,2 секунды.");
     scheduleDelayedRefresh();
 }
 

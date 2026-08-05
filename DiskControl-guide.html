@@ -635,6 +635,18 @@ dir C:\ProgramData\DiskControl\logs</code></pre>
         <li>Проверить, не запускается ли старый EXE из старой папки.</li>
         <li>Проверить, не блокирует ли запуск антивирус/AppLocker/SmartScreen.</li>
       </ul>
+
+      <h3>Если токен долго подключается или подключается не с первого раза</h3>
+      <ol>
+        <li>Воспроизвести проблему один раз и запомнить примерное время попытки.</li>
+        <li>Открыть <code>C:\ProgramData\DiskControl\logs</code>.</li>
+        <li>Передать администратору свежие <code>trace-YYYYMMDD.log</code>, <code>audit-YYYYMMDD.csv</code> и <code>startup-YYYYMMDD.log</code>.</li>
+      </ol>
+      <p><code>trace-YYYYMMDD.log</code> написан на русском языке. У каждой попытки есть единый номер
+      вида <code>CONNECT-1234-000007</code>, а у каждого этапа указано прошедшее время. Журнал показывает
+      проверку политики, VPN и внешнего IP, восстановление каталога DistKontrolUSB, команды
+      <code>DEVICE INFO</code>, <code>USE</code>, <code>STOP USING</code> и обновление окна. Пароли и общие
+      ключи VPN в него не записываются.</p>
     </section>
 
     <section id="build">

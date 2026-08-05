@@ -10,6 +10,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <cstring>
 #include <stdexcept>
 #include <utility>
 
@@ -21,12 +22,114 @@ constexpr DWORD kVpnDeviceRecoveryPollMs = 1000;
 constexpr int kVpnUseAttempts = 4;
 
 std::wstring widenAscii(const char* text) {
-    std::wstring result;
-    while (*text) {
-        result.push_back(static_cast<unsigned char>(*text++));
+    if (!text || *text == '\0') {
+        return {};
     }
+    const int length = static_cast<int>(std::strlen(text));
+    int size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, length, nullptr, 0);
+    UINT codePage = CP_UTF8;
+    DWORD flags = MB_ERR_INVALID_CHARS;
+    if (size <= 0) {
+        codePage = CP_ACP;
+        flags = 0;
+        size = MultiByteToWideChar(codePage, flags, text, length, nullptr, 0);
+    }
+    if (size <= 0) {
+        return L"Не удалось преобразовать технический текст ошибки.";
+    }
+    std::wstring result(static_cast<size_t>(size), L'\0');
+    MultiByteToWideChar(codePage, flags, text, length, result.data(), size);
     return result;
 }
+
+bool containsTechnicalText(const char* text, const char* needle) {
+    return text && needle && std::strstr(text, needle) != nullptr;
+}
+
+std::wstring humanErrorDescription(const char* error) {
+    const std::wstring technical = widenAscii(error);
+    std::wstring explanation;
+    if (containsTechnicalText(error, "device catalog is temporarily empty")) {
+        explanation = L"Служба DistKontrolUSB временно вернула пустой список устройств";
+    }
+    else if (containsTechnicalText(error, "device catalog did not recover after VPN connection")) {
+        explanation = L"После подключения VPN служба DistKontrolUSB не успела восстановить список устройств";
+    }
+    else if (containsTechnicalText(error, "Invalid address")) {
+        explanation = L"Служба DistKontrolUSB пока не принимает адрес токена после изменения сети";
+    }
+    else if (containsTechnicalText(error, "DistKontrol returned FAILED") ||
+             containsTechnicalText(error, "DistKontrol returned ERROR")) {
+        explanation = L"Служба DistKontrolUSB отказала в выполнении команды";
+    }
+    else if (containsTechnicalText(error, "pipe read timed out") ||
+             containsTechnicalText(error, "pipe write timed out")) {
+        explanation = L"Служба DistKontrolUSB не ответила за отведённое время";
+    }
+    else if (containsTechnicalText(error, "pipe is not available") ||
+             containsTechnicalText(error, "Cannot open DistKontrol pipe")) {
+        explanation = L"Приложение не смогло связаться со службой dkclient";
+    }
+    else if (containsTechnicalText(error, "VPN public IP mismatch")) {
+        explanation = L"VPN подключён, но фактический внешний IP не совпал с разрешённым";
+    }
+    else if (containsTechnicalText(error, "VPN public IP") ||
+             containsTechnicalText(error, "verification service")) {
+        explanation = L"Не удалось проверить внешний IP VPN";
+    }
+    else if (containsTechnicalText(error, "VPN local network routes were replaced")) {
+        explanation = L"VPN изменил маршруты локальной сети, поэтому подключение токена остановлено";
+    }
+    else if (containsTechnicalText(error, "VPN credentials are not configured")) {
+        explanation = L"Для VPN не сохранены логин и пароль";
+    }
+    else if (containsTechnicalText(error, "RAS error 691")) {
+        explanation = L"VPN-сервер отклонил логин или пароль";
+    }
+    else if (containsTechnicalText(error, "VPN Windows profile is not installed")) {
+        explanation = L"На компьютере отсутствует требуемый профиль VPN Windows";
+    }
+    else if (containsTechnicalText(error, "Device is not allowed by policy")) {
+        explanation = L"Токен не разрешён текущему пользователю в allow.json";
+    }
+    else if (containsTechnicalText(error, "The token is not connected by the current user")) {
+        explanation = L"Токен сейчас не подключён текущим пользователем";
+    }
+    else if (containsTechnicalText(error, "usage state") ||
+             containsTechnicalText(error, "Usage state")) {
+        explanation = L"Не удалось прочитать или обновить общий файл таймеров";
+    }
+    else {
+        explanation = L"Получена техническая ошибка";
+    }
+
+    return technical.empty() ? explanation : explanation + L" (технически: " + technical + L")";
+}
+
+class HumanOperationTrace {
+public:
+    explicit HumanOperationTrace(const wchar_t* prefix, const std::wstring& operationId = {})
+        : id_(operationId.empty() ? AuditLogger::createOperationId(prefix) : operationId),
+          startedAt_(GetTickCount64()) {
+    }
+
+    void step(const std::wstring& message) const {
+        AuditLogger::trace(id_, message + L" Прошло с начала операции: " +
+            std::to_wstring(elapsedMs()) + L" мс.");
+    }
+
+    ULONGLONG elapsedMs() const {
+        return GetTickCount64() - startedAt_;
+    }
+
+    const std::wstring& id() const {
+        return id_;
+    }
+
+private:
+    std::wstring id_;
+    ULONGLONG startedAt_ = 0;
+};
 
 std::wstring trimResponse(const std::wstring& text) {
     const size_t first = text.find_first_not_of(L" \t\r\n");
@@ -151,7 +254,8 @@ DeviceViewModel loadCurrentDevice(
 
 DeviceViewModel waitForDeviceAfterVpn(
     const PolicyManager& policy,
-    const DeviceViewModel& device) {
+    const DeviceViewModel& device,
+    const HumanOperationTrace& trace) {
     IpcClient ipc(policy.pipeName());
     const ULONGLONG startedAt = GetTickCount64();
     std::string lastError = "Device was not present in the DistKontrol catalog.";
@@ -160,8 +264,12 @@ DeviceViewModel waitForDeviceAfterVpn(
         ? std::wstring{}
         : device.endpoint.substr(0, separator);
 
+    int attempt = 0;
     while (GetTickCount64() - startedAt < kVpnDeviceRecoveryTimeoutMs) {
+        ++attempt;
         try {
+            trace.step(L"Проверяем, восстановился ли каталог DistKontrolUSB после изменения сети. Попытка " +
+                std::to_wstring(attempt) + L".");
             const std::wstring listResponse = ipc.issueCommand(L"LIST", kVpnRecoveryCommandTimeoutMs);
             throwIfCommandFailed(listResponse, "LIST");
             const std::vector<ParsedDevice> devices = DeviceParser::parseList(listResponse);
@@ -170,8 +278,12 @@ DeviceViewModel waitForDeviceAfterVpn(
             });
             if (found == devices.end()) {
                 lastError = "Device was not present in the DistKontrol catalog.";
+                trace.step(L"Каталог получен: устройств " + std::to_wstring(devices.size()) +
+                    L", но нужный endpoint пока отсутствует.");
             }
             else {
+                trace.step(L"Каталог получен: устройств " + std::to_wstring(devices.size()) +
+                    L", нужный endpoint найден.");
                 if (!serverName.empty()) {
                     const std::wstring serverResponse =
                         ipc.issueCommand(L"SERVER INFO," + serverName, kVpnRecoveryCommandTimeoutMs);
@@ -181,16 +293,19 @@ DeviceViewModel waitForDeviceAfterVpn(
                             "DistKontrol hub is not logged in after VPN connection. Response: " +
                             narrowAsciiForError(trimResponse(serverResponse)));
                     }
+                    trace.step(L"USB-концентратор снова авторизован в DistKontrolUSB.");
                 }
                 DeviceViewModel current = loadCurrentDevice(ipc, device, kVpnRecoveryCommandTimeoutMs);
                 if (!policy.isAllowed(toParsedDevice(current))) {
                     throw std::runtime_error("Device is no longer allowed by policy after VPN connection.");
                 }
+                trace.step(L"DEVICE INFO получен, доступ по политике подтверждён.");
                 return current;
             }
         }
         catch (const std::exception& error) {
             lastError = error.what();
+            trace.step(L"Каталог ещё не готов. " + humanErrorDescription(error.what()) + L".");
         }
         Sleep(kVpnDeviceRecoveryPollMs);
     }
@@ -285,14 +400,22 @@ std::vector<DeviceViewModel> DeviceAccessService::listAllDevicesForUser(
     return listDevices(true, userName, progress);
 }
 
-std::wstring DeviceAccessService::useDevice(const DeviceViewModel& device) const {
+std::wstring DeviceAccessService::useDevice(
+    const DeviceViewModel& device,
+    const std::wstring& operationId) const {
+    HumanOperationTrace trace(L"CONNECT", operationId);
+    trace.step(L"Пользователь запросил подключение токена «" + device.nickname +
+        L"», endpoint=" + device.endpoint + L".");
     try {
         AuditLogger::logDeviceAction(
             L"USE REQUEST",
             device,
             L"START",
-            L"User requested token connection. " + stateDetails(device));
+            L"operationId=" + trace.id() + L"; User requested token connection. " + stateDetails(device));
+        trace.step(L"Повторно запрашиваем DEVICE INFO и проверяем разрешение в allow.json.");
         DeviceViewModel verified = enrichAndVerify(device);
+        trace.step(L"Токен найден и разрешён текущему пользователю. Состояние: " +
+            verified.statusText + L".");
         AuditLogger::logDeviceAction(
             L"USE VERIFY",
             verified,
@@ -302,6 +425,8 @@ std::wstring DeviceAccessService::useDevice(const DeviceViewModel& device) const
         VpnProfile vpnProfile;
         const bool vpnRequired = policy.tryGetVpnProfileForDevice(toParsedDevice(verified), vpnProfile);
         if (vpnRequired) {
+            trace.step(L"Токену назначен VPN-профиль «" + vpnProfile.id + L"» (Windows: «" +
+                vpnProfile.name + L"»). Начинаем VPN-проверку.");
             AuditLogger::logDeviceAction(
                 L"VPN VERIFY",
                 verified,
@@ -309,7 +434,9 @@ std::wstring DeviceAccessService::useDevice(const DeviceViewModel& device) const
                 L"profileId=" + vpnProfile.id + L"; profileName=" + vpnProfile.name +
                     L"; server=" + vpnProfile.serverAddress);
             try {
-                const VpnVerificationResult vpn = VpnManager::connectAndVerify(vpnProfile);
+                const VpnVerificationResult vpn = VpnManager::connectAndVerify(
+                    vpnProfile,
+                    [&trace](const std::wstring& message) { trace.step(message); });
                 AuditLogger::logDeviceAction(
                     L"VPN VERIFY",
                     verified,
@@ -323,7 +450,7 @@ std::wstring DeviceAccessService::useDevice(const DeviceViewModel& device) const
                     verified,
                     L"START",
                     L"Waiting for dkclient to expose the token after the network route change.");
-                verified = waitForDeviceAfterVpn(policy, verified);
+                verified = waitForDeviceAfterVpn(policy, verified, trace);
                 AuditLogger::logDeviceAction(
                     L"VPN DEVICE RECOVERY",
                     verified,
@@ -331,6 +458,7 @@ std::wstring DeviceAccessService::useDevice(const DeviceViewModel& device) const
                     L"Token address is present in LIST and DEVICE INFO.");
             }
             catch (const std::exception& error) {
+                trace.step(L"Подключение остановлено на этапе VPN. " + humanErrorDescription(error.what()) + L".");
                 AuditLogger::logDeviceAction(
                     L"VPN VERIFY", verified, L"ERROR",
                     L"profileId=" + vpnProfile.id + L"; profileName=" + vpnProfile.name +
@@ -338,12 +466,16 @@ std::wstring DeviceAccessService::useDevice(const DeviceViewModel& device) const
                 throw;
             }
         }
+        else {
+            trace.step(L"Для токена VPN-профиль не назначен. Переходим сразу к DistKontrolUSB.");
+        }
         IpcClient ipc(policy.pipeName());
         std::wstring response;
         const int maximumAttempts = vpnRequired ? kVpnUseAttempts : 1;
         for (int attempt = 1; attempt <= maximumAttempts; ++attempt) {
             if (vpnRequired && attempt > 1) {
-                verified = waitForDeviceAfterVpn(policy, verified);
+                trace.step(L"Перед повторной командой USE ещё раз проверяем готовность каталога DistKontrolUSB.");
+                verified = waitForDeviceAfterVpn(policy, verified, trace);
                 const DeviceUsageInfo usage =
                     DeviceParser::parseUsage(verified.inUseBy, PolicyManager::currentUserName());
                 if (usage.isUsedByCurrentUser) {
@@ -353,6 +485,7 @@ std::wstring DeviceAccessService::useDevice(const DeviceViewModel& device) const
                         verified,
                         L"OK",
                         L"The previous USE attempt connected the token despite its failure response.");
+                    trace.step(L"Предыдущая команда USE фактически сработала: токен уже подключён текущим пользователем.");
                     break;
                 }
                 if (!usage.isFree) {
@@ -366,7 +499,13 @@ std::wstring DeviceAccessService::useDevice(const DeviceViewModel& device) const
                 L"START",
                 L"Sending USE command to pipe " + policy.pipeName() +
                     L"; attempt=" + std::to_wstring(attempt) + L"/" + std::to_wstring(maximumAttempts) + L".");
+            trace.step(L"Отправляем команду USE в службу dkclient. Попытка " +
+                std::to_wstring(attempt) + L" из " + std::to_wstring(maximumAttempts) + L".");
+            const ULONGLONG commandStartedAt = GetTickCount64();
             response = ipc.issueCommand(L"USE," + verified.endpoint, kUseCommandTimeoutMs);
+            trace.step(L"Служба dkclient ответила на USE за " +
+                std::to_wstring(GetTickCount64() - commandStartedAt) + L" мс: " +
+                (trimResponse(response).empty() ? L"пустой ответ" : trimResponse(response)) + L".");
             const bool retry = vpnRequired && attempt < maximumAttempts && isTransientUseFailureResponse(response);
             AuditLogger::logDeviceAction(
                 L"USE COMMAND",
@@ -380,16 +519,22 @@ std::wstring DeviceAccessService::useDevice(const DeviceViewModel& device) const
             if (!retry) {
                 throwIfCommandFailed(response, "USE");
             }
+            trace.step(L"Ответ временный; приложение повторит подключение автоматически без нового двойного клика.");
             Sleep(kVpnDeviceRecoveryPollMs);
         }
         throwIfCommandFailed(response, "USE");
         markDeviceUsedBestEffort(policy, verified);
+        trace.step(L"Токен подключён. Таймер использования записан, операция завершена успешно.");
         const std::wstring message = response.empty() ? L"Команда USE отправлена: " + verified.endpoint : response;
-        AuditLogger::logDeviceAction(L"USE", verified, L"OK", message);
+        AuditLogger::logDeviceAction(L"USE", verified, L"OK",
+            L"operationId=" + trace.id() + L"; elapsedMs=" + std::to_wstring(trace.elapsedMs()) + L"; " + message);
         return message;
     }
     catch (const std::exception& error) {
-        AuditLogger::logDeviceAction(L"USE", device, L"ERROR", widenAscii(error.what()));
+        trace.step(L"Подключение токена завершилось ошибкой. " + humanErrorDescription(error.what()) + L".");
+        AuditLogger::logDeviceAction(L"USE", device, L"ERROR",
+            L"operationId=" + trace.id() + L"; elapsedMs=" + std::to_wstring(trace.elapsedMs()) +
+                L"; technical=" + widenAscii(error.what()));
         throw;
     }
 }
@@ -432,7 +577,12 @@ std::wstring DeviceAccessService::stopUsingDevice(const DeviceViewModel& device)
     }
 }
 
-std::wstring DeviceAccessService::stopUsingOwnedDevice(const DeviceViewModel& device) const {
+std::wstring DeviceAccessService::stopUsingOwnedDevice(
+    const DeviceViewModel& device,
+    const std::wstring& operationId) const {
+    HumanOperationTrace trace(L"DISCONNECT", operationId);
+    trace.step(L"Пользователь запросил отключение токена «" + device.nickname +
+        L"», endpoint=" + device.endpoint + L".");
     try {
         PolicyManager policy;
         IpcClient ipc(policy.pipeName());
@@ -441,13 +591,18 @@ std::wstring DeviceAccessService::stopUsingOwnedDevice(const DeviceViewModel& de
             L"STOP OWN VERIFY",
             device,
             L"START",
-            L"Checking current token owner before release. " + stateDetails(device));
+            L"operationId=" + trace.id() + L"; Checking current token owner before release. " + stateDetails(device));
+        trace.step(L"Запрашиваем DEVICE INFO и проверяем, что токен подключён именно текущим пользователем.");
+        const ULONGLONG verifyStartedAt = GetTickCount64();
         const std::wstring infoResponse = ipc.issueCommand(L"DEVICE INFO," + current.endpoint);
         throwIfCommandFailed(infoResponse, "DEVICE INFO");
         DeviceParser::applyDeviceInfo(current, infoResponse);
         const DeviceUsageInfo usage = DeviceParser::parseUsage(current.inUseBy, PolicyManager::currentUserName());
         DeviceViewModel currentView = toViewModel(current, device.allowed);
         currentView.vpnProfileId = device.vpnProfileId;
+        trace.step(L"Владелец токена проверен за " +
+            std::to_wstring(GetTickCount64() - verifyStartedAt) + L" мс. Текущее состояние: " +
+            currentView.statusText + L".");
         AuditLogger::logDeviceAction(
             L"STOP OWN VERIFY",
             currentView,
@@ -463,7 +618,12 @@ std::wstring DeviceAccessService::stopUsingOwnedDevice(const DeviceViewModel& de
             verified,
             L"START",
             L"Sending STOP USING command to pipe " + policy.pipeName() + L".");
+        trace.step(L"Отправляем команду STOP USING в службу dkclient.");
+        const ULONGLONG commandStartedAt = GetTickCount64();
         const std::wstring response = ipc.issueCommand(L"STOP USING," + verified.endpoint);
+        trace.step(L"Служба dkclient ответила на STOP USING за " +
+            std::to_wstring(GetTickCount64() - commandStartedAt) + L" мс: " +
+            (trimResponse(response).empty() ? L"пустой ответ" : trimResponse(response)) + L".");
         AuditLogger::logDeviceAction(
             L"STOP OWN COMMAND",
             verified,
@@ -471,14 +631,19 @@ std::wstring DeviceAccessService::stopUsingOwnedDevice(const DeviceViewModel& de
             responseDetails(response));
         throwIfCommandFailed(response, "STOP USING");
         markDeviceReleasedBestEffort(policy, verified);
+        trace.step(L"Токен освобождён, запись общего таймера удалена. Операция завершена успешно.");
         const std::wstring message = response.empty()
             ? L"Команда STOP USING отправлена: " + verified.endpoint
             : response;
-        AuditLogger::logDeviceAction(L"STOP USING OWN", verified, L"OK", message);
+        AuditLogger::logDeviceAction(L"STOP USING OWN", verified, L"OK",
+            L"operationId=" + trace.id() + L"; elapsedMs=" + std::to_wstring(trace.elapsedMs()) + L"; " + message);
         return message;
     }
     catch (const std::exception& error) {
-        AuditLogger::logDeviceAction(L"STOP USING OWN", device, L"ERROR", widenAscii(error.what()));
+        trace.step(L"Отключение токена завершилось ошибкой. " + humanErrorDescription(error.what()) + L".");
+        AuditLogger::logDeviceAction(L"STOP USING OWN", device, L"ERROR",
+            L"operationId=" + trace.id() + L"; elapsedMs=" + std::to_wstring(trace.elapsedMs()) +
+                L"; technical=" + widenAscii(error.what()));
         throw;
     }
 }
@@ -664,13 +829,23 @@ std::vector<DeviceViewModel> DeviceAccessService::listDevices(
     bool includeDenied,
     const std::wstring& policyUser,
     const DeviceListProgressCallback& progress) const {
+    HumanOperationTrace trace(L"REFRESH");
+    trace.step(includeDenied
+        ? L"Начато обновление полного списка токенов для админской утилиты."
+        : L"Начато обновление разрешённого списка токенов пользователя.");
     try {
         PolicyManager policy;
         IpcClient ipc(policy.pipeName());
         UsageStateStore usageState(policy.usageStatePath());
+        trace.step(L"Конфигурация прочитана. Pipe=" + policy.pipeName() +
+            L", файл таймеров=" + policy.usageStatePath() + L".");
+        const ULONGLONG listStartedAt = GetTickCount64();
+        trace.step(L"Отправляем команду LIST в службу dkclient.");
         const std::wstring listResponse = ipc.issueCommand(L"LIST");
         throwIfCommandFailed(listResponse, "LIST");
         std::vector<ParsedDevice> devices = DeviceParser::parseList(listResponse);
+        trace.step(L"LIST получен за " + std::to_wstring(GetTickCount64() - listStartedAt) +
+            L" мс. Распознано устройств: " + std::to_wstring(devices.size()) + L".");
         if (devices.empty()) {
             throw std::runtime_error("DistKontrol device catalog is temporarily empty.");
         }
@@ -687,15 +862,20 @@ std::vector<DeviceViewModel> DeviceAccessService::listDevices(
         std::vector<UsageStateRecord> usageRecords;
         try {
             usageRecords = usageState.snapshot();
+            trace.step(L"Общий файл таймеров прочитан. Активных записей: " +
+                std::to_wstring(usageRecords.size()) + L".");
         }
         catch (const std::exception& error) {
             logUsageStateWarning(error.what());
+            trace.step(L"Не удалось прочитать общий файл таймеров. Список продолжит загружаться. " +
+                humanErrorDescription(error.what()) + L".");
         }
 
         constexpr DWORD deviceInfoTimeoutMs = 750;
         constexpr ULONGLONG enrichmentBudgetMs = 15ULL * 1000ULL;
         const ULONGLONG enrichmentStartedAt = GetTickCount64();
         bool enrichmentBudgetWarningLogged = false;
+        size_t deviceInfoWarnings = 0;
 
         size_t processed = 0;
         for (ParsedDevice& device : devices) {
@@ -709,6 +889,7 @@ std::vector<DeviceViewModel> DeviceAccessService::listDevices(
                     deviceInfoLoaded = true;
                 }
                 catch (const std::exception& error) {
+                    ++deviceInfoWarnings;
                     AuditLogger::logDeviceAction(L"DEVICE INFO", toViewModel(device, true), L"WARNING", widenAscii(error.what()));
                 }
             }
@@ -743,6 +924,11 @@ std::vector<DeviceViewModel> DeviceAccessService::listDevices(
                 result.push_back(std::move(view));
             }
             ++processed;
+            if (processed == devices.size() || processed % 10 == 0) {
+                trace.step(L"Обработано DEVICE INFO: " + std::to_wstring(processed) + L" из " +
+                    std::to_wstring(devices.size()) + L"; предупреждений: " +
+                    std::to_wstring(deviceInfoWarnings) + L".");
+            }
             if (progress) {
                 progress(processed, devices.size());
             }
@@ -751,16 +937,21 @@ std::vector<DeviceViewModel> DeviceAccessService::listDevices(
         AuditEvent event;
         event.action = includeDenied ? L"LIST DIAGNOSTICS" : L"LIST";
         event.result = L"OK";
-        event.details = L"visible=" + std::to_wstring(result.size()) + L", total=" + std::to_wstring(devices.size());
+        event.details = L"operationId=" + trace.id() + L"; elapsedMs=" + std::to_wstring(trace.elapsedMs()) +
+            L"; visible=" + std::to_wstring(result.size()) + L", total=" + std::to_wstring(devices.size());
         AuditLogger::log(event);
+        trace.step(L"Обновление списка завершено успешно. Показано токенов: " +
+            std::to_wstring(result.size()) + L" из " + std::to_wstring(devices.size()) + L".");
         return result;
     }
     catch (const std::exception& error) {
         AuditEvent event;
         event.action = includeDenied ? L"LIST DIAGNOSTICS" : L"LIST";
         event.result = L"ERROR";
-        event.details = widenAscii(error.what());
+        event.details = L"operationId=" + trace.id() + L"; elapsedMs=" + std::to_wstring(trace.elapsedMs()) +
+            L"; technical=" + widenAscii(error.what());
         AuditLogger::log(event);
+        trace.step(L"Обновление списка завершилось ошибкой. " + humanErrorDescription(error.what()) + L".");
         throw;
     }
 }

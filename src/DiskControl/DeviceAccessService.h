@@ -28,9 +28,13 @@ public:
     std::vector<DeviceViewModel> listAllDevicesForUser(
         const std::wstring& userName,
         const DeviceListProgressCallback& progress = {}) const;
-    std::wstring useDevice(const DeviceViewModel& device) const;
+    std::wstring useDevice(
+        const DeviceViewModel& device,
+        const std::wstring& operationId = {}) const;
     std::wstring stopUsingDevice(const DeviceViewModel& device) const;
-    std::wstring stopUsingOwnedDevice(const DeviceViewModel& device) const;
+    std::wstring stopUsingOwnedDevice(
+        const DeviceViewModel& device,
+        const std::wstring& operationId = {}) const;
     void refreshUsageTimer(const DeviceViewModel& device) const;
     std::wstring verifyVpnForDevice(const DeviceViewModel& device) const;
     std::wstring assignDeviceToCurrentUser(const DeviceViewModel& device) const;

@@ -764,6 +764,11 @@ void testAuditCsvEscaping() {
     require(AuditLogger::csvEscapeForTest(L"plain") == "plain", "Plain CSV value should not be quoted.");
     require(AuditLogger::csvEscapeForTest(L"a,b") == "\"a,b\"", "Comma CSV value should be quoted.");
     require(AuditLogger::csvEscapeForTest(L"a\"b") == "\"a\"\"b\"", "Quote CSV value should be escaped.");
+
+    const std::wstring firstOperation = AuditLogger::createOperationId(L"TEST");
+    const std::wstring secondOperation = AuditLogger::createOperationId(L"TEST");
+    require(firstOperation.rfind(L"TEST-", 0) == 0, "Operation ID should contain the requested prefix.");
+    require(firstOperation != secondOperation, "Operation IDs should be unique within the process.");
 }
 
 void testAssignDeviceToUser() {

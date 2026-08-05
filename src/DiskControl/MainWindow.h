@@ -119,6 +119,7 @@ private:
     std::wstring pendingTokenActionStatus_;
     std::wstring pendingTokenActionError_;
     std::wstring pendingTokenActionEndpoint_;
+    std::wstring pendingTokenActionOperationId_;
     bool pendingComputerPolicyRepaired_ = false;
     bool pendingTokenActionConnect_ = false;
     bool pendingTokenActionVpnError_ = false;

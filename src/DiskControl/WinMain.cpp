@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include "AuditLogger.h"
 #include "PolicyManager.h"
 
 #include <shellapi.h>
@@ -191,19 +192,32 @@ CommandLineOptions parseCommandLine() {
 }
 
 int runApplication(HINSTANCE instance, int showCommand) {
+    const std::wstring startupOperation = AuditLogger::createOperationId(L"APP");
+    AuditLogger::trace(startupOperation,
+        std::wstring(L"Запуск приложения «") + kAppTitle + L"». Командная строка: " + GetCommandLineW());
     const CommandLineOptions options = parseCommandLine();
     if (!options.policyPath.empty()) {
         PolicyManager::setConfigPathOverride(options.policyPath);
+        AuditLogger::trace(startupOperation,
+            L"Используется явно указанный файл конфигурации: " + options.policyPath + L".");
+    }
+    else {
+        AuditLogger::trace(startupOperation,
+            L"Используется основной файл конфигурации из C:\\ProgramData\\DiskControl\\allow.json.");
     }
 
     appendStartupLog(std::wstring(kAppTitle) + L" start. CommandLine=" + GetCommandLineW());
 
     MainWindow window;
     if (!window.create(instance, showCommand)) {
+        AuditLogger::trace(startupOperation,
+            L"Главное окно создать не удалось. GetLastError=" + std::to_wstring(GetLastError()) + L".");
         const std::wstring logPath = appendStartupLog(std::wstring(kAppTitle) + L" failed to create main window. GetLastError=" + std::to_wstring(GetLastError()));
         showFatalError(L"Не удалось открыть окно DiskControl. Перезапустите приложение, а если ошибка повторится, отправьте администратору файл журнала.", logPath);
         return 1;
     }
+    AuditLogger::trace(startupOperation,
+        L"Главное окно создано. Запущена первичная загрузка списка токенов.");
 
     MSG message{};
     while (GetMessageW(&message, nullptr, 0, 0) > 0) {
@@ -211,7 +225,10 @@ int runApplication(HINSTANCE instance, int showCommand) {
         DispatchMessageW(&message);
     }
 
-    return static_cast<int>(message.wParam);
+    const int exitCode = static_cast<int>(message.wParam);
+    AuditLogger::trace(startupOperation,
+        L"Приложение завершает работу. Код выхода: " + std::to_wstring(exitCode) + L".");
+    return exitCode;
 }
 }
 
