@@ -2,12 +2,14 @@
 
 #include "PolicyManager.h"
 
+#include <cstddef>
 #include <string>
 
 struct VpnVerificationResult {
     std::wstring profileName;
     std::wstring publicIp;
     bool alreadyConnected = false;
+    size_t preservedLocalRouteCount = 0;
 };
 
 class VpnManager {
@@ -19,6 +21,7 @@ public:
         const std::wstring& userName,
         const std::wstring& password);
     static bool isConnected(const std::wstring& profileName);
+    static size_t localPhysicalRouteCount();
     static VpnVerificationResult connectAndVerify(const VpnProfile& profile);
     static VpnVerificationResult verifyConnected(const VpnProfile& profile);
 

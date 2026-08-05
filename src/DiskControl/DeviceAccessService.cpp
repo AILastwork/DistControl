@@ -227,6 +227,7 @@ std::wstring DeviceAccessService::useDevice(const DeviceViewModel& device) const
                     L"OK",
                     L"profileId=" + vpnProfile.id + L"; profileName=" + vpn.profileName +
                         L"; publicIp=" + vpn.publicIp +
+                        L"; preservedLocalRoutes=" + std::to_wstring(vpn.preservedLocalRouteCount) +
                         L"; alreadyConnected=" + (vpn.alreadyConnected ? L"true" : L"false"));
             }
             catch (const std::exception& error) {
@@ -439,7 +440,8 @@ std::wstring DeviceAccessService::verifyVpnForDevice(const DeviceViewModel& devi
         AuditLogger::logDeviceAction(
             L"VPN WATCHDOG", device, L"OK",
             L"profileId=" + profile.id + L"; profileName=" + profile.name +
-                L"; publicIp=" + result.publicIp);
+                L"; publicIp=" + result.publicIp +
+                L"; preservedLocalRoutes=" + std::to_wstring(result.preservedLocalRouteCount));
         return result.publicIp;
     }
     catch (const std::exception& error) {

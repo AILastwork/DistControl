@@ -4,6 +4,7 @@
 #include "IpcClient.h"
 #include "PolicyManager.h"
 #include "UsageStateStore.h"
+#include "VpnManager.h"
 
 #include <windows.h>
 
@@ -791,20 +792,26 @@ void testVpnPolicyRoundTrip() {
             << "  \"vpnProfiles\": [\n"
             << "    {\"id\": \"salut\", \"name\": \"Salut\", \"serverAddress\": \"89.108.64.96\", "
             << "\"tunnelType\": \"L2TP\", \"expectedPublicIps\": [\"89.108.64.96\"], "
+            << "\"ipCheckUrl\": \"https://api.ipify.org\", \"fullTunnel\": true, \"enabled\": true},\n"
+            << "    {\"id\": \"backup\", \"name\": \"Backup VPN\", \"serverAddress\": \"203.0.113.20\", "
+            << "\"tunnelType\": \"L2TP\", \"expectedPublicIps\": [\"203.0.113.21\"], "
             << "\"ipCheckUrl\": \"https://api.ipify.org\", \"fullTunnel\": true, \"enabled\": true}\n"
             << "  ],\n"
             << "  \"userAssignments\": [\n"
             << "    {\"users\": [\"" << narrowAscii(PolicyManager::currentUserSid()) << "\"], \"groups\": [], "
             << "\"allowedDevices\": [{\"endpoint\": \"OFFICE-HUB-Gr-1.3\", \"nickname\": \"VPN Key\", "
-            << "\"product\": \"Rutoken\", \"vpnProfile\": \"salut\"}]}\n"
+            << "\"product\": \"Rutoken\", \"vpnProfile\": \"salut\"}, "
+            << "{\"endpoint\": \"OFFICE-HUB-Gr-2.4\", \"nickname\": \"Backup Key\", "
+            << "\"product\": \"Rutoken\", \"vpnProfile\": \"backup\"}]}\n"
             << "  ]\n"
             << "}\n";
     }
 
     ParsedDevice device{ L"OFFICE-HUB-Gr-1.3", L"VPN Key", L"Rutoken", L"NO ONE" };
+    ParsedDevice backupDevice{ L"OFFICE-HUB-Gr-2.4", L"Backup Key", L"Rutoken", L"NO ONE" };
     {
         PolicyManager policy(L"policy-vpn-test.json");
-        require(policy.vpnProfiles().size() == 1, "VPN profile should be parsed.");
+        require(policy.vpnProfiles().size() == 2, "Multiple VPN profiles should be parsed.");
         const VpnProfile& profile = policy.vpnProfiles()[0];
         require(profile.id == L"salut" && profile.name == L"Salut", "VPN profile identity mismatch.");
         require(profile.serverAddress == L"89.108.64.96", "VPN server should be parsed.");
@@ -815,8 +822,11 @@ void testVpnPolicyRoundTrip() {
         VpnProfile matched;
         require(policy.tryGetVpnProfileForDevice(device, matched), "Token should resolve its VPN profile.");
         require(matched.id == L"salut", "Resolved VPN profile mismatch.");
+        require(policy.tryGetVpnProfileForDevice(backupDevice, matched),
+            "A second token should resolve its independent VPN profile.");
+        require(matched.id == L"backup", "Second VPN profile mapping mismatch.");
 
-        policy.setDevicesForUser({ device }, PolicyManager::currentUserSid());
+        policy.setDevicesForUser({ device, backupDevice }, PolicyManager::currentUserSid());
     }
 
     {
@@ -833,7 +843,7 @@ void testVpnPolicyRoundTrip() {
 
     {
         PolicyManager policy(L"policy-vpn-test.json");
-        require(policy.vpnProfiles().size() == 1 &&
+        require(policy.vpnProfiles().size() == 2 &&
             policy.vpnProfiles()[0].expectedPublicIps.size() == 2,
             "Updated VPN profile should be written.");
         require(!policy.vpnProfiles()[0].fullTunnel, "Updated VPN Boolean should be written.");
@@ -843,9 +853,12 @@ void testVpnPolicyRoundTrip() {
     {
         PolicyManager policy(L"policy-vpn-test.json");
         VpnProfile matched;
-        require(policy.vpnProfiles().empty(), "Removed VPN profile should not remain in policy.");
+        require(policy.vpnProfiles().size() == 1 && policy.vpnProfiles()[0].id == L"backup",
+            "Removing one VPN profile must preserve other profiles.");
         require(!policy.tryGetVpnProfileForDevice(device, matched),
             "Removing a VPN profile must remove token references to it.");
+        require(policy.tryGetVpnProfileForDevice(backupDevice, matched) && matched.id == L"backup",
+            "Removing one VPN profile must preserve other token mappings.");
     }
 
     std::remove(fileName);
@@ -879,6 +892,11 @@ void testUnknownVpnMappingFailsClosed() {
     require(rejected, "A token mapped to a missing VPN profile must fail closed.");
     std::remove(fileName);
 }
+
+void testLocalRouteInspection() {
+    const size_t routeCount = VpnManager::localPhysicalRouteCount();
+    (void)routeCount;
+}
 }
 
 int main() {
@@ -902,6 +920,7 @@ int main() {
         testPolicyUsageStatePath();
         testVpnPolicyRoundTrip();
         testUnknownVpnMappingFailsClosed();
+        testLocalRouteInspection();
         std::cout << "All DiskControl C++ tests passed.\n";
         return 0;
     }

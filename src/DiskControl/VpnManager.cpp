@@ -1,13 +1,26 @@
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0601
+#endif
+
+#ifndef WINVER
+#define WINVER 0x0601
+#endif
+
 #include "VpnManager.h"
 
 #include <winsock2.h>
+#include <ws2ipdef.h>
 #include <windows.h>
+#include <iphlpapi.h>
 #include <ras.h>
 #include <raserror.h>
 #include <winhttp.h>
 #include <ws2tcpip.h>
 
 #include <array>
+#include <map>
+#include <mutex>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -17,6 +30,9 @@ constexpr DWORD kHttpConnectTimeoutMs = 5000;
 constexpr DWORD kHttpOperationTimeoutMs = 8000;
 constexpr size_t kMaximumPublicIpResponseBytes = 256;
 constexpr int kPublicIpAttempts = 3;
+
+std::mutex gLocalRouteMutex;
+std::map<std::wstring, std::set<std::wstring>> gLocalRouteBaselines;
 
 bool equalsIgnoreCase(const std::wstring& left, const std::wstring& right) {
     return CompareStringOrdinal(
@@ -93,6 +109,20 @@ std::vector<RASCONNW> activeConnections() {
     return connections;
 }
 
+DWORD hangUpProfileConnections(const std::wstring& profileName) {
+    DWORD firstError = ERROR_SUCCESS;
+    for (const RASCONNW& connection : activeConnections()) {
+        if (!equalsIgnoreCase(connection.szEntryName, profileName)) {
+            continue;
+        }
+        const DWORD error = RasHangUpW(connection.hrasconn);
+        if (firstError == ERROR_SUCCESS && error != ERROR_SUCCESS) {
+            firstError = error;
+        }
+    }
+    return firstError;
+}
+
 bool isValidIpAddress(const std::wstring& value) {
     IN_ADDR ipv4{};
     if (InetPtonW(AF_INET, value.c_str(), &ipv4) == 1) {
@@ -109,6 +139,112 @@ bool isExpectedPublicIp(const std::wstring& actual, const std::vector<std::wstri
         }
     }
     return false;
+}
+
+bool isLocalIpv4Address(const IN_ADDR& address) {
+    const ULONG value = ntohl(address.S_un.S_addr);
+    return (value & 0xFF000000UL) == 0x0A000000UL ||
+        (value & 0xFFF00000UL) == 0xAC100000UL ||
+        (value & 0xFFFF0000UL) == 0xC0A80000UL ||
+        (value & 0xFFFF0000UL) == 0xA9FE0000UL;
+}
+
+std::wstring ipv4Text(const IN_ADDR& address) {
+    wchar_t text[INET_ADDRSTRLEN]{};
+    if (!InetNtopW(AF_INET, &address, text, static_cast<DWORD>(std::size(text)))) {
+        throw std::runtime_error("VPN local network route address could not be formatted.");
+    }
+    return text;
+}
+
+std::set<std::wstring> captureLocalPhysicalRoutes() {
+    PMIB_IPFORWARD_TABLE2 table = nullptr;
+    const DWORD error = GetIpForwardTable2(AF_INET, &table);
+    if (error != NO_ERROR) {
+        throw std::runtime_error(
+            "VPN local network route enumeration failed. Windows error " + std::to_string(error) + ".");
+    }
+
+    std::set<std::wstring> routes;
+    try {
+        for (ULONG index = 0; index < table->NumEntries; ++index) {
+            const MIB_IPFORWARD_ROW2& route = table->Table[index];
+            if (route.DestinationPrefix.Prefix.si_family != AF_INET ||
+                route.DestinationPrefix.PrefixLength == 0 ||
+                !isLocalIpv4Address(route.DestinationPrefix.Prefix.Ipv4.sin_addr)) {
+                continue;
+            }
+
+            MIB_IF_ROW2 interfaceRow{};
+            interfaceRow.InterfaceLuid = route.InterfaceLuid;
+            if (GetIfEntry2(&interfaceRow) != NO_ERROR ||
+                !interfaceRow.InterfaceAndOperStatusFlags.HardwareInterface ||
+                interfaceRow.OperStatus != IfOperStatusUp) {
+                continue;
+            }
+
+            routes.insert(
+                ipv4Text(route.DestinationPrefix.Prefix.Ipv4.sin_addr) + L"/" +
+                std::to_wstring(route.DestinationPrefix.PrefixLength) + L"@" +
+                std::to_wstring(route.InterfaceLuid.Value));
+        }
+    }
+    catch (...) {
+        FreeMibTable(table);
+        throw;
+    }
+    FreeMibTable(table);
+    return routes;
+}
+
+void rememberLocalRouteBaseline(
+    const std::wstring& profileName,
+    const std::set<std::wstring>& routes,
+    bool replaceExisting) {
+    std::lock_guard<std::mutex> lock(gLocalRouteMutex);
+    auto found = gLocalRouteBaselines.find(profileName);
+    if (found == gLocalRouteBaselines.end() || replaceExisting) {
+        gLocalRouteBaselines[profileName] = routes;
+    }
+}
+
+size_t verifyLocalRoutePreservation(const std::wstring& profileName) {
+    const std::set<std::wstring> currentRoutes = captureLocalPhysicalRoutes();
+    std::set<std::wstring> baseline;
+    {
+        std::lock_guard<std::mutex> lock(gLocalRouteMutex);
+        auto found = gLocalRouteBaselines.find(profileName);
+        if (found == gLocalRouteBaselines.end()) {
+            gLocalRouteBaselines.emplace(profileName, currentRoutes);
+            baseline = currentRoutes;
+        }
+        else {
+            baseline = found->second;
+        }
+    }
+
+    std::vector<std::wstring> missing;
+    for (const std::wstring& route : baseline) {
+        if (currentRoutes.find(route) == currentRoutes.end()) {
+            missing.push_back(route);
+        }
+    }
+    if (!missing.empty()) {
+        std::wstring details;
+        for (const std::wstring& route : missing) {
+            if (!details.empty()) {
+                details += L", ";
+            }
+            details += route;
+        }
+        const DWORD disconnectError = hangUpProfileConnections(profileName);
+        if (disconnectError != ERROR_SUCCESS) {
+            details += L"; disconnectError=" + std::to_wstring(disconnectError);
+        }
+        throw std::runtime_error(
+            "VPN local network routes were replaced. Missing=" + narrowAscii(details) + ".");
+    }
+    return baseline.size();
 }
 
 std::wstring expectedIpsText(const std::vector<std::wstring>& values) {
@@ -215,6 +351,10 @@ bool VpnManager::isConnected(const std::wstring& profileName) {
     return false;
 }
 
+size_t VpnManager::localPhysicalRouteCount() {
+    return captureLocalPhysicalRoutes().size();
+}
+
 VpnVerificationResult VpnManager::connectAndVerify(const VpnProfile& profile) {
     if (!profile.enabled) {
         throw std::runtime_error("VPN profile is disabled by policy.");
@@ -232,7 +372,10 @@ VpnVerificationResult VpnManager::connectAndVerify(const VpnProfile& profile) {
     VpnVerificationResult result;
     result.profileName = profile.name;
     result.alreadyConnected = isConnected(profile.name);
+    const std::set<std::wstring> localRoutesBefore = captureLocalPhysicalRoutes();
+    rememberLocalRouteBaseline(profile.name, localRoutesBefore, !result.alreadyConnected);
 
+    HRASCONN openedConnection = nullptr;
     if (!result.alreadyConnected) {
         RASCREDENTIALSW credentials{};
         credentials.dwSize = sizeof(credentials);
@@ -258,20 +401,27 @@ VpnVerificationResult VpnManager::connectAndVerify(const VpnProfile& profile) {
         }
         SecureZeroMemory(credentials.szPassword, sizeof(credentials.szPassword));
 
-        HRASCONN connection = nullptr;
-        error = RasDialW(nullptr, nullptr, &parameters, 0, nullptr, &connection);
+        error = RasDialW(nullptr, nullptr, &parameters, 0, nullptr, &openedConnection);
         SecureZeroMemory(parameters.szPassword, sizeof(parameters.szPassword));
         if (error != ERROR_SUCCESS) {
-            if (connection) {
-                RasHangUpW(connection);
+            if (openedConnection) {
+                RasHangUpW(openedConnection);
             }
             throw rasError("VPN connection", error);
         }
     }
 
-    VpnVerificationResult verified = verifyConnected(profile);
-    verified.alreadyConnected = result.alreadyConnected;
-    return verified;
+    try {
+        VpnVerificationResult verified = verifyConnected(profile);
+        verified.alreadyConnected = result.alreadyConnected;
+        return verified;
+    }
+    catch (...) {
+        if (openedConnection) {
+            RasHangUpW(openedConnection);
+        }
+        throw;
+    }
 }
 
 VpnVerificationResult VpnManager::verifyConnected(const VpnProfile& profile) {
@@ -294,6 +444,7 @@ VpnVerificationResult VpnManager::verifyConnected(const VpnProfile& profile) {
     VpnVerificationResult result;
     result.profileName = profile.name;
     result.alreadyConnected = true;
+    result.preservedLocalRouteCount = verifyLocalRoutePreservation(profile.name);
     std::runtime_error lastError("VPN public IP check failed.");
     for (int attempt = 0; attempt < kPublicIpAttempts; ++attempt) {
         try {

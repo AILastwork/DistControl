@@ -101,6 +101,9 @@ std::wstring userFriendlyErrorMessage(const char* error) {
     if (containsAscii(error, "VPN public IP") || containsAscii(error, "verification service")) {
         return L"Не удалось безопасно проверить внешний IP после подключения VPN. Токен не подключён; проверьте интернет и VPN.";
     }
+    if (containsAscii(error, "VPN local network routes were replaced")) {
+        return L"VPN изменил маршруты локальной сети. Токен не подключён, VPN-сеанс остановлен, чтобы сохранить доступ к локальным ресурсам.";
+    }
     if (containsAscii(error, "VPN connection") || containsAscii(error, "VPN credential")) {
         return L"Не удалось подключить VPN. Проверьте профиль Windows, логин, пароль и доступность VPN-сервера.";
     }
@@ -966,7 +969,11 @@ std::wstring usageSuffix(const DeviceViewModel& device) {
 }
 
 std::wstring treeDeviceText(const DeviceViewModel& device) {
-    return displayDeviceName(device) + usageSuffix(device);
+    std::wstring text = displayDeviceName(device);
+    if (!device.vpnProfileId.empty()) {
+        text += L" [VPN: " + device.vpnProfileId + L"]";
+    }
+    return text + usageSuffix(device);
 }
 
 int treeImageIndexForDevice(const DeviceViewModel& device) {
