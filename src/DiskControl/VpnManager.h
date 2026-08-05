@@ -20,6 +20,9 @@ public:
         const std::wstring& profileName,
         const std::wstring& userName,
         const std::wstring& password);
+    static void installOrUpdateProfile(
+        const VpnProfile& profile,
+        const std::wstring& preSharedKey);
     static bool isConnected(const std::wstring& profileName);
     static size_t localPhysicalRouteCount();
     static VpnVerificationResult connectAndVerify(const VpnProfile& profile);

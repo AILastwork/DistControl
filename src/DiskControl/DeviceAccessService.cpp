@@ -269,16 +269,20 @@ std::wstring vpnProfileIdForDevice(const ParsedDevice& device, const std::vector
 }
 }
 
-std::vector<DeviceViewModel> DeviceAccessService::listVisibleDevices() const {
-    return listDevices(false, L"");
+std::vector<DeviceViewModel> DeviceAccessService::listVisibleDevices(
+    const DeviceListProgressCallback& progress) const {
+    return listDevices(false, L"", progress);
 }
 
-std::vector<DeviceViewModel> DeviceAccessService::listAllDevices() const {
-    return listDevices(true, L"");
+std::vector<DeviceViewModel> DeviceAccessService::listAllDevices(
+    const DeviceListProgressCallback& progress) const {
+    return listDevices(true, L"", progress);
 }
 
-std::vector<DeviceViewModel> DeviceAccessService::listAllDevicesForUser(const std::wstring& userName) const {
-    return listDevices(true, userName);
+std::vector<DeviceViewModel> DeviceAccessService::listAllDevicesForUser(
+    const std::wstring& userName,
+    const DeviceListProgressCallback& progress) const {
+    return listDevices(true, userName, progress);
 }
 
 std::wstring DeviceAccessService::useDevice(const DeviceViewModel& device) const {
@@ -615,6 +619,18 @@ void DeviceAccessService::upsertVpnProfile(const VpnProfile& profile) const {
     AuditLogger::log(event);
 }
 
+void DeviceAccessService::installOrUpdateWindowsVpnProfile(
+    const VpnProfile& profile,
+    const std::wstring& preSharedKey) const {
+    VpnManager::installOrUpdateProfile(profile, preSharedKey);
+    AuditEvent event;
+    event.action = L"INSTALL VPN PROFILE";
+    event.result = L"OK";
+    event.details = L"id=" + profile.id + L"; name=" + profile.name +
+        L"; server=" + profile.serverAddress + L"; psk=<not logged>";
+    AuditLogger::log(event);
+}
+
 void DeviceAccessService::removeVpnProfile(const std::wstring& profileId) const {
     PolicyManager policy;
     policy.removeVpnProfile(profileId);
@@ -644,7 +660,10 @@ std::wstring DeviceAccessService::currentPolicyPath() const {
     return policy.configPath();
 }
 
-std::vector<DeviceViewModel> DeviceAccessService::listDevices(bool includeDenied, const std::wstring& policyUser) const {
+std::vector<DeviceViewModel> DeviceAccessService::listDevices(
+    bool includeDenied,
+    const std::wstring& policyUser,
+    const DeviceListProgressCallback& progress) const {
     try {
         PolicyManager policy;
         IpcClient ipc(policy.pipeName());
@@ -654,6 +673,9 @@ std::vector<DeviceViewModel> DeviceAccessService::listDevices(bool includeDenied
         std::vector<ParsedDevice> devices = DeviceParser::parseList(listResponse);
         if (devices.empty()) {
             throw std::runtime_error("DistKontrol device catalog is temporarily empty.");
+        }
+        if (progress) {
+            progress(0, devices.size());
         }
         std::vector<DeviceViewModel> result;
         const std::vector<DeviceRule> policyUserRules = policyUser.empty()
@@ -675,6 +697,7 @@ std::vector<DeviceViewModel> DeviceAccessService::listDevices(bool includeDenied
         const ULONGLONG enrichmentStartedAt = GetTickCount64();
         bool enrichmentBudgetWarningLogged = false;
 
+        size_t processed = 0;
         for (ParsedDevice& device : devices) {
             bool deviceInfoLoaded = false;
             if (GetTickCount64() - enrichmentStartedAt < enrichmentBudgetMs) {
@@ -718,6 +741,10 @@ std::vector<DeviceViewModel> DeviceAccessService::listDevices(bool includeDenied
                 DeviceViewModel view = toViewModel(device, allowed, usageStartedAt);
                 view.vpnProfileId = vpnProfileIdForDevice(device, activeRules);
                 result.push_back(std::move(view));
+            }
+            ++processed;
+            if (progress) {
+                progress(processed, devices.size());
             }
         }
 

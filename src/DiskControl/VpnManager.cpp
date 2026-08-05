@@ -14,6 +14,7 @@
 #include <iphlpapi.h>
 #include <ras.h>
 #include <raserror.h>
+#include <shlobj.h>
 #include <winhttp.h>
 #include <ws2tcpip.h>
 
@@ -88,6 +89,49 @@ void copyRasText(wchar_t* destination, size_t capacity, const std::wstring& sour
         throw std::runtime_error("VPN profile or credential value is too long for Windows RAS.");
     }
     wcscpy_s(destination, capacity, source.c_str());
+}
+
+std::wstring allUsersPhonebookPath() {
+    wchar_t commonAppData[MAX_PATH]{};
+    const HRESULT result = SHGetFolderPathW(
+        nullptr, CSIDL_COMMON_APPDATA, nullptr, SHGFP_TYPE_CURRENT, commonAppData);
+    if (FAILED(result)) {
+        throw std::runtime_error("Cannot locate the all-users Windows VPN phonebook.");
+    }
+    return std::wstring(commonAppData) + L"\\Microsoft\\Network\\Connections\\Pbk\\rasphone.pbk";
+}
+
+std::wstring l2tpDeviceName() {
+    DWORD bytes = sizeof(RASDEVINFOW);
+    DWORD count = 0;
+    std::vector<RASDEVINFOW> devices(1);
+    devices[0].dwSize = sizeof(RASDEVINFOW);
+    DWORD error = RasEnumDevicesW(devices.data(), &bytes, &count);
+    if (error == ERROR_BUFFER_TOO_SMALL) {
+        devices.resize((bytes + sizeof(RASDEVINFOW) - 1) / sizeof(RASDEVINFOW));
+        devices[0].dwSize = sizeof(RASDEVINFOW);
+        error = RasEnumDevicesW(devices.data(), &bytes, &count);
+    }
+    if (error != ERROR_SUCCESS) {
+        throw rasError("VPN device enumeration", error);
+    }
+
+    std::wstring fallback;
+    for (DWORD index = 0; index < count; ++index) {
+        if (!equalsIgnoreCase(devices[index].szDeviceType, RASDT_Vpn)) {
+            continue;
+        }
+        if (fallback.empty()) {
+            fallback = devices[index].szDeviceName;
+        }
+        if (FindStringOrdinal(FIND_FROMSTART, devices[index].szDeviceName, -1, L"L2TP", -1, TRUE) >= 0) {
+            return devices[index].szDeviceName;
+        }
+    }
+    if (!fallback.empty()) {
+        return fallback;
+    }
+    throw std::runtime_error("Windows L2TP VPN device was not found.");
 }
 
 std::vector<RASCONNW> activeConnections() {
@@ -339,6 +383,83 @@ void VpnManager::saveCredentials(
     SecureZeroMemory(credentials.szPassword, sizeof(credentials.szPassword));
     if (error != ERROR_SUCCESS) {
         throw rasError("VPN credential save", error);
+    }
+}
+
+void VpnManager::installOrUpdateProfile(
+    const VpnProfile& profile,
+    const std::wstring& preSharedKey) {
+    if (profile.name.empty() || profile.serverAddress.empty()) {
+        throw std::runtime_error("VPN profile name and server address are required.");
+    }
+    if (!profile.tunnelType.empty() && !equalsIgnoreCase(profile.tunnelType, L"L2TP")) {
+        throw std::runtime_error("Only L2TP VPN profiles can be installed by DiskControl.");
+    }
+
+    const std::wstring phonebook = allUsersPhonebookPath();
+    RASENTRYW entry{};
+    entry.dwSize = sizeof(entry);
+    DWORD entrySize = sizeof(entry);
+    DWORD deviceInfoSize = 0;
+    const DWORD readError = RasGetEntryPropertiesW(
+        phonebook.c_str(), profile.name.c_str(), &entry, &entrySize, nullptr, &deviceInfoSize);
+    const bool exists = readError == ERROR_SUCCESS;
+    if (!exists && readError != ERROR_CANNOT_FIND_PHONEBOOK_ENTRY && readError != ERROR_FILE_NOT_FOUND) {
+        throw rasError("VPN profile read", readError);
+    }
+    if (!exists) {
+        if (preSharedKey.empty()) {
+            throw std::runtime_error("VPN pre-shared key is required for a new Windows profile.");
+        }
+        entry = {};
+        entry.dwSize = sizeof(entry);
+        entry.dwfOptions = RASEO_RequireMsCHAP2 | RASEO_RequireDataEncryption;
+        entry.dwfNetProtocols = RASNP_Ip;
+        entry.dwFramingProtocol = RASFP_Ppp;
+    }
+
+    if (profile.fullTunnel) {
+        entry.dwfOptions |= RASEO_RemoteDefaultGateway;
+    }
+    else {
+        entry.dwfOptions &= ~RASEO_RemoteDefaultGateway;
+    }
+    entry.dwfOptions &= ~(RASEO_RequireEAP | RASEO_RequirePAP | RASEO_RequireSPAP |
+        RASEO_RequireCHAP | RASEO_RequireMsEncryptedPw);
+    entry.dwfOptions |= RASEO_RequireMsCHAP2 | RASEO_RequireDataEncryption;
+    entry.dwfOptions2 |= RASEO2_UsePreSharedKey | RASEO2_ReconnectIfDropped;
+    entry.dwType = RASET_Vpn;
+    entry.dwVpnStrategy = VS_L2tpOnly;
+    entry.dwfNetProtocols = RASNP_Ip;
+    entry.dwFramingProtocol = RASFP_Ppp;
+    copyRasText(entry.szLocalPhoneNumber, std::size(entry.szLocalPhoneNumber), profile.serverAddress);
+    copyRasText(entry.szDeviceType, std::size(entry.szDeviceType), RASDT_Vpn);
+    copyRasText(entry.szDeviceName, std::size(entry.szDeviceName), l2tpDeviceName());
+
+    if (!exists) {
+        const DWORD validationError = RasValidateEntryNameW(phonebook.c_str(), profile.name.c_str());
+        if (validationError != ERROR_SUCCESS && validationError != ERROR_ALREADY_EXISTS) {
+            throw rasError("VPN profile name validation", validationError);
+        }
+    }
+
+    const DWORD writeError = RasSetEntryPropertiesW(
+        phonebook.c_str(), profile.name.c_str(), &entry, sizeof(entry), nullptr, 0);
+    if (writeError != ERROR_SUCCESS) {
+        throw rasError("VPN profile save", writeError);
+    }
+
+    if (!preSharedKey.empty()) {
+        RASCREDENTIALSW credentials{};
+        credentials.dwSize = sizeof(credentials);
+        credentials.dwMask = RASCM_PreSharedKey;
+        copyRasText(credentials.szPassword, std::size(credentials.szPassword), preSharedKey);
+        const DWORD credentialError = RasSetCredentialsW(
+            phonebook.c_str(), profile.name.c_str(), &credentials, FALSE);
+        SecureZeroMemory(credentials.szPassword, sizeof(credentials.szPassword));
+        if (credentialError != ERROR_SUCCESS) {
+            throw rasError("VPN pre-shared key save", credentialError);
+        }
     }
 }
 

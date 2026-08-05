@@ -231,9 +231,16 @@ void testDeviceInfoErrorKeepsAllowedListEntry() {
 
     try {
         PolicyManager::setConfigPathOverride(L"policy-info-error-list-test.json");
-        const std::vector<DeviceViewModel> devices = DeviceAccessService().listVisibleDevices();
+        std::vector<std::pair<size_t, size_t>> progressUpdates;
+        const std::vector<DeviceViewModel> devices = DeviceAccessService().listVisibleDevices(
+            [&progressUpdates](size_t processed, size_t total) {
+                progressUpdates.emplace_back(processed, total);
+            });
         require(devices.size() == 1 && devices[0].endpoint == L"OFFICE-HUB-Gr-1.3",
             "A transient DEVICE INFO error must not hide an allowed LIST entry.");
+        require(progressUpdates.size() == 2 && progressUpdates.front() == std::pair<size_t, size_t>{0, 1} &&
+                progressUpdates.back() == std::pair<size_t, size_t>{1, 1},
+            "Device list progress should report the catalog size and every processed device.");
     }
     catch (...) {
         server.join();

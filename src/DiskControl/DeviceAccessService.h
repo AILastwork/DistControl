@@ -2,8 +2,11 @@
 
 #include "PolicyManager.h"
 
+#include <functional>
 #include <string>
 #include <vector>
+
+using DeviceListProgressCallback = std::function<void(size_t processed, size_t total)>;
 
 struct DeviceViewModel {
     std::wstring endpoint;
@@ -20,9 +23,11 @@ struct DeviceViewModel {
 
 class DeviceAccessService {
 public:
-    std::vector<DeviceViewModel> listVisibleDevices() const;
-    std::vector<DeviceViewModel> listAllDevices() const;
-    std::vector<DeviceViewModel> listAllDevicesForUser(const std::wstring& userName) const;
+    std::vector<DeviceViewModel> listVisibleDevices(const DeviceListProgressCallback& progress = {}) const;
+    std::vector<DeviceViewModel> listAllDevices(const DeviceListProgressCallback& progress = {}) const;
+    std::vector<DeviceViewModel> listAllDevicesForUser(
+        const std::wstring& userName,
+        const DeviceListProgressCallback& progress = {}) const;
     std::wstring useDevice(const DeviceViewModel& device) const;
     std::wstring stopUsingDevice(const DeviceViewModel& device) const;
     std::wstring stopUsingOwnedDevice(const DeviceViewModel& device) const;
@@ -38,12 +43,18 @@ public:
         const std::wstring& vpnProfileId) const;
     std::vector<VpnProfile> vpnProfiles() const;
     void upsertVpnProfile(const VpnProfile& profile) const;
+    void installOrUpdateWindowsVpnProfile(
+        const VpnProfile& profile,
+        const std::wstring& preSharedKey) const;
     void removeVpnProfile(const std::wstring& profileId) const;
     void updateAccessForUser(std::vector<DeviceViewModel>& devices, const std::wstring& userName) const;
     std::wstring currentUserSummary() const;
     std::wstring currentPolicyPath() const;
 
 private:
-    std::vector<DeviceViewModel> listDevices(bool includeDenied, const std::wstring& policyUser) const;
+    std::vector<DeviceViewModel> listDevices(
+        bool includeDenied,
+        const std::wstring& policyUser,
+        const DeviceListProgressCallback& progress) const;
     DeviceViewModel enrichAndVerify(const DeviceViewModel& device) const;
 };

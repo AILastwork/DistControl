@@ -60,6 +60,9 @@ private:
     std::wstring activeDurationText(const DeviceViewModel& device) const;
     void updateHeaderText();
     void updateStatus(const wchar_t* text);
+    void updateRefreshProgress();
+    void showRefreshProgress();
+    void hideRefreshProgress();
     void finishRefresh();
     DeviceViewModel* selectedDevice();
     std::vector<DeviceViewModel> selectedDevices() const;
@@ -96,6 +99,8 @@ private:
     HWND exportJsonButton_ = nullptr;
     HWND vpnButton_ = nullptr;
     HWND statusLabel_ = nullptr;
+    HWND refreshProgressBar_ = nullptr;
+    HWND refreshProgressLabel_ = nullptr;
     DeviceAccessService service_;
     std::vector<DeviceViewModel> devices_;
     std::vector<DeviceViewModel> allDevices_;
@@ -129,6 +134,8 @@ private:
     std::mutex tokenActionMutex_;
     std::mutex vpnWatchdogMutex_;
     std::atomic_bool refreshing_ = false;
+    std::atomic_size_t refreshProcessed_ = 0;
+    std::atomic_size_t refreshTotal_ = 0;
     unsigned int consecutiveRefreshFailures_ = 0;
     std::atomic_bool computerLoading_ = false;
     std::atomic_bool tokenActionRunning_ = false;

@@ -46,6 +46,7 @@ constexpr UINT WM_REFRESH_COMPLETE = WM_APP + 1;
 constexpr UINT WM_COMPUTER_LOAD_COMPLETE = WM_APP + 2;
 constexpr UINT WM_TOKEN_ACTION_COMPLETE = WM_APP + 3;
 constexpr UINT WM_VPN_WATCHDOG_COMPLETE = WM_APP + 4;
+constexpr UINT WM_REFRESH_PROGRESS = WM_APP + 5;
 constexpr LPARAM kTreeGroupParam = -1;
 constexpr ULONGLONG kTokenSessionLimitMs = 20ULL * 60ULL * 1000ULL;
 constexpr ULONGLONG kAutoReleaseRetryMs = 15ULL * 1000ULL;
@@ -245,6 +246,8 @@ struct VpnAdminDialogData {
     DeviceViewModel device;
     std::wstring userName;
     std::vector<VpnProfile> profiles;
+    bool installWindowsProfile = false;
+    bool windowsProfileInstalled = false;
     bool changed = false;
 };
 
@@ -277,6 +280,7 @@ std::wstring joinVpnExpectedIps(const std::vector<std::wstring>& values) {
 }
 
 void loadVpnAdminProfile(HWND dialog, const VpnAdminDialogData& data) {
+    SetDlgItemTextW(dialog, IDC_VPN_ADMIN_PSK, L"");
     const std::wstring id = trim(dialogItemText(dialog, IDC_VPN_PROFILE_ID));
     const auto found = std::find_if(data.profiles.begin(), data.profiles.end(), [&id](const VpnProfile& profile) {
         return CompareStringOrdinal(
@@ -313,6 +317,15 @@ INT_PTR CALLBACK vpnAdminDialogProc(HWND dialog, UINT message, WPARAM wParam, LP
         }
         SetWindowTextW(combo, selectedId.c_str());
         loadVpnAdminProfile(dialog, *data);
+        if (data->installWindowsProfile) {
+            SetDlgItemTextW(dialog, IDC_VPN_ADMIN_NOTE,
+                L"Новый профиль будет создан в Windows. Для существующего профиля общий ключ можно не вводить.");
+        }
+        else {
+            EnableWindow(GetDlgItem(dialog, IDC_VPN_ADMIN_PSK), FALSE);
+            SetDlgItemTextW(dialog, IDC_VPN_ADMIN_NOTE,
+                L"Редактируется удалённый allow.json. Профиль Windows создаётся установщиком или локальной админкой на целевом компьютере.");
+        }
         return TRUE;
     }
     if (message != WM_COMMAND || !data) {
@@ -357,6 +370,17 @@ INT_PTR CALLBACK vpnAdminDialogProc(HWND dialog, UINT message, WPARAM wParam, LP
                     L"ID профиля может содержать только латинские буквы, цифры, точку, дефис и подчёркивание.",
                     L"DiskControl Admin", MB_OK | MB_ICONWARNING);
                 return TRUE;
+            }
+            if (data->installWindowsProfile) {
+                const std::wstring preSharedKey = dialogItemText(dialog, IDC_VPN_ADMIN_PSK);
+                if (!VpnManager::profileExists(profile.name) && preSharedKey.empty()) {
+                    MessageBoxW(dialog,
+                        L"Для создания нового VPN-профиля Windows введите общий ключ L2TP.",
+                        L"DiskControl Admin", MB_OK | MB_ICONWARNING);
+                    return TRUE;
+                }
+                data->service->installOrUpdateWindowsVpnProfile(profile, preSharedKey);
+                data->windowsProfileInstalled = true;
             }
             data->service->upsertVpnProfile(profile);
             data->service->setVpnProfileForDevice(data->device, data->userName, profile.id);
@@ -457,12 +481,12 @@ void setItemTextIfChanged(HWND listView, int row, int column, const std::wstring
 void addDeviceColumns(HWND listView, bool includeAccessColumn) {
     addColumn(listView, 0, 170, L"Endpoint");
     addColumn(listView, 1, 190, L"Имя");
-    addColumn(listView, 2, 110, L"Продукт");
+    addColumn(listView, 2, 90, L"VPN");
     addColumn(listView, 3, 110, L"Состояние");
     addColumn(listView, 4, 150, L"Кем занят");
     addColumn(listView, 5, 120, L"Адрес");
     addColumn(listView, 6, 110, L"Осталось");
-    addColumn(listView, 7, 90, L"VPN");
+    addColumn(listView, 7, 110, L"Продукт");
     if (includeAccessColumn) {
         addColumn(listView, 8, 100, L"Доступ");
     }
@@ -475,12 +499,12 @@ void insertDeviceRow(HWND listView, int row, const DeviceViewModel& device, bool
     item.pszText = const_cast<wchar_t*>(device.endpoint.c_str());
     ListView_InsertItem(listView, &item);
     setItemText(listView, row, 1, device.nickname);
-    setItemText(listView, row, 2, device.product);
+    setItemText(listView, row, 2, device.vpnProfileId);
     setItemText(listView, row, 3, device.statusText);
     setItemText(listView, row, 4, device.usedBy);
     setItemText(listView, row, 5, device.usedAt);
     setItemText(listView, row, 6, adminRemainingText(device));
-    setItemText(listView, row, 7, device.vpnProfileId);
+    setItemText(listView, row, 7, device.product);
     if (includeAccessColumn) {
         setItemText(listView, row, 8, device.allowed ? L"Разрешён" : L"Запрещён");
     }
@@ -519,12 +543,12 @@ void populateGroupedDeviceList(HWND listView, const std::vector<DeviceViewModel>
         item.pszText = const_cast<wchar_t*>(device.endpoint.c_str());
         ListView_InsertItem(listView, &item);
         setItemText(listView, static_cast<int>(i), 1, device.nickname);
-        setItemText(listView, static_cast<int>(i), 2, device.product);
+        setItemText(listView, static_cast<int>(i), 2, device.vpnProfileId);
         setItemText(listView, static_cast<int>(i), 3, device.statusText);
         setItemText(listView, static_cast<int>(i), 4, device.usedBy);
         setItemText(listView, static_cast<int>(i), 5, device.usedAt);
         setItemText(listView, static_cast<int>(i), 6, adminRemainingText(device));
-        setItemText(listView, static_cast<int>(i), 7, device.vpnProfileId);
+        setItemText(listView, static_cast<int>(i), 7, device.product);
     }
 }
 
@@ -897,12 +921,12 @@ std::wstring columnValue(const DeviceViewModel& device, int column) {
     switch (column) {
     case 0: return device.endpoint;
     case 1: return device.nickname;
-    case 2: return device.product;
+    case 2: return device.vpnProfileId;
     case 3: return device.statusText;
     case 4: return device.usedBy;
     case 5: return device.usedAt;
     case 6: return adminRemainingText(device);
-    case 7: return device.vpnProfileId;
+    case 7: return device.product;
     case 8: return device.allowed ? L"1" : L"0";
     default: return {};
     }
@@ -1120,6 +1144,9 @@ LRESULT MainWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         return 0;
     case WM_REFRESH_COMPLETE:
         finishRefresh();
+        return 0;
+    case WM_REFRESH_PROGRESS:
+        updateRefreshProgress();
         return 0;
     case WM_COMPUTER_LOAD_COMPLETE:
         finishComputerLoad();
@@ -1404,6 +1431,11 @@ void MainWindow::createControls() {
         hwnd_, controlId(IDC_VPN), instance_, nullptr);
     statusLabel_ = CreateWindowW(L"STATIC", L"Готово.", WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP,
         0, 0, 0, 0, hwnd_, controlId(IDC_STATUS), instance_, nullptr);
+    refreshProgressLabel_ = CreateWindowW(L"STATIC", L"", WS_CHILD | SS_CENTER,
+        0, 0, 0, 0, hwnd_, nullptr, instance_, nullptr);
+    refreshProgressBar_ = CreateWindowExW(0, PROGRESS_CLASSW, nullptr,
+        WS_CHILD | PBS_SMOOTH | PBS_MARQUEE, 0, 0, 0, 0, hwnd_, nullptr, instance_, nullptr);
+    SendMessageW(refreshProgressBar_, PBM_SETRANGE32, 0, 100);
 
     if (kAdminBuild) {
         loadProfilesForComputer(currentComputerName());
@@ -1511,7 +1543,15 @@ void MainWindow::layoutControls() {
         MoveWindow(vpnButton_, margin + buttonWidth + gap, buttonTop, 180, buttonHeight, TRUE);
     }
 
-    MoveWindow(statusLabel_, margin, height - margin - statusHeight, width - 2 * margin, statusHeight, TRUE);
+    constexpr int refreshProgressWidth = 230;
+    constexpr int refreshPercentWidth = 62;
+    const int statusTop = height - margin - statusHeight;
+    const int progressX = width - margin - refreshProgressWidth;
+    const int percentX = progressX - refreshPercentWidth;
+    const int statusWidth = (IsWindowVisible(refreshProgressBar_) ? percentX - gap : width - margin) - margin;
+    MoveWindow(statusLabel_, margin, statusTop, (std::max)(statusWidth, 100), statusHeight, TRUE);
+    MoveWindow(refreshProgressLabel_, percentX, statusTop + 3, refreshPercentWidth, statusHeight - 3, TRUE);
+    MoveWindow(refreshProgressBar_, progressX, statusTop + 3, refreshProgressWidth, 18, TRUE);
 }
 
 void MainWindow::setMainControlsEnabled(bool enabled) {
@@ -1659,13 +1699,16 @@ void MainWindow::manageVpnForSelectedDevice() {
         data.device = *device;
         data.userName = userName;
         data.profiles = service_.vpnProfiles();
+        data.installWindowsProfile = isLocalComputerName(getControlText(computerEdit_));
         DialogBoxParamW(instance_, MAKEINTRESOURCEW(IDD_VPN_ADMIN), hwnd_, vpnAdminDialogProc,
             reinterpret_cast<LPARAM>(&data));
         if (data.changed) {
             service_.updateAccessForUser(allDevices_, userName);
             applyDeviceFilter();
             updateHeaderText();
-            updateStatus(L"VPN-настройка токена сохранена в allow.json выбранного компьютера.");
+            updateStatus(data.windowsProfileInstalled
+                ? L"VPN-профиль Windows создан или обновлён и назначен токену."
+                : L"VPN-настройка токена сохранена в allow.json выбранного компьютера.");
         }
     }
     catch (const std::exception& error) {
@@ -1816,6 +1859,7 @@ void MainWindow::refreshDevices() {
 
     KillTimer(hwnd_, IDT_DELAYED_REFRESH);
     setMainControlsEnabled(false);
+    showRefreshProgress();
     updateStatus(L"Загрузка списка устройств...");
 
     if (refreshThread_.joinable()) {
@@ -1827,10 +1871,17 @@ void MainWindow::refreshDevices() {
     refreshThread_ = std::thread([this, includeDenied, policyUser]() {
         std::vector<DeviceViewModel> loadedDevices;
         std::wstring loadedError;
+        const DeviceListProgressCallback progress = [this](size_t processed, size_t total) {
+            refreshProcessed_.store(processed, std::memory_order_relaxed);
+            refreshTotal_.store(total, std::memory_order_relaxed);
+            if (!closing_) {
+                PostMessageW(hwnd_, WM_REFRESH_PROGRESS, 0, 0);
+            }
+        };
         try {
             loadedDevices = kAdminBuild
-                ? service_.listAllDevicesForUser(policyUser)
-                : (includeDenied ? service_.listAllDevices() : service_.listVisibleDevices());
+                ? service_.listAllDevicesForUser(policyUser, progress)
+                : (includeDenied ? service_.listAllDevices(progress) : service_.listVisibleDevices(progress));
         }
         catch (const std::exception& error) {
             loadedError = L"Не удалось обновить список токенов. " + userFriendlyErrorMessage(error.what());
@@ -1873,6 +1924,7 @@ void MainWindow::finishRefresh() {
             loadedError += L" Предыдущий список оставлен на экране.";
         }
         updateStatus(loadedError.c_str());
+        hideRefreshProgress();
         refreshing_ = false;
         setMainControlsEnabled(true);
         if (!closing_ && consecutiveRefreshFailures_ <= kMaximumAutomaticRefreshRetries) {
@@ -1895,6 +1947,7 @@ void MainWindow::finishRefresh() {
 
     updateActiveDeviceTracking();
     applyDeviceFilter();
+    hideRefreshProgress();
     refreshing_ = false;
     setMainControlsEnabled(true);
 }
@@ -1939,19 +1992,19 @@ void MainWindow::exportExcel() {
         << "<html><head><meta charset=\"utf-8\"></head><body>"
         << "<table border=\"1\">"
         << "<tr>"
-        << "<th>Endpoint</th><th>Имя</th><th>Продукт</th><th>Состояние</th>"
-        << "<th>Кем занят</th><th>Адрес</th><th>Осталось</th><th>VPN</th><th>Доступ</th>"
+        << "<th>Endpoint</th><th>Имя</th><th>VPN</th><th>Состояние</th>"
+        << "<th>Кем занят</th><th>Адрес</th><th>Осталось</th><th>Продукт</th><th>Доступ</th>"
         << "</tr>";
     for (const DeviceViewModel& device : source) {
         stream << "<tr>"
             << "<td>" << htmlEscape(device.endpoint) << "</td>"
             << "<td>" << htmlEscape(device.nickname) << "</td>"
-            << "<td>" << htmlEscape(device.product) << "</td>"
+            << "<td>" << htmlEscape(device.vpnProfileId) << "</td>"
             << "<td>" << htmlEscape(device.statusText) << "</td>"
             << "<td>" << htmlEscape(device.usedBy) << "</td>"
             << "<td>" << htmlEscape(device.usedAt) << "</td>"
             << "<td>" << htmlEscape(adminRemainingText(device)) << "</td>"
-            << "<td>" << htmlEscape(device.vpnProfileId) << "</td>"
+            << "<td>" << htmlEscape(device.product) << "</td>"
             << "<td>" << (device.allowed ? "Разрешён" : "Запрещён") << "</td>"
             << "</tr>";
     }
@@ -2984,6 +3037,44 @@ std::wstring MainWindow::activeDurationText(const DeviceViewModel& device) const
 
 void MainWindow::updateStatus(const wchar_t* text) {
     SetWindowTextW(statusLabel_, text);
+}
+
+void MainWindow::showRefreshProgress() {
+    refreshProcessed_.store(0, std::memory_order_relaxed);
+    refreshTotal_.store(0, std::memory_order_relaxed);
+    SetWindowTextW(refreshProgressLabel_, L"подготовка");
+    SendMessageW(refreshProgressBar_, PBM_SETPOS, 0, 0);
+    SendMessageW(refreshProgressBar_, PBM_SETMARQUEE, TRUE, 30);
+    ShowWindow(refreshProgressLabel_, SW_SHOW);
+    ShowWindow(refreshProgressBar_, SW_SHOW);
+    layoutControls();
+}
+
+void MainWindow::updateRefreshProgress() {
+    if (!refreshing_) {
+        return;
+    }
+    const size_t processed = refreshProcessed_.load(std::memory_order_relaxed);
+    const size_t total = refreshTotal_.load(std::memory_order_relaxed);
+    if (total == 0) {
+        return;
+    }
+
+    const int percent = static_cast<int>((std::min)(processed * 100 / total, static_cast<size_t>(100)));
+    SendMessageW(refreshProgressBar_, PBM_SETMARQUEE, FALSE, 0);
+    SendMessageW(refreshProgressBar_, PBM_SETPOS, percent, 0);
+    const std::wstring percentText = std::to_wstring(percent) + L"%";
+    SetWindowTextW(refreshProgressLabel_, percentText.c_str());
+    const std::wstring status = L"Обновление списка: " + percentText + L" (" +
+        std::to_wstring(processed) + L" из " + std::to_wstring(total) + L")";
+    updateStatus(status.c_str());
+}
+
+void MainWindow::hideRefreshProgress() {
+    SendMessageW(refreshProgressBar_, PBM_SETMARQUEE, FALSE, 0);
+    ShowWindow(refreshProgressLabel_, SW_HIDE);
+    ShowWindow(refreshProgressBar_, SW_HIDE);
+    layoutControls();
 }
 
 DeviceViewModel* MainWindow::selectedDevice() {

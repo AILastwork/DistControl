@@ -1,10 +1,13 @@
 using System;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
+using System.Net;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text;
 using System.Windows.Forms;
@@ -14,8 +17,8 @@ using System.Windows.Forms;
 [assembly: AssemblyCompany("DiskControl")]
 [assembly: AssemblyProduct("DiskControl")]
 [assembly: AssemblyCopyright("Copyright 2026")]
-[assembly: AssemblyVersion("0.2.4.0")]
-[assembly: AssemblyFileVersion("0.2.4.0")]
+[assembly: AssemblyVersion("0.3.0.0")]
+[assembly: AssemblyFileVersion("0.3.0.0")]
 [assembly: ComVisible(false)]
 
 internal static class SetupBootstrapper
@@ -60,6 +63,23 @@ internal static class SetupBootstrapper
         public string VpnExpectedPublicIp;
         public string VpnTokenIdentity;
         public bool VpnFullTunnel;
+        public List<VpnInstallProfile> VpnProfiles = new List<VpnInstallProfile>();
+    }
+
+    private sealed class VpnInstallProfile
+    {
+        public string Id;
+        public string Name;
+        public string Server;
+        public string Psk;
+        public string ExpectedPublicIps;
+        public string TokenIdentity;
+        public bool FullTunnel;
+
+        public VpnInstallProfile Clone()
+        {
+            return (VpnInstallProfile)MemberwiseClone();
+        }
     }
 
     private sealed class InstallProgressForm : Form
@@ -213,7 +233,10 @@ internal static class SetupBootstrapper
 
             PowerShellResult result = ShowInstallProgress(launcher, tempRoot, credentials);
             credentials.Password = string.Empty;
-            credentials.VpnPsk = string.Empty;
+            foreach (VpnInstallProfile profile in credentials.VpnProfiles)
+            {
+                profile.Psk = string.Empty;
+            }
             if (result.ExitCode != 0)
             {
                 MessageBox.Show(
@@ -419,7 +442,335 @@ internal static class SetupBootstrapper
         return credentials;
     }
 
+    private static string ValidateVpnInstallProfile(VpnInstallProfile profile)
+    {
+        if (profile == null || string.IsNullOrWhiteSpace(profile.Id) ||
+            string.IsNullOrWhiteSpace(profile.Name) || string.IsNullOrWhiteSpace(profile.Server) ||
+            string.IsNullOrEmpty(profile.Psk) || string.IsNullOrWhiteSpace(profile.ExpectedPublicIps))
+        {
+            return "Заполните ID, имя подключения, сервер, общий ключ и хотя бы один внешний IP.";
+        }
+        if (!System.Text.RegularExpressions.Regex.IsMatch(profile.Id.Trim(), "^[A-Za-z0-9._-]+$"))
+        {
+            return "ID профиля может содержать только латинские буквы, цифры, точку, дефис и подчёркивание.";
+        }
+        string[] expectedIps = profile.ExpectedPublicIps.Split(new[] { ',', ';', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+        if (expectedIps.Length == 0)
+        {
+            return "Укажите хотя бы один разрешённый внешний IP.";
+        }
+        foreach (string value in expectedIps)
+        {
+            IPAddress parsed;
+            if (!IPAddress.TryParse(value.Trim(), out parsed))
+            {
+                return "Некорректный внешний IP: " + value.Trim();
+            }
+        }
+        return string.Empty;
+    }
+
+    private static VpnInstallProfile PromptVpnProfile(VpnInstallProfile source)
+    {
+        VpnInstallProfile result = null;
+        VpnInstallProfile initial = source == null ? new VpnInstallProfile { FullTunnel = true } : source.Clone();
+        using (Form form = new Form())
+        {
+            form.Text = ProductName + " - VPN-профиль";
+            form.Width = 650;
+            form.Height = 430;
+            form.FormBorderStyle = FormBorderStyle.FixedDialog;
+            form.StartPosition = FormStartPosition.CenterParent;
+            form.MaximizeBox = false;
+            form.MinimizeBox = false;
+
+            int labelLeft = 16;
+            int inputLeft = 180;
+            int inputWidth = 430;
+            Label idLabel = new Label { Left = labelLeft, Top = 22, Width = 155, Text = "ID профиля" };
+            TextBox idBox = new TextBox { Left = inputLeft, Top = 18, Width = inputWidth, Text = initial.Id ?? string.Empty };
+            Label nameLabel = new Label { Left = labelLeft, Top = 58, Width = 155, Text = "Имя подключения Windows" };
+            TextBox nameBox = new TextBox { Left = inputLeft, Top = 54, Width = inputWidth, Text = initial.Name ?? string.Empty };
+            Label serverLabel = new Label { Left = labelLeft, Top = 94, Width = 155, Text = "VPN-сервер" };
+            TextBox serverBox = new TextBox { Left = inputLeft, Top = 90, Width = inputWidth, Text = initial.Server ?? string.Empty };
+            Label pskLabel = new Label { Left = labelLeft, Top = 130, Width = 155, Text = "Общий ключ L2TP" };
+            TextBox pskBox = new TextBox { Left = inputLeft, Top = 126, Width = inputWidth, Text = initial.Psk ?? string.Empty, UseSystemPasswordChar = true };
+            Label ipLabel = new Label { Left = labelLeft, Top = 166, Width = 155, Text = "Разрешённые внешние IP" };
+            TextBox ipBox = new TextBox { Left = inputLeft, Top = 162, Width = inputWidth, Text = initial.ExpectedPublicIps ?? string.Empty };
+            Label tokenLabel = new Label { Left = labelLeft, Top = 202, Width = 155, Text = "Токен" };
+            TextBox tokenBox = new TextBox { Left = inputLeft, Top = 198, Width = inputWidth, Text = initial.TokenIdentity ?? string.Empty };
+            Label tokenHint = new Label { Left = inputLeft, Top = 226, Width = inputWidth, Height = 34, Text = "Имя или endpoint токена. Поле можно оставить пустым и назначить профиль позже в админке." };
+            CheckBox fullTunnelBox = new CheckBox { Left = inputLeft, Top = 268, Width = inputWidth, Text = "Весь интернет через VPN", Checked = initial.FullTunnel };
+            Label secretHint = new Label { Left = inputLeft, Top = 298, Width = inputWidth, Height = 32, Text = "Общий ключ используется только во время установки и не записывается в allow.json или журналы." };
+            Button okButton = new Button { Left = 414, Top = 342, Width = 92, Height = 30, Text = "Сохранить" };
+            Button cancelButton = new Button { Left = 516, Top = 342, Width = 92, Height = 30, Text = "Отмена" };
+
+            form.Controls.AddRange(new Control[] { idLabel, idBox, nameLabel, nameBox, serverLabel, serverBox,
+                pskLabel, pskBox, ipLabel, ipBox, tokenLabel, tokenBox, tokenHint, fullTunnelBox, secretHint,
+                okButton, cancelButton });
+
+            okButton.Click += delegate
+            {
+                VpnInstallProfile candidate = new VpnInstallProfile
+                {
+                    Id = idBox.Text.Trim(),
+                    Name = nameBox.Text.Trim(),
+                    Server = serverBox.Text.Trim(),
+                    Psk = pskBox.Text,
+                    ExpectedPublicIps = ipBox.Text.Trim(),
+                    TokenIdentity = tokenBox.Text.Trim(),
+                    FullTunnel = fullTunnelBox.Checked
+                };
+                string error = ValidateVpnInstallProfile(candidate);
+                if (!string.IsNullOrEmpty(error))
+                {
+                    MessageBox.Show(error, ProductName + " Setup", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+                result = candidate;
+                form.DialogResult = DialogResult.OK;
+                form.Close();
+            };
+            cancelButton.Click += delegate { form.DialogResult = DialogResult.Cancel; form.Close(); };
+            form.AcceptButton = okButton;
+            form.CancelButton = cancelButton;
+            form.ShowDialog();
+        }
+        return result;
+    }
+
+    private static List<string> ParseVpnCsvLine(string line)
+    {
+        List<string> fields = new List<string>();
+        StringBuilder field = new StringBuilder();
+        bool quoted = false;
+        for (int index = 0; index < line.Length; ++index)
+        {
+            char ch = line[index];
+            if (ch == '"')
+            {
+                if (quoted && index + 1 < line.Length && line[index + 1] == '"')
+                {
+                    field.Append('"');
+                    ++index;
+                }
+                else
+                {
+                    quoted = !quoted;
+                }
+            }
+            else if (ch == ';' && !quoted)
+            {
+                fields.Add(field.ToString());
+                field.Clear();
+            }
+            else
+            {
+                field.Append(ch);
+            }
+        }
+        fields.Add(field.ToString());
+        return fields;
+    }
+
     private static bool PromptVpnConfiguration(ServiceCredentials credentials)
+    {
+        List<VpnInstallProfile> profiles = new List<VpnInstallProfile>();
+        profiles.Add(new VpnInstallProfile
+        {
+            Id = "salut",
+            Name = "Салют",
+            Server = "89.108.64.96",
+            Psk = string.Empty,
+            ExpectedPublicIps = "89.108.64.96",
+            TokenIdentity = "ДОБРОМЫСЛОВА О.А. ИП",
+            FullTunnel = true
+        });
+
+        using (Form form = new Form())
+        {
+            form.Text = ProductName + " - настройка VPN-профилей";
+            form.Width = 980;
+            form.Height = 590;
+            form.FormBorderStyle = FormBorderStyle.FixedDialog;
+            form.StartPosition = FormStartPosition.CenterScreen;
+            form.MaximizeBox = false;
+            form.MinimizeBox = false;
+            form.ShowInTaskbar = true;
+
+            CheckBox enabledBox = new CheckBox { Left = 16, Top = 16, Width = 600, Height = 24,
+                Text = "Создать или обновить VPN-профили Windows", Checked = true };
+            Label info = new Label { Left = 16, Top = 44, Width = 930, Height = 34,
+                Text = "Можно добавить любое количество профилей вручную или импортировать CSV. Общие ключи не сохраняются в allow.json и журналах." };
+            ListView list = new ListView { Left = 16, Top = 82, Width = 930, Height = 330,
+                View = View.Details, FullRowSelect = true, GridLines = true, HideSelection = false };
+            list.Columns.Add("ID", 100);
+            list.Columns.Add("Имя Windows", 150);
+            list.Columns.Add("Сервер", 125);
+            list.Columns.Add("Внешние IP", 145);
+            list.Columns.Add("Токен", 250);
+            list.Columns.Add("Ключ", 65);
+            list.Columns.Add("Туннель", 70);
+
+            Button addButton = new Button { Left = 16, Top = 424, Width = 105, Height = 30, Text = "Добавить" };
+            Button editButton = new Button { Left = 131, Top = 424, Width = 105, Height = 30, Text = "Изменить" };
+            Button deleteButton = new Button { Left = 246, Top = 424, Width = 105, Height = 30, Text = "Удалить" };
+            Button importButton = new Button { Left = 371, Top = 424, Width = 130, Height = 30, Text = "Импорт CSV" };
+            Label formatHint = new Label { Left = 16, Top = 464, Width = 930, Height = 32,
+                Text = "CSV UTF-8: id;имя Windows;сервер;общий ключ;внешние IP;токен;fullTunnel (true/false). Первая строка с заголовками необязательна." };
+            Button okButton = new Button { Left = 752, Top = 510, Width = 92, Height = 30, Text = "Далее" };
+            Button cancelButton = new Button { Left = 854, Top = 510, Width = 92, Height = 30, Text = "Отмена" };
+            form.Controls.AddRange(new Control[] { enabledBox, info, list, addButton, editButton, deleteButton,
+                importButton, formatHint, okButton, cancelButton });
+
+            Action refreshList = delegate
+            {
+                list.BeginUpdate();
+                list.Items.Clear();
+                foreach (VpnInstallProfile profile in profiles)
+                {
+                    ListViewItem item = new ListViewItem(profile.Id ?? string.Empty);
+                    item.SubItems.Add(profile.Name ?? string.Empty);
+                    item.SubItems.Add(profile.Server ?? string.Empty);
+                    item.SubItems.Add(profile.ExpectedPublicIps ?? string.Empty);
+                    item.SubItems.Add(profile.TokenIdentity ?? string.Empty);
+                    item.SubItems.Add(string.IsNullOrEmpty(profile.Psk) ? "нет" : "задан");
+                    item.SubItems.Add(profile.FullTunnel ? "весь" : "раздельный");
+                    item.Tag = profile;
+                    list.Items.Add(item);
+                }
+                list.EndUpdate();
+            };
+
+            Action editSelected = delegate
+            {
+                if (list.SelectedItems.Count != 1)
+                {
+                    MessageBox.Show("Выберите один VPN-профиль.", ProductName + " Setup", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+                VpnInstallProfile current = (VpnInstallProfile)list.SelectedItems[0].Tag;
+                VpnInstallProfile updated = PromptVpnProfile(current);
+                if (updated != null)
+                {
+                    profiles[profiles.IndexOf(current)] = updated;
+                    refreshList();
+                }
+            };
+
+            addButton.Click += delegate
+            {
+                VpnInstallProfile added = PromptVpnProfile(null);
+                if (added != null) { profiles.Add(added); refreshList(); }
+            };
+            editButton.Click += delegate { editSelected(); };
+            list.DoubleClick += delegate { editSelected(); };
+            deleteButton.Click += delegate
+            {
+                if (list.SelectedItems.Count == 0) { return; }
+                foreach (ListViewItem selected in list.SelectedItems)
+                {
+                    profiles.Remove((VpnInstallProfile)selected.Tag);
+                }
+                refreshList();
+            };
+            importButton.Click += delegate
+            {
+                using (OpenFileDialog dialog = new OpenFileDialog())
+                {
+                    dialog.Filter = "VPN profiles CSV (*.csv)|*.csv|Все файлы (*.*)|*.*";
+                    if (dialog.ShowDialog(form) != DialogResult.OK) { return; }
+                    try
+                    {
+                        List<VpnInstallProfile> imported = new List<VpnInstallProfile>();
+                        string[] lines = File.ReadAllLines(dialog.FileName, Encoding.UTF8);
+                        for (int lineIndex = 0; lineIndex < lines.Length; ++lineIndex)
+                        {
+                            if (string.IsNullOrWhiteSpace(lines[lineIndex])) { continue; }
+                            List<string> fields = ParseVpnCsvLine(lines[lineIndex]);
+                            if (fields.Count > 0 && fields[0].Trim().Equals("id", StringComparison.OrdinalIgnoreCase)) { continue; }
+                            if (fields.Count != 7) { throw new InvalidDataException("Строка " + (lineIndex + 1) + ": требуется 7 полей."); }
+                            string fullText = fields[6].Trim();
+                            VpnInstallProfile profile = new VpnInstallProfile
+                            {
+                                Id = fields[0].Trim(), Name = fields[1].Trim(), Server = fields[2].Trim(),
+                                Psk = fields[3], ExpectedPublicIps = fields[4].Trim(), TokenIdentity = fields[5].Trim(),
+                                FullTunnel = fullText == "1" || fullText.Equals("true", StringComparison.OrdinalIgnoreCase) || fullText.Equals("да", StringComparison.OrdinalIgnoreCase)
+                            };
+                            string error = ValidateVpnInstallProfile(profile);
+                            if (!string.IsNullOrEmpty(error)) { throw new InvalidDataException("Строка " + (lineIndex + 1) + ": " + error); }
+                            imported.Add(profile);
+                        }
+                        if (imported.Count == 0) { throw new InvalidDataException("В файле не найдено VPN-профилей."); }
+                        DialogResult replace = MessageBox.Show("Заменить текущий список импортированными профилями?\r\n\r\nДа — заменить, Нет — добавить.",
+                            ProductName + " Setup", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
+                        if (replace == DialogResult.Cancel) { return; }
+                        if (replace == DialogResult.Yes) { profiles.Clear(); }
+                        profiles.AddRange(imported);
+                        refreshList();
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show("Не удалось импортировать VPN-профили.\r\n\r\n" + ex.Message,
+                            ProductName + " Setup", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    }
+                }
+            };
+
+            Action updateEnabled = delegate
+            {
+                bool enabled = enabledBox.Checked;
+                list.Enabled = enabled;
+                addButton.Enabled = enabled;
+                editButton.Enabled = enabled;
+                deleteButton.Enabled = enabled;
+                importButton.Enabled = enabled;
+            };
+            enabledBox.CheckedChanged += delegate { updateEnabled(); };
+
+            okButton.Click += delegate
+            {
+                if (enabledBox.Checked && profiles.Count == 0)
+                {
+                    MessageBox.Show("Добавьте хотя бы один VPN-профиль или отключите настройку VPN.", ProductName + " Setup", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+                HashSet<string> ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                HashSet<string> names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (VpnInstallProfile profile in profiles)
+                {
+                    string error = ValidateVpnInstallProfile(profile);
+                    if (!string.IsNullOrEmpty(error))
+                    {
+                        MessageBox.Show("Профиль " + (profile.Id ?? "") + ": " + error, ProductName + " Setup", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        return;
+                    }
+                    if (!ids.Add(profile.Id.Trim()))
+                    {
+                        MessageBox.Show("Повторяется ID VPN-профиля: " + profile.Id, ProductName + " Setup", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        return;
+                    }
+                    if (!names.Add(profile.Name.Trim()))
+                    {
+                        MessageBox.Show("Повторяется имя подключения Windows: " + profile.Name, ProductName + " Setup", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        return;
+                    }
+                }
+                credentials.ConfigureVpn = enabledBox.Checked;
+                credentials.VpnProfiles = enabledBox.Checked ? new List<VpnInstallProfile>(profiles) : new List<VpnInstallProfile>();
+                form.DialogResult = DialogResult.OK;
+                form.Close();
+            };
+            cancelButton.Click += delegate { form.DialogResult = DialogResult.Cancel; form.Close(); };
+            form.AcceptButton = okButton;
+            form.CancelButton = cancelButton;
+            refreshList();
+            updateEnabled();
+            return form.ShowDialog() == DialogResult.OK;
+        }
+    }
+
+    private static bool PromptVpnConfigurationLegacy(ServiceCredentials credentials)
     {
         using (Form form = new Form())
         {
@@ -648,9 +999,74 @@ internal static class SetupBootstrapper
         }
     }
 
+    private static string EncodeVpnInstallField(string value)
+    {
+        return Convert.ToBase64String(Encoding.UTF8.GetBytes(value ?? string.Empty));
+    }
+
+    private static string EncodeVpnInstallSecret(string value)
+    {
+        byte[] plain = Encoding.UTF8.GetBytes(value ?? string.Empty);
+        try
+        {
+            byte[] encrypted = ProtectedData.Protect(plain, null, DataProtectionScope.CurrentUser);
+            return Convert.ToBase64String(encrypted);
+        }
+        finally
+        {
+            Array.Clear(plain, 0, plain.Length);
+        }
+    }
+
+    private static string WriteVpnProfilesFile(string workingDirectory, ServiceCredentials credentials)
+    {
+        if (credentials == null || !credentials.ConfigureVpn || credentials.VpnProfiles == null || credentials.VpnProfiles.Count == 0)
+        {
+            return string.Empty;
+        }
+        string path = Path.Combine(workingDirectory, "vpn-profiles-" + Guid.NewGuid().ToString("N") + ".install");
+        List<string> lines = new List<string>();
+        foreach (VpnInstallProfile profile in credentials.VpnProfiles)
+        {
+            lines.Add(string.Join("\t", new[]
+            {
+                EncodeVpnInstallField(profile.Id),
+                EncodeVpnInstallField(profile.Name),
+                EncodeVpnInstallField(profile.Server),
+                EncodeVpnInstallSecret(profile.Psk),
+                EncodeVpnInstallField(profile.ExpectedPublicIps),
+                EncodeVpnInstallField(profile.TokenIdentity),
+                profile.FullTunnel ? "1" : "0"
+            }));
+        }
+        File.WriteAllLines(path, lines.ToArray(), new UTF8Encoding(false));
+        return path;
+    }
+
+    private static void DeleteVpnProfilesFile(string path)
+    {
+        if (string.IsNullOrEmpty(path) || !File.Exists(path))
+        {
+            return;
+        }
+        try
+        {
+            long length = new FileInfo(path).Length;
+            if (length > 0 && length <= 1024 * 1024)
+            {
+                File.WriteAllBytes(path, new byte[(int)length]);
+            }
+            File.Delete(path);
+        }
+        catch
+        {
+        }
+    }
+
     private static PowerShellResult RunPowerShell(string launcher, string workingDirectory, ServiceCredentials credentials, Action<string> onOutputLine)
     {
         var output = new StringBuilder();
+        string vpnProfilesFile = WriteVpnProfilesFile(workingDirectory, credentials);
         var startInfo = new ProcessStartInfo
         {
             FileName = "powershell.exe",
@@ -671,39 +1087,40 @@ internal static class SetupBootstrapper
             startInfo.EnvironmentVariables["DISKCONTROL_SERVICE_PASSWORD"] = credentials.Password ?? string.Empty;
             startInfo.EnvironmentVariables["DISKCONTROL_USAGE_STATE_DIR"] = credentials.UsageStateDirectory ?? string.Empty;
             startInfo.EnvironmentVariables["DISKCONTROL_VPN_CONFIGURE"] = credentials.ConfigureVpn ? "1" : "0";
-            startInfo.EnvironmentVariables["DISKCONTROL_VPN_ID"] = credentials.VpnId ?? string.Empty;
-            startInfo.EnvironmentVariables["DISKCONTROL_VPN_NAME"] = credentials.VpnName ?? string.Empty;
-            startInfo.EnvironmentVariables["DISKCONTROL_VPN_SERVER"] = credentials.VpnServer ?? string.Empty;
-            startInfo.EnvironmentVariables["DISKCONTROL_VPN_PSK"] = credentials.VpnPsk ?? string.Empty;
-            startInfo.EnvironmentVariables["DISKCONTROL_VPN_EXPECTED_IP"] = credentials.VpnExpectedPublicIp ?? string.Empty;
-            startInfo.EnvironmentVariables["DISKCONTROL_VPN_TOKEN"] = credentials.VpnTokenIdentity ?? string.Empty;
-            startInfo.EnvironmentVariables["DISKCONTROL_VPN_FULL_TUNNEL"] = credentials.VpnFullTunnel ? "1" : "0";
+            startInfo.EnvironmentVariables["DISKCONTROL_VPN_PROFILES_FILE"] = vpnProfilesFile;
         }
 
-        using (var process = Process.Start(startInfo))
+        try
         {
-            if (process == null)
+            using (var process = Process.Start(startInfo))
             {
-                throw new InvalidOperationException("Не удалось запустить PowerShell для установки.");
-            }
+                if (process == null)
+                {
+                    throw new InvalidOperationException("Не удалось запустить PowerShell для установки.");
+                }
 
-            process.OutputDataReceived += delegate(object sender, DataReceivedEventArgs args)
-            {
-                AppendOutputLine(output, args.Data, onOutputLine);
-            };
-            process.ErrorDataReceived += delegate(object sender, DataReceivedEventArgs args)
-            {
-                AppendOutputLine(output, args.Data, onOutputLine);
-            };
-            process.BeginOutputReadLine();
-            process.BeginErrorReadLine();
-            process.WaitForExit();
-            process.WaitForExit();
-            return new PowerShellResult
-            {
-                ExitCode = process.ExitCode,
-                Output = output.ToString()
-            };
+                process.OutputDataReceived += delegate(object sender, DataReceivedEventArgs args)
+                {
+                    AppendOutputLine(output, args.Data, onOutputLine);
+                };
+                process.ErrorDataReceived += delegate(object sender, DataReceivedEventArgs args)
+                {
+                    AppendOutputLine(output, args.Data, onOutputLine);
+                };
+                process.BeginOutputReadLine();
+                process.BeginErrorReadLine();
+                process.WaitForExit();
+                process.WaitForExit();
+                return new PowerShellResult
+                {
+                    ExitCode = process.ExitCode,
+                    Output = output.ToString()
+                };
+            }
+        }
+        finally
+        {
+            DeleteVpnProfilesFile(vpnProfilesFile);
         }
     }
 
@@ -756,6 +1173,17 @@ internal static class SetupBootstrapper
         if (lower.Contains("configure acl") || lower.Contains("execute acl") || lower.Contains("log on as a service"))
         {
             return "Настройка прав доступа...";
+        }
+        if (lower.Contains("configure windows vpn profile"))
+        {
+            int marker = lower.IndexOf("profile ", StringComparison.Ordinal);
+            int quote = line.IndexOf('\'', marker >= 0 ? marker : 0);
+            string position = marker >= 0 && quote > marker
+                ? line.Substring(marker + "profile ".Length, quote - marker - "profile ".Length).Trim()
+                : string.Empty;
+            return string.IsNullOrEmpty(position)
+                ? "Настройка VPN-профилей Windows..."
+                : "Настройка VPN-профиля " + position + "...";
         }
         if (lower.Contains("create service") || lower.Contains("start service") || lower.Contains("service "))
         {

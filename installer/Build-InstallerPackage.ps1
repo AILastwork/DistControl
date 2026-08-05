@@ -111,6 +111,7 @@ function Build-SetupExe {
         "/out:$SetupStubPath" `
         /reference:System.Windows.Forms.dll `
         /reference:System.Drawing.dll `
+        /reference:System.Security.dll `
         /reference:System.IO.Compression.dll `
         /reference:System.IO.Compression.FileSystem.dll `
         $SetupSourcePath
