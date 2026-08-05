@@ -2985,11 +2985,12 @@ DeviceViewModel* MainWindow::selectedDevice() {
     }
 
     const int index = ListView_GetNextItem(listView_, -1, LVNI_SELECTED);
-    if (index < 0 || static_cast<size_t>(index) >= devices_.size()) {
+    std::vector<DeviceViewModel>& source = kAdminBuild ? allowedDevices_ : devices_;
+    if (index < 0 || static_cast<size_t>(index) >= source.size()) {
         return nullptr;
     }
 
-    return &devices_[static_cast<size_t>(index)];
+    return &source[static_cast<size_t>(index)];
 }
 
 std::vector<DeviceViewModel> MainWindow::selectedDevices() const {
