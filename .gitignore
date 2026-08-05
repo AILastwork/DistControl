@@ -33,6 +33,7 @@ DKCLHelper-source-code.zip
 # Real local policy/config/data files
 allowlist.json
 allowlist*.json
+!allowlist.example.json
 allow.json
 policy.json
 usage*.json

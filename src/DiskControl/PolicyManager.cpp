@@ -24,9 +24,10 @@ namespace {
 std::wstring g_configPathOverride;
 
 struct JsonValue {
-    enum class Type { Null, String, Number, Object, Array };
+    enum class Type { Null, Boolean, String, Number, Object, Array };
 
     Type type = Type::Null;
+    bool booleanValue = false;
     std::wstring stringValue;
     double numberValue = 0;
     std::map<std::wstring, JsonValue> objectValue;
@@ -71,7 +72,18 @@ private:
             return parseNumber();
         }
 
-        if (matchLiteral(L"true") || matchLiteral(L"false") || matchLiteral(L"null")) {
+        if (matchLiteral(L"true")) {
+            JsonValue value;
+            value.type = JsonValue::Type::Boolean;
+            value.booleanValue = true;
+            return value;
+        }
+        if (matchLiteral(L"false")) {
+            JsonValue value;
+            value.type = JsonValue::Type::Boolean;
+            return value;
+        }
+        if (matchLiteral(L"null")) {
             return {};
         }
 
@@ -362,6 +374,7 @@ std::wstring emptyPolicyJson() {
     return L"{\n"
         L"  \"pipeName\": \"dkclient\",\n"
         L"  \"refreshSeconds\": 5,\n"
+        L"  \"vpnProfiles\": [],\n"
         L"  \"userAssignments\": []\n"
         L"}\n";
 }
@@ -614,10 +627,23 @@ std::wstring stringValue(const JsonValue* value) {
     return value->stringValue;
 }
 
+bool boolValue(const JsonValue* value, bool defaultValue) {
+    return value && value->type == JsonValue::Type::Boolean
+        ? value->booleanValue
+        : defaultValue;
+}
+
 JsonValue makeString(const std::wstring& value) {
     JsonValue json;
     json.type = JsonValue::Type::String;
     json.stringValue = value;
+    return json;
+}
+
+JsonValue makeBool(bool value) {
+    JsonValue json;
+    json.type = JsonValue::Type::Boolean;
+    json.booleanValue = value;
     return json;
 }
 
@@ -663,6 +689,9 @@ void writeIndent(std::wostringstream& stream, int indent) {
 
 void serializeJson(const JsonValue& value, std::wostringstream& stream, int indent) {
     switch (value.type) {
+    case JsonValue::Type::Boolean:
+        stream << (value.booleanValue ? L"true" : L"false");
+        break;
     case JsonValue::Type::String:
         stream << jsonEscape(value.stringValue);
         break;
@@ -713,12 +742,16 @@ bool ruleMatchesDevice(const JsonValue& ruleValue, const ParsedDevice& device) {
         equalsIgnoreCase(stringValue(ruleValue.find(L"product")), device.product);
 }
 
-JsonValue makeDeviceRule(const ParsedDevice& device) {
-    return makeObject({
+JsonValue makeDeviceRule(const ParsedDevice& device, const std::wstring& vpnProfileId = {}) {
+    JsonValue rule = makeObject({
         { L"endpoint", makeString(device.endpoint) },
         { L"nickname", makeString(device.nickname) },
         { L"product", makeString(device.product) }
     });
+    if (!vpnProfileId.empty()) {
+        rule.objectValue[L"vpnProfile"] = makeString(vpnProfileId);
+    }
+    return rule;
 }
 
 std::vector<DeviceRule> rulesFromJsonArray(const JsonValue* devices) {
@@ -735,6 +768,7 @@ std::vector<DeviceRule> rulesFromJsonArray(const JsonValue* devices) {
         rule.endpoint = stringValue(device.find(L"endpoint"));
         rule.nickname = stringValue(device.find(L"nickname"));
         rule.product = stringValue(device.find(L"product"));
+        rule.vpnProfileId = stringValue(device.find(L"vpnProfile"));
         if (!rule.endpoint.empty()) {
             rules.push_back(rule);
         }
@@ -742,7 +776,20 @@ std::vector<DeviceRule> rulesFromJsonArray(const JsonValue* devices) {
     return rules;
 }
 
-JsonValue makeDeviceRulesArray(const std::vector<ParsedDevice>& devices) {
+std::wstring existingVpnProfileForDevice(const JsonValue* existingRules, const ParsedDevice& device) {
+    if (!existingRules || existingRules->type != JsonValue::Type::Array) {
+        return {};
+    }
+    for (const JsonValue& existing : existingRules->arrayValue) {
+        if (existing.type == JsonValue::Type::Object &&
+            equalsIgnoreCase(stringValue(existing.find(L"endpoint")), device.endpoint)) {
+            return stringValue(existing.find(L"vpnProfile"));
+        }
+    }
+    return {};
+}
+
+JsonValue makeDeviceRulesArray(const std::vector<ParsedDevice>& devices, const JsonValue* existingRules = nullptr) {
     JsonValue rules = makeArray();
     for (const ParsedDevice& device : devices) {
         if (device.endpoint.empty()) {
@@ -757,10 +804,67 @@ JsonValue makeDeviceRulesArray(const std::vector<ParsedDevice>& devices) {
             }
         }
         if (!exists) {
-            rules.arrayValue.push_back(makeDeviceRule(device));
+            rules.arrayValue.push_back(makeDeviceRule(
+                device,
+                existingVpnProfileForDevice(existingRules, device)));
         }
     }
     return rules;
+}
+
+VpnProfile vpnProfileFromJson(const JsonValue& value) {
+    VpnProfile profile;
+    if (value.type != JsonValue::Type::Object) {
+        return profile;
+    }
+    profile.id = stringValue(value.find(L"id"));
+    profile.name = stringValue(value.find(L"name"));
+    profile.serverAddress = stringValue(value.find(L"serverAddress"));
+    profile.tunnelType = stringValue(value.find(L"tunnelType"));
+    if (profile.tunnelType.empty()) {
+        profile.tunnelType = L"L2TP";
+    }
+    profile.expectedPublicIps = stringArray(value.find(L"expectedPublicIps"));
+    profile.ipCheckUrl = stringValue(value.find(L"ipCheckUrl"));
+    if (profile.ipCheckUrl.empty()) {
+        profile.ipCheckUrl = L"https://api.ipify.org";
+    }
+    profile.fullTunnel = boolValue(value.find(L"fullTunnel"), true);
+    profile.enabled = boolValue(value.find(L"enabled"), true);
+    return profile;
+}
+
+std::vector<VpnProfile> vpnProfilesFromJson(const JsonValue* value) {
+    std::vector<VpnProfile> profiles;
+    if (!value || value->type != JsonValue::Type::Array) {
+        return profiles;
+    }
+    for (const JsonValue& item : value->arrayValue) {
+        VpnProfile profile = vpnProfileFromJson(item);
+        if (!profile.id.empty() && !profile.name.empty() && !profile.serverAddress.empty()) {
+            profiles.push_back(std::move(profile));
+        }
+    }
+    return profiles;
+}
+
+JsonValue makeVpnProfile(const VpnProfile& profile) {
+    JsonValue expectedIps = makeArray();
+    for (const std::wstring& ip : profile.expectedPublicIps) {
+        if (!ip.empty()) {
+            expectedIps.arrayValue.push_back(makeString(ip));
+        }
+    }
+    return makeObject({
+        { L"id", makeString(profile.id) },
+        { L"name", makeString(profile.name) },
+        { L"serverAddress", makeString(profile.serverAddress) },
+        { L"tunnelType", makeString(profile.tunnelType.empty() ? L"L2TP" : profile.tunnelType) },
+        { L"fullTunnel", makeBool(profile.fullTunnel) },
+        { L"enabled", makeBool(profile.enabled) },
+        { L"expectedPublicIps", std::move(expectedIps) },
+        { L"ipCheckUrl", makeString(profile.ipCheckUrl.empty() ? L"https://api.ipify.org" : profile.ipCheckUrl) }
+    });
 }
 }
 
@@ -934,7 +1038,8 @@ void PolicyManager::setDevicesForUser(const std::vector<ParsedDevice>& devices, 
             continue;
         }
 
-        assignment.objectValue[L"allowedDevices"] = makeDeviceRulesArray(devices);
+        const JsonValue existingRules = assignment.objectValue[L"allowedDevices"];
+        assignment.objectValue[L"allowedDevices"] = makeDeviceRulesArray(devices, &existingRules);
         writeUtf8File(configPath_, serializeJson(root));
         return;
     }
@@ -944,6 +1049,118 @@ void PolicyManager::setDevicesForUser(const std::vector<ParsedDevice>& devices, 
         { L"groups", makeArray() },
         { L"allowedDevices", makeDeviceRulesArray(devices) }
     }));
+    writeUtf8File(configPath_, serializeJson(root));
+}
+
+void PolicyManager::setVpnProfileForDevice(
+    const ParsedDevice& device,
+    const std::wstring& userName,
+    const std::wstring& vpnProfileId) const {
+    if (userName.empty()) {
+        throw std::runtime_error("User name is required.");
+    }
+
+    JsonValue root = readPolicyRoot(configPath_);
+    JsonValue& assignments = root.objectValue[L"userAssignments"];
+    for (JsonValue& assignment : assignments.arrayValue) {
+        if (assignment.type != JsonValue::Type::Object) {
+            continue;
+        }
+
+        bool matchesTargetUser = false;
+        for (const std::wstring& user : stringArray(assignment.find(L"users"))) {
+            if (configuredUserMatchesTarget(user, userName)) {
+                matchesTargetUser = true;
+                break;
+            }
+        }
+        if (!matchesTargetUser) {
+            continue;
+        }
+
+        JsonValue& devices = assignment.objectValue[L"allowedDevices"];
+        if (devices.type != JsonValue::Type::Array) {
+            break;
+        }
+        for (JsonValue& rule : devices.arrayValue) {
+            if (rule.type != JsonValue::Type::Object ||
+                !equalsIgnoreCase(stringValue(rule.find(L"endpoint")), device.endpoint)) {
+                continue;
+            }
+            if (vpnProfileId.empty()) {
+                rule.objectValue.erase(L"vpnProfile");
+            }
+            else {
+                rule.objectValue[L"vpnProfile"] = makeString(vpnProfileId);
+            }
+            writeUtf8File(configPath_, serializeJson(root));
+            return;
+        }
+    }
+
+    throw std::runtime_error("Device must be assigned to the user before selecting a VPN profile.");
+}
+
+void PolicyManager::upsertVpnProfile(const VpnProfile& profile) const {
+    if (profile.id.empty() || profile.name.empty() || profile.serverAddress.empty()) {
+        throw std::runtime_error("VPN profile id, name and server address are required.");
+    }
+
+    JsonValue root = readPolicyRoot(configPath_);
+    JsonValue& profiles = root.objectValue[L"vpnProfiles"];
+    if (profiles.type == JsonValue::Type::Null) {
+        profiles = makeArray();
+    }
+    if (profiles.type != JsonValue::Type::Array) {
+        throw std::runtime_error("Config vpnProfiles must be an array.");
+    }
+
+    for (JsonValue& existing : profiles.arrayValue) {
+        if (existing.type == JsonValue::Type::Object &&
+            equalsIgnoreCase(stringValue(existing.find(L"id")), profile.id)) {
+            existing = makeVpnProfile(profile);
+            writeUtf8File(configPath_, serializeJson(root));
+            return;
+        }
+    }
+
+    profiles.arrayValue.push_back(makeVpnProfile(profile));
+    writeUtf8File(configPath_, serializeJson(root));
+}
+
+void PolicyManager::removeVpnProfile(const std::wstring& profileId) const {
+    if (profileId.empty()) {
+        return;
+    }
+
+    JsonValue root = readPolicyRoot(configPath_);
+    JsonValue& profiles = root.objectValue[L"vpnProfiles"];
+    if (profiles.type == JsonValue::Type::Array) {
+        profiles.arrayValue.erase(
+            std::remove_if(profiles.arrayValue.begin(), profiles.arrayValue.end(),
+                [&profileId](const JsonValue& item) {
+                    return item.type == JsonValue::Type::Object &&
+                        equalsIgnoreCase(stringValue(item.find(L"id")), profileId);
+                }),
+            profiles.arrayValue.end());
+    }
+
+    JsonValue& assignments = root.objectValue[L"userAssignments"];
+    if (assignments.type == JsonValue::Type::Array) {
+        for (JsonValue& assignment : assignments.arrayValue) {
+            JsonValue& devices = assignment.objectValue[L"allowedDevices"];
+            if (devices.type != JsonValue::Type::Array) {
+                continue;
+            }
+            for (JsonValue& rule : devices.arrayValue) {
+                if (rule.type == JsonValue::Type::Object &&
+                    equalsIgnoreCase(stringValue(rule.find(L"vpnProfile")), profileId)) {
+                    rule.objectValue.erase(L"vpnProfile");
+                }
+            }
+        }
+    }
+
     writeUtf8File(configPath_, serializeJson(root));
 }
 
@@ -1025,8 +1242,28 @@ std::vector<DeviceRule> PolicyManager::rulesForUser(const std::wstring& userName
     return rules;
 }
 
+bool PolicyManager::tryGetVpnProfileForDevice(const ParsedDevice& device, VpnProfile& profile) const {
+    for (const DeviceRule& rule : effectiveRules_) {
+        if (!isAllowedByRules(device, { rule }) || rule.vpnProfileId.empty()) {
+            continue;
+        }
+        for (const VpnProfile& candidate : vpnProfiles_) {
+            if (equalsIgnoreCase(candidate.id, rule.vpnProfileId)) {
+                profile = candidate;
+                return true;
+            }
+        }
+        throw std::runtime_error("VPN profile mapping references an unknown profile.");
+    }
+    return false;
+}
+
 const std::vector<DeviceRule>& PolicyManager::effectiveRules() const {
     return effectiveRules_;
+}
+
+const std::vector<VpnProfile>& PolicyManager::vpnProfiles() const {
+    return vpnProfiles_;
 }
 
 const std::wstring& PolicyManager::pipeName() const {
@@ -1064,6 +1301,8 @@ void PolicyManager::load() {
     if (!usageStatePath.empty()) {
         usageStatePath_ = usageStatePath;
     }
+
+    vpnProfiles_ = vpnProfilesFromJson(root.find(L"vpnProfiles"));
 
     const JsonValue* assignments = root.find(L"userAssignments");
 

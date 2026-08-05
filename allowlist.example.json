@@ -1,0 +1,53 @@
+{
+  "pipeName": "dkclient",
+  "refreshSeconds": 5,
+  "usageStatePath": "C:\\ProgramData\\DiskControl\\usage.json",
+  "vpnProfiles": [
+    {
+      "id": "salut",
+      "name": "Салют",
+      "serverAddress": "89.108.64.96",
+      "tunnelType": "L2TP",
+      "expectedPublicIps": [
+        "89.108.64.96"
+      ],
+      "ipCheckUrl": "https://api.ipify.org",
+      "fullTunnel": true,
+      "enabled": true
+    }
+  ],
+  "userAssignments": [
+    {
+      "users": [
+        "DOMAIN\\ivanov"
+      ],
+      "groups": [],
+      "allowedDevices": [
+        {
+          "endpoint": "OFFICE-HUB-Gr-1.3",
+          "nickname": "BANK-KEY-01",
+          "product": "Rutoken lite",
+          "vpnProfile": "salut"
+        },
+        {
+          "endpoint": "OFFICE-HUB-Gr-2.4",
+          "nickname": "REPORT-KEY-01",
+          "product": "Rutoken lite"
+        }
+      ]
+    },
+    {
+      "users": [],
+      "groups": [
+        "DOMAIN\\Accounting"
+      ],
+      "allowedDevices": [
+        {
+          "endpoint": "OFFICE-HUB-Gr-3.1",
+          "nickname": "ACCOUNTING-KEY-01",
+          "product": ""
+        }
+      ]
+    }
+  ]
+}

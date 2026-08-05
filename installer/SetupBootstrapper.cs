@@ -14,8 +14,8 @@ using System.Windows.Forms;
 [assembly: AssemblyCompany("DiskControl")]
 [assembly: AssemblyProduct("DiskControl")]
 [assembly: AssemblyCopyright("Copyright 2026")]
-[assembly: AssemblyVersion("0.1.0.0")]
-[assembly: AssemblyFileVersion("0.1.0.0")]
+[assembly: AssemblyVersion("0.2.0.0")]
+[assembly: AssemblyFileVersion("0.2.0.0")]
 [assembly: ComVisible(false)]
 
 internal static class SetupBootstrapper
@@ -52,6 +52,14 @@ internal static class SetupBootstrapper
         public string Account;
         public string Password;
         public string UsageStateDirectory;
+        public bool ConfigureVpn;
+        public string VpnId;
+        public string VpnName;
+        public string VpnServer;
+        public string VpnPsk;
+        public string VpnExpectedPublicIp;
+        public string VpnTokenIdentity;
+        public bool VpnFullTunnel;
     }
 
     private sealed class InstallProgressForm : Form
@@ -198,8 +206,14 @@ internal static class SetupBootstrapper
             {
                 return 1;
             }
+            if (!PromptVpnConfiguration(credentials))
+            {
+                return 1;
+            }
 
             PowerShellResult result = ShowInstallProgress(launcher, tempRoot, credentials);
+            credentials.Password = string.Empty;
+            credentials.VpnPsk = string.Empty;
             if (result.ExitCode != 0)
             {
                 MessageBox.Show(
@@ -405,6 +419,129 @@ internal static class SetupBootstrapper
         return credentials;
     }
 
+    private static bool PromptVpnConfiguration(ServiceCredentials credentials)
+    {
+        using (Form form = new Form())
+        {
+            form.Text = ProductName + " - настройка VPN";
+            form.Width = 610;
+            form.Height = 465;
+            form.FormBorderStyle = FormBorderStyle.FixedDialog;
+            form.StartPosition = FormStartPosition.CenterScreen;
+            form.MaximizeBox = false;
+            form.MinimizeBox = false;
+            form.ShowInTaskbar = true;
+
+            CheckBox enabledBox = new CheckBox();
+            enabledBox.Left = 16;
+            enabledBox.Top = 16;
+            enabledBox.Width = 550;
+            enabledBox.Height = 24;
+            enabledBox.Text = "Создать или обновить VPN-профиль Windows";
+            enabledBox.Checked = true;
+            form.Controls.Add(enabledBox);
+
+            Label info = new Label();
+            info.Left = 16;
+            info.Top = 46;
+            info.Width = 555;
+            info.Height = 38;
+            info.Text = "Общий ключ нужен только для настройки L2TP/IPsec и не записывается в allow.json или журналы. Логин и пароль VPN пользователь введёт при первом подключении токена.";
+            form.Controls.Add(info);
+
+            Label idLabel = new Label { Left = 16, Top = 96, Width = 145, Text = "ID профиля" };
+            TextBox idBox = new TextBox { Left = 170, Top = 92, Width = 400, Text = "salut" };
+            Label nameLabel = new Label { Left = 16, Top = 130, Width = 145, Text = "Имя подключения" };
+            TextBox nameBox = new TextBox { Left = 170, Top = 126, Width = 400, Text = "Салют" };
+            Label serverLabel = new Label { Left = 16, Top = 164, Width = 145, Text = "VPN-сервер" };
+            TextBox serverBox = new TextBox { Left = 170, Top = 160, Width = 400, Text = "89.108.64.96" };
+            Label pskLabel = new Label { Left = 16, Top = 198, Width = 145, Text = "Общий ключ" };
+            TextBox pskBox = new TextBox { Left = 170, Top = 194, Width = 400, UseSystemPasswordChar = true };
+            Label ipLabel = new Label { Left = 16, Top = 232, Width = 145, Text = "Разрешённый внешний IP" };
+            TextBox ipBox = new TextBox { Left = 170, Top = 228, Width = 400, Text = "89.108.64.96" };
+            Label tokenLabel = new Label { Left = 16, Top = 266, Width = 145, Text = "Токен" };
+            TextBox tokenBox = new TextBox { Left = 170, Top = 262, Width = 400, Text = "ДОБРОМЫСЛОВА О.А. ИП" };
+            Label tokenHint = new Label { Left = 170, Top = 288, Width = 400, Height = 28, Text = "Имя или endpoint уже разрешённого токена. Поле можно оставить пустым и назначить VPN позже в админке." };
+            CheckBox fullTunnelBox = new CheckBox { Left = 170, Top = 322, Width = 400, Text = "Весь интернет через VPN", Checked = true };
+
+            form.Controls.Add(idLabel);
+            form.Controls.Add(idBox);
+            form.Controls.Add(nameLabel);
+            form.Controls.Add(nameBox);
+            form.Controls.Add(serverLabel);
+            form.Controls.Add(serverBox);
+            form.Controls.Add(pskLabel);
+            form.Controls.Add(pskBox);
+            form.Controls.Add(ipLabel);
+            form.Controls.Add(ipBox);
+            form.Controls.Add(tokenLabel);
+            form.Controls.Add(tokenBox);
+            form.Controls.Add(tokenHint);
+            form.Controls.Add(fullTunnelBox);
+
+            Action updateEnabled = delegate
+            {
+                bool enabled = enabledBox.Checked;
+                idBox.Enabled = enabled;
+                nameBox.Enabled = enabled;
+                serverBox.Enabled = enabled;
+                pskBox.Enabled = enabled;
+                ipBox.Enabled = enabled;
+                tokenBox.Enabled = enabled;
+                fullTunnelBox.Enabled = enabled;
+            };
+            enabledBox.CheckedChanged += delegate { updateEnabled(); };
+
+            Button okButton = new Button { Left = 376, Top = 374, Width = 92, Height = 30, Text = "Далее" };
+            Button cancelButton = new Button { Left = 478, Top = 374, Width = 92, Height = 30, Text = "Отмена" };
+            form.Controls.Add(okButton);
+            form.Controls.Add(cancelButton);
+
+            okButton.Click += delegate
+            {
+                if (enabledBox.Checked &&
+                    (string.IsNullOrWhiteSpace(idBox.Text) ||
+                     string.IsNullOrWhiteSpace(nameBox.Text) ||
+                     string.IsNullOrWhiteSpace(serverBox.Text) ||
+                     string.IsNullOrEmpty(pskBox.Text) ||
+                     string.IsNullOrWhiteSpace(ipBox.Text)))
+                {
+                    MessageBox.Show(
+                        "Для настройки VPN заполните ID, имя, сервер, общий ключ и разрешённый внешний IP.",
+                        ProductName + " Setup", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+                if (enabledBox.Checked && !System.Text.RegularExpressions.Regex.IsMatch(idBox.Text.Trim(), "^[A-Za-z0-9._-]+$"))
+                {
+                    MessageBox.Show(
+                        "ID профиля может содержать только латинские буквы, цифры, точку, дефис и подчёркивание.",
+                        ProductName + " Setup", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                credentials.ConfigureVpn = enabledBox.Checked;
+                credentials.VpnId = idBox.Text.Trim();
+                credentials.VpnName = nameBox.Text.Trim();
+                credentials.VpnServer = serverBox.Text.Trim();
+                credentials.VpnPsk = pskBox.Text;
+                credentials.VpnExpectedPublicIp = ipBox.Text.Trim();
+                credentials.VpnTokenIdentity = tokenBox.Text.Trim();
+                credentials.VpnFullTunnel = fullTunnelBox.Checked;
+                form.DialogResult = DialogResult.OK;
+                form.Close();
+            };
+            cancelButton.Click += delegate
+            {
+                form.DialogResult = DialogResult.Cancel;
+                form.Close();
+            };
+            form.AcceptButton = okButton;
+            form.CancelButton = cancelButton;
+            updateEnabled();
+            return form.ShowDialog() == DialogResult.OK;
+        }
+    }
+
     private static string DefaultServiceAccount()
     {
         string configuredAccount = Environment.GetEnvironmentVariable("DISKCONTROL_SERVICE_ACCOUNT");
@@ -533,6 +670,14 @@ internal static class SetupBootstrapper
             startInfo.EnvironmentVariables["DISKCONTROL_SERVICE_ACCOUNT"] = credentials.Account ?? string.Empty;
             startInfo.EnvironmentVariables["DISKCONTROL_SERVICE_PASSWORD"] = credentials.Password ?? string.Empty;
             startInfo.EnvironmentVariables["DISKCONTROL_USAGE_STATE_DIR"] = credentials.UsageStateDirectory ?? string.Empty;
+            startInfo.EnvironmentVariables["DISKCONTROL_VPN_CONFIGURE"] = credentials.ConfigureVpn ? "1" : "0";
+            startInfo.EnvironmentVariables["DISKCONTROL_VPN_ID"] = credentials.VpnId ?? string.Empty;
+            startInfo.EnvironmentVariables["DISKCONTROL_VPN_NAME"] = credentials.VpnName ?? string.Empty;
+            startInfo.EnvironmentVariables["DISKCONTROL_VPN_SERVER"] = credentials.VpnServer ?? string.Empty;
+            startInfo.EnvironmentVariables["DISKCONTROL_VPN_PSK"] = credentials.VpnPsk ?? string.Empty;
+            startInfo.EnvironmentVariables["DISKCONTROL_VPN_EXPECTED_IP"] = credentials.VpnExpectedPublicIp ?? string.Empty;
+            startInfo.EnvironmentVariables["DISKCONTROL_VPN_TOKEN"] = credentials.VpnTokenIdentity ?? string.Empty;
+            startInfo.EnvironmentVariables["DISKCONTROL_VPN_FULL_TUNNEL"] = credentials.VpnFullTunnel ? "1" : "0";
         }
 
         using (var process = Process.Start(startInfo))

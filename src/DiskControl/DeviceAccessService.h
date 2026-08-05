@@ -1,5 +1,7 @@
 #pragma once
 
+#include "PolicyManager.h"
+
 #include <string>
 #include <vector>
 
@@ -12,6 +14,7 @@ struct DeviceViewModel {
     std::wstring usedBy;
     std::wstring usedAt;
     std::wstring usageStartedAt;
+    std::wstring vpnProfileId;
     bool allowed = false;
 };
 
@@ -24,10 +27,18 @@ public:
     std::wstring stopUsingDevice(const DeviceViewModel& device) const;
     std::wstring stopUsingOwnedDevice(const DeviceViewModel& device) const;
     void refreshUsageTimer(const DeviceViewModel& device) const;
+    std::wstring verifyVpnForDevice(const DeviceViewModel& device) const;
     std::wstring assignDeviceToCurrentUser(const DeviceViewModel& device) const;
     std::wstring assignDeviceToUser(const DeviceViewModel& device, const std::wstring& userName) const;
     std::wstring removeDeviceFromUser(const DeviceViewModel& device, const std::wstring& userName) const;
     std::wstring setDevicesForUser(const std::vector<DeviceViewModel>& devices, const std::wstring& userName) const;
+    std::wstring setVpnProfileForDevice(
+        const DeviceViewModel& device,
+        const std::wstring& userName,
+        const std::wstring& vpnProfileId) const;
+    std::vector<VpnProfile> vpnProfiles() const;
+    void upsertVpnProfile(const VpnProfile& profile) const;
+    void removeVpnProfile(const std::wstring& profileId) const;
     void updateAccessForUser(std::vector<DeviceViewModel>& devices, const std::wstring& userName) const;
     std::wstring currentUserSummary() const;
     std::wstring currentPolicyPath() const;

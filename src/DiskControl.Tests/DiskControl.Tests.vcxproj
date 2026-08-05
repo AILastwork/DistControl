@@ -59,7 +59,7 @@
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
-      <AdditionalDependencies>advapi32.lib;secur32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>advapi32.lib;secur32.lib;rasapi32.lib;winhttp.lib;ws2_32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -79,7 +79,7 @@
       <SubSystem>Console</SubSystem>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
-      <AdditionalDependencies>advapi32.lib;secur32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>advapi32.lib;secur32.lib;rasapi32.lib;winhttp.lib;ws2_32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -90,6 +90,7 @@
     <ClCompile Include="..\DiskControl\IpcClient.cpp" />
     <ClCompile Include="..\DiskControl\PolicyManager.cpp" />
     <ClCompile Include="..\DiskControl\UsageStateStore.cpp" />
+    <ClCompile Include="..\DiskControl\VpnManager.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\DiskControl\AuditLogger.h" />
@@ -98,6 +99,7 @@
     <ClInclude Include="..\DiskControl\IpcClient.h" />
     <ClInclude Include="..\DiskControl\PolicyManager.h" />
     <ClInclude Include="..\DiskControl\UsageStateStore.h" />
+    <ClInclude Include="..\DiskControl\VpnManager.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />

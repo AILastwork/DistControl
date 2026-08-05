@@ -7,6 +7,14 @@ param(
     [string]$ServiceDisplayName = "DistKontrolUSB Client",
     [string]$ServiceAccount = $env:DISKCONTROL_SERVICE_ACCOUNT,
     [string]$UsageStateDir = $env:DISKCONTROL_USAGE_STATE_DIR,
+    [string]$ConfigureVpn = $env:DISKCONTROL_VPN_CONFIGURE,
+    [string]$VpnProfileIdInput = $env:DISKCONTROL_VPN_ID,
+    [string]$VpnName = $env:DISKCONTROL_VPN_NAME,
+    [string]$VpnServer = $env:DISKCONTROL_VPN_SERVER,
+    [string]$VpnPsk = $env:DISKCONTROL_VPN_PSK,
+    [string]$VpnExpectedIp = $env:DISKCONTROL_VPN_EXPECTED_IP,
+    [string]$VpnTokenIdentity = $env:DISKCONTROL_VPN_TOKEN,
+    [string]$VpnFullTunnel = $env:DISKCONTROL_VPN_FULL_TUNNEL,
     [securestring]$ServicePassword,
     [switch]$SkipBuild,
     [switch]$NoStartService,
@@ -23,7 +31,7 @@ try {
 catch {
 }
 $ProductName = "DiskControl"
-$ProductVersion = "0.1.0"
+$ProductVersion = "0.2.0"
 $Publisher = "DiskControl"
 $SourceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $ReleaseDir = Join-Path $SourceRoot "build\x64\Release"
@@ -36,6 +44,7 @@ $ClientStartupShortcut = Join-Path $env:ProgramData "Microsoft\Windows\Start Men
 $UninstallRegistryPath = "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\DiskControl"
 $script:InstallLogPath = $null
 $script:InstallWarnings = New-Object System.Collections.Generic.List[string]
+$VpnProfileId = if ([string]::IsNullOrWhiteSpace($VpnProfileIdInput)) { "salut" } else { $VpnProfileIdInput.Trim() }
 
 function Write-InstallLogLine([string]$Message) {
     if ([string]::IsNullOrWhiteSpace($script:InstallLogPath)) {
@@ -547,9 +556,137 @@ function New-EmptyPolicyText {
   "pipeName": "dkclient",
   "refreshSeconds": 5,
   "usageStatePath": "$(($UsageStatePath -replace '\\', '\\'))",
+  "vpnProfiles": [],
   "userAssignments": []
 }
 "@
+}
+
+function Test-VpnConfigurationRequested {
+    return [string]::Equals($ConfigureVpn, "1", [StringComparison]::OrdinalIgnoreCase) -or
+        [string]::Equals($ConfigureVpn, "true", [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Install-VpnProfile {
+    if (-not (Test-VpnConfigurationRequested)) {
+        Write-Step "Skip VPN profile configuration"
+        return
+    }
+    if ([string]::IsNullOrWhiteSpace($VpnName) -or
+        [string]::IsNullOrWhiteSpace($VpnServer) -or
+        [string]::IsNullOrWhiteSpace($VpnPsk) -or
+        [string]::IsNullOrWhiteSpace($VpnExpectedIp)) {
+        throw "VPN configuration requires profile name, server, pre-shared key and expected public IP."
+    }
+    if ($VpnProfileId -notmatch '^[A-Za-z0-9._-]+$') {
+        throw "VPN profile ID contains unsupported characters: $VpnProfileId"
+    }
+
+    $parsedIp = $null
+    if (-not [Net.IPAddress]::TryParse($VpnExpectedIp.Trim(), [ref]$parsedIp)) {
+        throw "VPN expected public IP is invalid: $VpnExpectedIp"
+    }
+
+    $splitTunneling = -not ([string]::Equals($VpnFullTunnel, "1", [StringComparison]::OrdinalIgnoreCase) -or
+        [string]::Equals($VpnFullTunnel, "true", [StringComparison]::OrdinalIgnoreCase))
+    Write-Step "Configure Windows VPN profile '$VpnName': server=$VpnServer; fullTunnel=$(-not $splitTunneling); expectedPublicIp=$VpnExpectedIp; psk=<not logged>"
+    if ($DryRun) {
+        return
+    }
+
+    try {
+        Import-Module VpnClient -ErrorAction Stop
+        $existing = Get-VpnConnection -Name $VpnName -AllUserConnection -ErrorAction SilentlyContinue
+        if ($existing) {
+            Set-VpnConnection -Name $VpnName -ServerAddress $VpnServer -TunnelType L2tp `
+                -EncryptionLevel Required -AuthenticationMethod MSChapv2 -SplitTunneling $splitTunneling `
+                -AllUserConnection -L2tpPsk $VpnPsk -RememberCredential $true -Force | Out-Null
+        }
+        else {
+            Add-VpnConnection -Name $VpnName -ServerAddress $VpnServer -TunnelType L2tp `
+                -EncryptionLevel Required -AuthenticationMethod MSChapv2 -SplitTunneling:$splitTunneling `
+                -AllUserConnection -L2tpPsk $VpnPsk -RememberCredential -Force | Out-Null
+        }
+    }
+    catch {
+        throw "Cannot create or update Windows VPN profile '$VpnName': $($_.Exception.Message)"
+    }
+}
+
+function Set-PolicyVpnConfiguration {
+    if (-not (Test-VpnConfigurationRequested)) {
+        return
+    }
+    Write-Step "Configure VPN policy metadata and token mapping: profileId=$VpnProfileId; token=$VpnTokenIdentity"
+    if ($DryRun) {
+        return
+    }
+
+    try {
+        $policy = Get-Content -LiteralPath $PolicyPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $fullTunnel = [string]::Equals($VpnFullTunnel, "1", [StringComparison]::OrdinalIgnoreCase) -or
+            [string]::Equals($VpnFullTunnel, "true", [StringComparison]::OrdinalIgnoreCase)
+        $profile = [pscustomobject]@{
+            id = $VpnProfileId
+            name = $VpnName
+            serverAddress = $VpnServer
+            tunnelType = "L2TP"
+            expectedPublicIps = @($VpnExpectedIp.Trim())
+            ipCheckUrl = "https://api.ipify.org"
+            fullTunnel = $fullTunnel
+            enabled = $true
+        }
+
+        $profiles = New-Object System.Collections.Generic.List[object]
+        $replaced = $false
+        foreach ($existingProfile in @($policy.vpnProfiles)) {
+            if ($existingProfile -and [string]::Equals([string]$existingProfile.id, $VpnProfileId, [StringComparison]::OrdinalIgnoreCase)) {
+                $profiles.Add($profile)
+                $replaced = $true
+            }
+            elseif ($existingProfile) {
+                $profiles.Add($existingProfile)
+            }
+        }
+        if (-not $replaced) {
+            $profiles.Add($profile)
+        }
+        if ($policy.PSObject.Properties["vpnProfiles"]) {
+            $policy.vpnProfiles = @($profiles)
+        }
+        else {
+            $policy | Add-Member -MemberType NoteProperty -Name "vpnProfiles" -Value @($profiles)
+        }
+
+        $mapped = 0
+        if (-not [string]::IsNullOrWhiteSpace($VpnTokenIdentity)) {
+            foreach ($assignment in @($policy.userAssignments)) {
+                foreach ($device in @($assignment.allowedDevices)) {
+                    $matches = [string]::Equals([string]$device.endpoint, $VpnTokenIdentity, [StringComparison]::OrdinalIgnoreCase) -or
+                        [string]::Equals([string]$device.nickname, $VpnTokenIdentity, [StringComparison]::OrdinalIgnoreCase)
+                    if (-not $matches) {
+                        continue
+                    }
+                    if ($device.PSObject.Properties["vpnProfile"]) {
+                        $device.vpnProfile = $VpnProfileId
+                    }
+                    else {
+                        $device | Add-Member -MemberType NoteProperty -Name "vpnProfile" -Value $VpnProfileId
+                    }
+                    $mapped++
+                }
+            }
+        }
+
+        $text = $policy | ConvertTo-Json -Depth 32
+        [System.IO.File]::WriteAllText($PolicyPath, $text + [Environment]::NewLine, $script:Utf8NoBomEncoding)
+        if (-not [string]::IsNullOrWhiteSpace($VpnTokenIdentity) -and $mapped -eq 0) {
+            Write-InstallWarning "VPN profile was created, but token '$VpnTokenIdentity' was not found in current allow.json. Assign it later in DiskControl Admin."
+        }
+    }
+    catch {
+        throw "Cannot update VPN metadata in policy $PolicyPath`: $($_.Exception.Message)"
+    }
 }
 
 function Initialize-Policy {
@@ -958,6 +1095,8 @@ foreach ($installerFile in @(
 Remove-LegacyDiagnostics
 Initialize-Policy
 Set-PolicyUsageStatePath
+Install-VpnProfile
+Set-PolicyVpnConfiguration
 Initialize-UsageState
 Set-DirectoryAcl
 Test-UsageStateAccess

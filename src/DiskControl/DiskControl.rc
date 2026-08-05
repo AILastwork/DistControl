@@ -1,3 +1,42 @@
 #include "resource.h"
+#include <windows.h>
 
 IDI_DISKCONTROL ICON "res\\DiskControl.ico"
+
+IDD_VPN_CREDENTIALS DIALOGEX 0, 0, 280, 142
+STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "DiskControl - VPN"
+FONT 9, "Segoe UI"
+BEGIN
+    LTEXT           "Профиль Windows:", -1, 10, 12, 82, 10
+    LTEXT           "", IDC_VPN_PROFILE_NAME, 96, 12, 174, 10
+    LTEXT           "Логин VPN:", -1, 10, 39, 82, 10
+    EDITTEXT        IDC_VPN_USER_NAME, 96, 35, 174, 14, ES_AUTOHSCROLL
+    LTEXT           "Пароль VPN:", -1, 10, 65, 82, 10
+    EDITTEXT        IDC_VPN_PASSWORD, 96, 61, 174, 14, ES_PASSWORD | ES_AUTOHSCROLL
+    LTEXT           "Данные сохраняются средствами Windows и не записываются в allow.json.", -1, 10, 84, 260, 20
+    DEFPUSHBUTTON   "Сохранить", IDOK, 150, 116, 58, 16
+    PUSHBUTTON      "Отмена", IDCANCEL, 212, 116, 58, 16
+END
+
+IDD_VPN_ADMIN DIALOGEX 0, 0, 370, 220
+STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "DiskControl Admin - VPN для токена"
+FONT 9, "Segoe UI"
+BEGIN
+    LTEXT           "ID профиля:", -1, 10, 13, 95, 10
+    COMBOBOX        IDC_VPN_PROFILE_ID, 112, 9, 246, 90, CBS_DROPDOWN | CBS_AUTOHSCROLL | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "Имя в Windows:", -1, 10, 42, 95, 10
+    EDITTEXT        IDC_VPN_ADMIN_NAME, 112, 38, 246, 14, ES_AUTOHSCROLL
+    LTEXT           "VPN-сервер:", -1, 10, 68, 95, 10
+    EDITTEXT        IDC_VPN_ADMIN_SERVER, 112, 64, 246, 14, ES_AUTOHSCROLL
+    LTEXT           "Внешние IP:", -1, 10, 94, 95, 10
+    EDITTEXT        IDC_VPN_ADMIN_IPS, 112, 90, 246, 14, ES_AUTOHSCROLL
+    AUTOCHECKBOX    "Весь интернет через VPN", IDC_VPN_ADMIN_FULL_TUNNEL, 112, 114, 150, 12
+    AUTOCHECKBOX    "Профиль включён", IDC_VPN_ADMIN_ENABLED, 270, 114, 88, 12
+    LTEXT           "Общий ключ L2TP задаётся установщиком на клиентском компьютере и в allow.json не хранится.", -1, 10, 136, 348, 20
+    DEFPUSHBUTTON   "Сохранить и назначить", IDC_VPN_ADMIN_SAVE, 10, 184, 118, 18
+    PUSHBUTTON      "Снять с токена", IDC_VPN_ADMIN_UNASSIGN, 134, 184, 78, 18
+    PUSHBUTTON      "Удалить профиль", IDC_VPN_ADMIN_DELETE, 218, 184, 78, 18
+    PUSHBUTTON      "Закрыть", IDCANCEL, 302, 184, 56, 18
+END

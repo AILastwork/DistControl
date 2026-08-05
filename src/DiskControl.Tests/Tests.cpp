@@ -779,6 +779,106 @@ void testPolicyUsageStatePath() {
 
     std::remove(fileName);
 }
+
+void testVpnPolicyRoundTrip() {
+    const char* fileName = "policy-vpn-test.json";
+    std::remove(fileName);
+
+    {
+        std::ofstream stream(fileName, std::ios::binary);
+        stream << "{\n"
+            << "  \"pipeName\": \"dkclient\",\n"
+            << "  \"vpnProfiles\": [\n"
+            << "    {\"id\": \"salut\", \"name\": \"Salut\", \"serverAddress\": \"89.108.64.96\", "
+            << "\"tunnelType\": \"L2TP\", \"expectedPublicIps\": [\"89.108.64.96\"], "
+            << "\"ipCheckUrl\": \"https://api.ipify.org\", \"fullTunnel\": true, \"enabled\": true}\n"
+            << "  ],\n"
+            << "  \"userAssignments\": [\n"
+            << "    {\"users\": [\"" << narrowAscii(PolicyManager::currentUserSid()) << "\"], \"groups\": [], "
+            << "\"allowedDevices\": [{\"endpoint\": \"OFFICE-HUB-Gr-1.3\", \"nickname\": \"VPN Key\", "
+            << "\"product\": \"Rutoken\", \"vpnProfile\": \"salut\"}]}\n"
+            << "  ]\n"
+            << "}\n";
+    }
+
+    ParsedDevice device{ L"OFFICE-HUB-Gr-1.3", L"VPN Key", L"Rutoken", L"NO ONE" };
+    {
+        PolicyManager policy(L"policy-vpn-test.json");
+        require(policy.vpnProfiles().size() == 1, "VPN profile should be parsed.");
+        const VpnProfile& profile = policy.vpnProfiles()[0];
+        require(profile.id == L"salut" && profile.name == L"Salut", "VPN profile identity mismatch.");
+        require(profile.serverAddress == L"89.108.64.96", "VPN server should be parsed.");
+        require(profile.fullTunnel && profile.enabled, "VPN Boolean settings should be parsed.");
+        require(profile.expectedPublicIps.size() == 1 &&
+            profile.expectedPublicIps[0] == L"89.108.64.96", "Expected public IP should be parsed.");
+
+        VpnProfile matched;
+        require(policy.tryGetVpnProfileForDevice(device, matched), "Token should resolve its VPN profile.");
+        require(matched.id == L"salut", "Resolved VPN profile mismatch.");
+
+        policy.setDevicesForUser({ device }, PolicyManager::currentUserSid());
+    }
+
+    {
+        PolicyManager policy(L"policy-vpn-test.json");
+        VpnProfile matched;
+        require(policy.tryGetVpnProfileForDevice(device, matched),
+            "Saving the user token list must preserve its VPN mapping.");
+
+        VpnProfile updated = policy.vpnProfiles()[0];
+        updated.expectedPublicIps = { L"203.0.113.10", L"203.0.113.11" };
+        updated.fullTunnel = false;
+        policy.upsertVpnProfile(updated);
+    }
+
+    {
+        PolicyManager policy(L"policy-vpn-test.json");
+        require(policy.vpnProfiles().size() == 1 &&
+            policy.vpnProfiles()[0].expectedPublicIps.size() == 2,
+            "Updated VPN profile should be written.");
+        require(!policy.vpnProfiles()[0].fullTunnel, "Updated VPN Boolean should be written.");
+        policy.removeVpnProfile(L"salut");
+    }
+
+    {
+        PolicyManager policy(L"policy-vpn-test.json");
+        VpnProfile matched;
+        require(policy.vpnProfiles().empty(), "Removed VPN profile should not remain in policy.");
+        require(!policy.tryGetVpnProfileForDevice(device, matched),
+            "Removing a VPN profile must remove token references to it.");
+    }
+
+    std::remove(fileName);
+}
+
+void testUnknownVpnMappingFailsClosed() {
+    const char* fileName = "policy-vpn-missing-profile-test.json";
+    std::remove(fileName);
+    {
+        std::ofstream stream(fileName, std::ios::binary);
+        stream << "{\n"
+            << "  \"pipeName\": \"dkclient\",\n"
+            << "  \"vpnProfiles\": [],\n"
+            << "  \"userAssignments\": [{\"users\": [\""
+            << narrowAscii(PolicyManager::currentUserSid())
+            << "\"], \"groups\": [], \"allowedDevices\": [{\"endpoint\": \"OFFICE-HUB-Gr-1.3\", "
+            << "\"nickname\": \"VPN Key\", \"product\": \"Rutoken\", \"vpnProfile\": \"missing\"}]}]\n"
+            << "}\n";
+    }
+
+    bool rejected = false;
+    try {
+        PolicyManager policy(L"policy-vpn-missing-profile-test.json");
+        ParsedDevice device{ L"OFFICE-HUB-Gr-1.3", L"VPN Key", L"Rutoken", L"NO ONE" };
+        VpnProfile profile;
+        policy.tryGetVpnProfileForDevice(device, profile);
+    }
+    catch (const std::exception& error) {
+        rejected = std::string(error.what()).find("unknown profile") != std::string::npos;
+    }
+    require(rejected, "A token mapped to a missing VPN profile must fail closed.");
+    std::remove(fileName);
+}
 }
 
 int main() {
@@ -800,6 +900,8 @@ int main() {
         testPolicyWriteReportsAccessDenied();
         testRepairInvalidPolicyFile();
         testPolicyUsageStatePath();
+        testVpnPolicyRoundTrip();
+        testUnknownVpnMappingFailsClosed();
         std::cout << "All DiskControl C++ tests passed.\n";
         return 0;
     }

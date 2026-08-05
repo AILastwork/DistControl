@@ -3,6 +3,7 @@
 #include "AuditLogger.h"
 #include "DeviceParser.h"
 #include "PolicyManager.h"
+#include "VpnManager.h"
 #include "resource.h"
 
 #include <algorithm>
@@ -36,16 +37,19 @@ constexpr int IDC_SAVE_POLICY = 1015;
 constexpr int IDC_COMPUTER = 1018;
 constexpr int IDC_LOAD_COMPUTER = 1019;
 constexpr int IDC_AVAILABLE_LIST = 1020;
+constexpr int IDC_VPN = 1021;
 constexpr UINT_PTR IDT_DELAYED_REFRESH = 2001;
 constexpr UINT_PTR IDT_USAGE_WATCHDOG = 2002;
 constexpr UINT WM_REFRESH_COMPLETE = WM_APP + 1;
 constexpr UINT WM_COMPUTER_LOAD_COMPLETE = WM_APP + 2;
 constexpr UINT WM_TOKEN_ACTION_COMPLETE = WM_APP + 3;
+constexpr UINT WM_VPN_WATCHDOG_COMPLETE = WM_APP + 4;
 constexpr LPARAM kTreeGroupParam = -1;
 constexpr ULONGLONG kTokenSessionLimitMs = 20ULL * 60ULL * 1000ULL;
 constexpr ULONGLONG kAutoReleaseRetryMs = 15ULL * 1000ULL;
 constexpr ULONGLONG kTokenActionFailureCooldownMs = 60ULL * 1000ULL;
 constexpr DWORD kTokenPromptTimeoutMs = 60 * 1000;
+constexpr ULONGLONG kVpnWatchdogIntervalMs = 30ULL * 1000ULL;
 constexpr int kMessageBoxTimeout = 32000;
 
 #ifdef DISKCONTROL_ADMIN
@@ -73,6 +77,33 @@ bool containsAscii(const char* text, const char* needle) {
 }
 
 std::wstring userFriendlyErrorMessage(const char* error) {
+    if (containsAscii(error, "VPN profile is disabled")) {
+        return L"VPN-профиль для этого токена отключён администратором. Токен не подключён.";
+    }
+    if (containsAscii(error, "VPN profile mapping references an unknown profile")) {
+        return L"Токену назначен VPN-профиль, которого нет в конфигурации. Токен не подключён; исправьте назначение в админке.";
+    }
+    if (containsAscii(error, "VPN expected public IP is not configured")) {
+        return L"Для VPN-профиля не указан разрешённый внешний IP. Администратор должен заполнить его в конфигурации.";
+    }
+    if (containsAscii(error, "VPN Windows profile is not installed")) {
+        return L"На компьютере не установлен нужный профиль VPN Windows. Запустите установщик DiskControl или обратитесь к администратору.";
+    }
+    if (containsAscii(error, "VPN credentials are not configured")) {
+        return L"Не сохранены логин и пароль VPN. Выберите токен и нажмите «Учётные данные VPN».";
+    }
+    if (containsAscii(error, "RAS error 691")) {
+        return L"VPN отклонил логин или пароль. Нажмите «Учётные данные VPN» и введите их заново.";
+    }
+    if (containsAscii(error, "VPN public IP mismatch")) {
+        return L"VPN подключён, но внешний IP не совпадает с разрешённым. Токен не подключён. " + widenAscii(error);
+    }
+    if (containsAscii(error, "VPN public IP") || containsAscii(error, "verification service")) {
+        return L"Не удалось безопасно проверить внешний IP после подключения VPN. Токен не подключён; проверьте интернет и VPN.";
+    }
+    if (containsAscii(error, "VPN connection") || containsAscii(error, "VPN credential")) {
+        return L"Не удалось подключить VPN. Проверьте профиль Windows, логин, пароль и доступность VPN-сервера.";
+    }
     if (containsAscii(error, "Device is not allowed by policy")) {
         return L"Этот токен не разрешён текущему пользователю. Обратитесь к администратору DiskControl.";
     }
@@ -152,6 +183,209 @@ std::wstring trim(const std::wstring& text) {
     return text.substr(first, last - first + 1);
 }
 
+struct VpnCredentialDialogData {
+    std::wstring profileName;
+    std::wstring userName;
+    std::wstring password;
+};
+
+std::wstring dialogItemText(HWND dialog, int controlId) {
+    const int length = GetWindowTextLengthW(GetDlgItem(dialog, controlId));
+    std::wstring value(static_cast<size_t>(length) + 1, L'\0');
+    GetDlgItemTextW(dialog, controlId, value.data(), length + 1);
+    value.resize(static_cast<size_t>(length));
+    return value;
+}
+
+INT_PTR CALLBACK vpnCredentialDialogProc(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam) {
+    auto* data = reinterpret_cast<VpnCredentialDialogData*>(GetWindowLongPtrW(dialog, DWLP_USER));
+    if (message == WM_INITDIALOG) {
+        data = reinterpret_cast<VpnCredentialDialogData*>(lParam);
+        SetWindowLongPtrW(dialog, DWLP_USER, reinterpret_cast<LONG_PTR>(data));
+        SetDlgItemTextW(dialog, IDC_VPN_PROFILE_NAME, data->profileName.c_str());
+        SetDlgItemTextW(dialog, IDC_VPN_USER_NAME, data->userName.c_str());
+        return TRUE;
+    }
+    if (message != WM_COMMAND || !data) {
+        return FALSE;
+    }
+    if (LOWORD(wParam) == IDOK) {
+        data->userName = trim(dialogItemText(dialog, IDC_VPN_USER_NAME));
+        data->password = dialogItemText(dialog, IDC_VPN_PASSWORD);
+        if (data->userName.empty() || data->password.empty()) {
+            MessageBoxW(dialog, L"Введите логин и пароль VPN.", L"DiskControl", MB_OK | MB_ICONWARNING);
+            return TRUE;
+        }
+        EndDialog(dialog, IDOK);
+        return TRUE;
+    }
+    if (LOWORD(wParam) == IDCANCEL) {
+        EndDialog(dialog, IDCANCEL);
+        return TRUE;
+    }
+    return FALSE;
+}
+
+struct VpnAdminDialogData {
+    DeviceAccessService* service = nullptr;
+    DeviceViewModel device;
+    std::wstring userName;
+    std::vector<VpnProfile> profiles;
+    bool changed = false;
+};
+
+std::vector<std::wstring> splitVpnExpectedIps(const std::wstring& text) {
+    std::vector<std::wstring> values;
+    size_t start = 0;
+    while (start <= text.size()) {
+        const size_t end = text.find_first_of(L",;\r\n", start);
+        const std::wstring value = trim(text.substr(start, end == std::wstring::npos ? std::wstring::npos : end - start));
+        if (!value.empty()) {
+            values.push_back(value);
+        }
+        if (end == std::wstring::npos) {
+            break;
+        }
+        start = end + 1;
+    }
+    return values;
+}
+
+std::wstring joinVpnExpectedIps(const std::vector<std::wstring>& values) {
+    std::wstring result;
+    for (const std::wstring& value : values) {
+        if (!result.empty()) {
+            result += L", ";
+        }
+        result += value;
+    }
+    return result;
+}
+
+void loadVpnAdminProfile(HWND dialog, const VpnAdminDialogData& data) {
+    const std::wstring id = trim(dialogItemText(dialog, IDC_VPN_PROFILE_ID));
+    const auto found = std::find_if(data.profiles.begin(), data.profiles.end(), [&id](const VpnProfile& profile) {
+        return CompareStringOrdinal(
+            profile.id.c_str(), static_cast<int>(profile.id.size()),
+            id.c_str(), static_cast<int>(id.size()), TRUE) == CSTR_EQUAL;
+    });
+    if (found == data.profiles.end()) {
+        SetDlgItemTextW(dialog, IDC_VPN_ADMIN_NAME, L"");
+        SetDlgItemTextW(dialog, IDC_VPN_ADMIN_SERVER, L"");
+        SetDlgItemTextW(dialog, IDC_VPN_ADMIN_IPS, L"");
+        CheckDlgButton(dialog, IDC_VPN_ADMIN_FULL_TUNNEL, BST_CHECKED);
+        CheckDlgButton(dialog, IDC_VPN_ADMIN_ENABLED, BST_CHECKED);
+        return;
+    }
+    SetDlgItemTextW(dialog, IDC_VPN_ADMIN_NAME, found->name.c_str());
+    SetDlgItemTextW(dialog, IDC_VPN_ADMIN_SERVER, found->serverAddress.c_str());
+    SetDlgItemTextW(dialog, IDC_VPN_ADMIN_IPS, joinVpnExpectedIps(found->expectedPublicIps).c_str());
+    CheckDlgButton(dialog, IDC_VPN_ADMIN_FULL_TUNNEL, found->fullTunnel ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(dialog, IDC_VPN_ADMIN_ENABLED, found->enabled ? BST_CHECKED : BST_UNCHECKED);
+}
+
+INT_PTR CALLBACK vpnAdminDialogProc(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam) {
+    auto* data = reinterpret_cast<VpnAdminDialogData*>(GetWindowLongPtrW(dialog, DWLP_USER));
+    if (message == WM_INITDIALOG) {
+        data = reinterpret_cast<VpnAdminDialogData*>(lParam);
+        SetWindowLongPtrW(dialog, DWLP_USER, reinterpret_cast<LONG_PTR>(data));
+        HWND combo = GetDlgItem(dialog, IDC_VPN_PROFILE_ID);
+        for (const VpnProfile& profile : data->profiles) {
+            SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(profile.id.c_str()));
+        }
+        std::wstring selectedId = data->device.vpnProfileId;
+        if (selectedId.empty() && !data->profiles.empty()) {
+            selectedId = data->profiles.front().id;
+        }
+        SetWindowTextW(combo, selectedId.c_str());
+        loadVpnAdminProfile(dialog, *data);
+        return TRUE;
+    }
+    if (message != WM_COMMAND || !data) {
+        return FALSE;
+    }
+
+    if (LOWORD(wParam) == IDC_VPN_PROFILE_ID && HIWORD(wParam) == CBN_SELCHANGE) {
+        const LRESULT selection = SendDlgItemMessageW(dialog, IDC_VPN_PROFILE_ID, CB_GETCURSEL, 0, 0);
+        if (selection != CB_ERR) {
+            wchar_t id[256]{};
+            SendDlgItemMessageW(dialog, IDC_VPN_PROFILE_ID, CB_GETLBTEXT,
+                static_cast<WPARAM>(selection), reinterpret_cast<LPARAM>(id));
+            SetDlgItemTextW(dialog, IDC_VPN_PROFILE_ID, id);
+            loadVpnAdminProfile(dialog, *data);
+        }
+        return TRUE;
+    }
+
+    try {
+        if (LOWORD(wParam) == IDC_VPN_ADMIN_SAVE) {
+            VpnProfile profile;
+            profile.id = trim(dialogItemText(dialog, IDC_VPN_PROFILE_ID));
+            profile.name = trim(dialogItemText(dialog, IDC_VPN_ADMIN_NAME));
+            profile.serverAddress = trim(dialogItemText(dialog, IDC_VPN_ADMIN_SERVER));
+            profile.tunnelType = L"L2TP";
+            profile.expectedPublicIps = splitVpnExpectedIps(dialogItemText(dialog, IDC_VPN_ADMIN_IPS));
+            profile.ipCheckUrl = L"https://api.ipify.org";
+            profile.fullTunnel = IsDlgButtonChecked(dialog, IDC_VPN_ADMIN_FULL_TUNNEL) == BST_CHECKED;
+            profile.enabled = IsDlgButtonChecked(dialog, IDC_VPN_ADMIN_ENABLED) == BST_CHECKED;
+            if (profile.id.empty() || profile.name.empty() || profile.serverAddress.empty() ||
+                profile.expectedPublicIps.empty()) {
+                MessageBoxW(dialog, L"Заполните ID, имя подключения Windows, сервер и хотя бы один внешний IP.",
+                    L"DiskControl Admin", MB_OK | MB_ICONWARNING);
+                return TRUE;
+            }
+            const bool validId = std::all_of(profile.id.begin(), profile.id.end(), [](wchar_t ch) {
+                return (ch >= L'a' && ch <= L'z') || (ch >= L'A' && ch <= L'Z') ||
+                    (ch >= L'0' && ch <= L'9') || ch == L'.' || ch == L'_' || ch == L'-';
+            });
+            if (!validId) {
+                MessageBoxW(dialog,
+                    L"ID профиля может содержать только латинские буквы, цифры, точку, дефис и подчёркивание.",
+                    L"DiskControl Admin", MB_OK | MB_ICONWARNING);
+                return TRUE;
+            }
+            data->service->upsertVpnProfile(profile);
+            data->service->setVpnProfileForDevice(data->device, data->userName, profile.id);
+            data->changed = true;
+            EndDialog(dialog, IDOK);
+            return TRUE;
+        }
+        if (LOWORD(wParam) == IDC_VPN_ADMIN_UNASSIGN) {
+            data->service->setVpnProfileForDevice(data->device, data->userName, L"");
+            data->changed = true;
+            EndDialog(dialog, IDOK);
+            return TRUE;
+        }
+        if (LOWORD(wParam) == IDC_VPN_ADMIN_DELETE) {
+            const std::wstring id = trim(dialogItemText(dialog, IDC_VPN_PROFILE_ID));
+            if (id.empty()) {
+                MessageBoxW(dialog, L"Выберите профиль для удаления.", L"DiskControl Admin", MB_OK | MB_ICONWARNING);
+                return TRUE;
+            }
+            const std::wstring question = L"Удалить VPN-профиль «" + id +
+                L"» и снять его со всех токенов в этом allow.json?";
+            if (MessageBoxW(dialog, question.c_str(), L"DiskControl Admin", MB_YESNO | MB_ICONWARNING) != IDYES) {
+                return TRUE;
+            }
+            data->service->removeVpnProfile(id);
+            data->changed = true;
+            EndDialog(dialog, IDOK);
+            return TRUE;
+        }
+    }
+    catch (const std::exception& error) {
+        const std::wstring details = L"Не удалось сохранить VPN-настройку. Техническая причина: " + widenAscii(error.what());
+        MessageBoxW(dialog, details.c_str(), L"DiskControl Admin", MB_OK | MB_ICONERROR);
+        return TRUE;
+    }
+
+    if (LOWORD(wParam) == IDCANCEL) {
+        EndDialog(dialog, IDCANCEL);
+        return TRUE;
+    }
+    return FALSE;
+}
+
 std::wstring getControlText(HWND hwnd) {
     const int length = GetWindowTextLengthW(hwnd);
     std::wstring buffer(static_cast<size_t>(length) + 1, L'\0');
@@ -214,8 +448,9 @@ void addDeviceColumns(HWND listView, bool includeAccessColumn) {
     addColumn(listView, 4, 150, L"Кем занят");
     addColumn(listView, 5, 120, L"Адрес");
     addColumn(listView, 6, 110, L"Осталось");
+    addColumn(listView, 7, 90, L"VPN");
     if (includeAccessColumn) {
-        addColumn(listView, 7, 100, L"Доступ");
+        addColumn(listView, 8, 100, L"Доступ");
     }
 }
 
@@ -231,8 +466,9 @@ void insertDeviceRow(HWND listView, int row, const DeviceViewModel& device, bool
     setItemText(listView, row, 4, device.usedBy);
     setItemText(listView, row, 5, device.usedAt);
     setItemText(listView, row, 6, adminRemainingText(device));
+    setItemText(listView, row, 7, device.vpnProfileId);
     if (includeAccessColumn) {
-        setItemText(listView, row, 7, device.allowed ? L"Разрешён" : L"Запрещён");
+        setItemText(listView, row, 8, device.allowed ? L"Разрешён" : L"Запрещён");
     }
 }
 
@@ -274,6 +510,7 @@ void populateGroupedDeviceList(HWND listView, const std::vector<DeviceViewModel>
         setItemText(listView, static_cast<int>(i), 4, device.usedBy);
         setItemText(listView, static_cast<int>(i), 5, device.usedAt);
         setItemText(listView, static_cast<int>(i), 6, adminRemainingText(device));
+        setItemText(listView, static_cast<int>(i), 7, device.vpnProfileId);
     }
 }
 
@@ -651,7 +888,8 @@ std::wstring columnValue(const DeviceViewModel& device, int column) {
     case 4: return device.usedBy;
     case 5: return device.usedAt;
     case 6: return adminRemainingText(device);
-    case 7: return device.allowed ? L"1" : L"0";
+    case 7: return device.vpnProfileId;
+    case 8: return device.allowed ? L"1" : L"0";
     default: return {};
     }
 }
@@ -871,6 +1109,9 @@ LRESULT MainWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     case WM_TOKEN_ACTION_COMPLETE:
         finishTokenAction();
         return 0;
+    case WM_VPN_WATCHDOG_COMPLETE:
+        finishVpnHealthCheck();
+        return 0;
     case WM_SIZE:
         if (wParam == SIZE_MINIMIZED) {
             return 0;
@@ -885,6 +1126,7 @@ LRESULT MainWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         }
         if (wParam == IDT_USAGE_WATCHDOG) {
             checkActiveDeviceTimeouts();
+            checkActiveVpnHealth();
             if (kAdminBuild) {
                 updateAdminListTimers(listView_, allowedDevices_);
                 updateAdminListTimers(availableListView_, availableDevices_);
@@ -989,6 +1231,9 @@ LRESULT MainWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         case IDC_EXPORT:
             exportExcel();
             return 0;
+        case IDC_VPN:
+            configureVpnForSelectedDevice();
+            return 0;
         case IDC_EXPORT_JSON:
             return 0;
         case IDC_USE:
@@ -1048,6 +1293,9 @@ LRESULT MainWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         }
         if (tokenActionThread_.joinable()) {
             tokenActionThread_.join();
+        }
+        if (vpnWatchdogThread_.joinable()) {
+            vpnWatchdogThread_.join();
         }
         PostQuitMessage(0);
         return 0;
@@ -1133,6 +1381,9 @@ void MainWindow::createControls() {
         hwnd_, controlId(IDC_EXPORT), instance_, nullptr);
     exportJsonButton_ = CreateWindowW(L"BUTTON", L"", WS_CHILD, 0, 0, 0, 0,
         hwnd_, controlId(IDC_EXPORT_JSON), instance_, nullptr);
+    vpnButton_ = CreateWindowW(L"BUTTON", kAdminBuild ? L"VPN для токена" : L"Учётные данные VPN",
+        WS_CHILD | WS_VISIBLE, 0, 0, 0, 0,
+        hwnd_, controlId(IDC_VPN), instance_, nullptr);
     statusLabel_ = CreateWindowW(L"STATIC", L"Готово.", WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP,
         0, 0, 0, 0, hwnd_, controlId(IDC_STATUS), instance_, nullptr);
 
@@ -1225,6 +1476,8 @@ void MainWindow::layoutControls() {
         MoveWindow(savePolicyButton_, x, buttonTop, savePolicyWidth, buttonHeight, TRUE);
         x += savePolicyWidth + gap;
         MoveWindow(exportButton_, x, buttonTop, 130, buttonHeight, TRUE);
+        x += 130 + gap;
+        MoveWindow(vpnButton_, x, buttonTop, 140, buttonHeight, TRUE);
     }
     else {
         int listBottom = buttonTop - margin;
@@ -1237,6 +1490,7 @@ void MainWindow::layoutControls() {
         }
 
         MoveWindow(refreshButton_, margin, buttonTop, buttonWidth, buttonHeight, TRUE);
+        MoveWindow(vpnButton_, margin + buttonWidth + gap, buttonTop, 180, buttonHeight, TRUE);
     }
 
     MoveWindow(statusLabel_, margin, height - margin - statusHeight, width - 2 * margin, statusHeight, TRUE);
@@ -1277,9 +1531,146 @@ void MainWindow::setMainControlsEnabled(bool enabled) {
     if (clearSearchButton_) {
         EnableWindow(clearSearchButton_, value);
     }
+    if (vpnButton_) {
+        EnableWindow(vpnButton_, value);
+    }
+}
+
+bool MainWindow::ensureVpnCredentials(const DeviceViewModel& device, bool forcePrompt) {
+    if (device.vpnProfileId.empty()) {
+        return true;
+    }
+
+    try {
+        const std::vector<VpnProfile> profiles = service_.vpnProfiles();
+        const auto found = std::find_if(profiles.begin(), profiles.end(), [&device](const VpnProfile& profile) {
+            return CompareStringOrdinal(
+                profile.id.c_str(), static_cast<int>(profile.id.size()),
+                device.vpnProfileId.c_str(), static_cast<int>(device.vpnProfileId.size()),
+                TRUE) == CSTR_EQUAL;
+        });
+        if (found == profiles.end()) {
+            updateStatus(L"Для токена назначен неизвестный VPN-профиль. Обратитесь к администратору.");
+            return false;
+        }
+        if (!found->enabled) {
+            updateStatus(L"VPN-профиль для этого токена отключён администратором.");
+            return false;
+        }
+        if (!VpnManager::profileExists(found->name)) {
+            updateStatus(L"Нужный профиль VPN Windows не установлен. Запустите установщик DiskControl или обратитесь к администратору.");
+            return false;
+        }
+        if (!forcePrompt && VpnManager::hasStoredCredentials(found->name)) {
+            return true;
+        }
+
+        VpnCredentialDialogData data;
+        data.profileName = found->name;
+        const INT_PTR answer = DialogBoxParamW(
+            instance_, MAKEINTRESOURCEW(IDD_VPN_CREDENTIALS), hwnd_, vpnCredentialDialogProc,
+            reinterpret_cast<LPARAM>(&data));
+        if (answer != IDOK) {
+            if (answer == -1) {
+                updateStatus(L"Не удалось открыть окно ввода учётных данных VPN.");
+            }
+            return false;
+        }
+
+        VpnManager::saveCredentials(found->name, data.userName, data.password);
+        if (!data.password.empty()) {
+            SecureZeroMemory(data.password.data(), data.password.size() * sizeof(wchar_t));
+            data.password.clear();
+        }
+        AuditEvent event;
+        event.action = L"VPN CREDENTIALS";
+        event.result = L"OK";
+        event.details = L"profileId=" + found->id + L"; profileName=" + found->name +
+            L"; user=" + data.userName + L"; password=<not logged>";
+        AuditLogger::log(event);
+        updateStatus(L"Учётные данные VPN сохранены средствами Windows.");
+        return true;
+    }
+    catch (const std::exception& error) {
+        const std::wstring message = L"Не удалось сохранить учётные данные VPN. " + userFriendlyErrorMessage(error.what());
+        logUiError(L"UI VPN CREDENTIALS ERROR", error.what(), message);
+        updateStatus(message.c_str());
+        return false;
+    }
+}
+
+void MainWindow::configureVpnForSelectedDevice() {
+    if (kAdminBuild) {
+        manageVpnForSelectedDevice();
+        return;
+    }
+    DeviceViewModel* device = selectedDevice();
+    if (!device) {
+        updateStatus(L"Выберите токен, для которого нужно изменить учётные данные VPN.");
+        return;
+    }
+    if (device->vpnProfileId.empty()) {
+        updateStatus(L"Для выбранного токена VPN-профиль не назначен.");
+        return;
+    }
+    ensureVpnCredentials(*device, true);
+}
+
+void MainWindow::manageVpnForSelectedDevice() {
+#ifndef DISKCONTROL_ADMIN
+    return;
+#else
+    DeviceViewModel* device = selectedDevice();
+    if (!device) {
+        updateStatus(L"Выберите разрешённый токен для настройки VPN.");
+        return;
+    }
+    if (!device->allowed) {
+        updateStatus(L"Сначала добавьте токен пользователю и сохраните доступ, затем назначьте VPN.");
+        return;
+    }
+    const std::wstring userName = getControlText(assignUserEdit_);
+    if (userName.empty()) {
+        updateStatus(L"Выберите пользователя для назначения VPN.");
+        return;
+    }
+
+    try {
+        VpnAdminDialogData data;
+        data.service = &service_;
+        data.device = *device;
+        data.userName = userName;
+        data.profiles = service_.vpnProfiles();
+        DialogBoxParamW(instance_, MAKEINTRESOURCEW(IDD_VPN_ADMIN), hwnd_, vpnAdminDialogProc,
+            reinterpret_cast<LPARAM>(&data));
+        if (data.changed) {
+            service_.updateAccessForUser(allDevices_, userName);
+            applyDeviceFilter();
+            updateHeaderText();
+            updateStatus(L"VPN-настройка токена сохранена в allow.json выбранного компьютера.");
+        }
+    }
+    catch (const std::exception& error) {
+        const std::wstring status = L"Не удалось открыть VPN-настройки. " + userFriendlyErrorMessage(error.what());
+        logUiError(L"UI VPN ADMIN ERROR", error.what(), status);
+        updateStatus(status.c_str());
+    }
+#endif
 }
 
 void MainWindow::startTokenAction(DeviceViewModel device, bool connect) {
+    if (vpnWatchdogRunning_) {
+        updateStatus(L"Дождитесь окончания проверки VPN.");
+        return;
+    }
+    if (refreshing_) {
+        updateStatus(L"Дождитесь окончания обновления списка устройств.");
+        return;
+    }
+    if (connect && !ensureVpnCredentials(device, false)) {
+        return;
+    }
+
     bool expected = false;
     if (!tokenActionRunning_.compare_exchange_strong(expected, true)) {
         updateStatus(L"Операция с токеном уже выполняется...");
@@ -1313,10 +1704,12 @@ void MainWindow::startTokenAction(DeviceViewModel device, bool connect) {
     tokenActionThread_ = std::thread([this, device, connect]() {
         std::wstring status;
         std::wstring errorText;
+        bool vpnError = false;
         try {
             status = connect ? service_.useDevice(device) : service_.stopUsingOwnedDevice(device);
         }
         catch (const std::exception& error) {
+            vpnError = containsAscii(error.what(), "VPN ");
             errorText = tokenActionErrorMessage(error.what(), connect);
             logUiError(connect ? L"UI USE ERROR" : L"UI STOP ERROR", error.what(), errorText);
         }
@@ -1327,6 +1720,7 @@ void MainWindow::startTokenAction(DeviceViewModel device, bool connect) {
             pendingTokenActionError_ = std::move(errorText);
             pendingTokenActionEndpoint_ = device.endpoint;
             pendingTokenActionConnect_ = connect;
+            pendingTokenActionVpnError_ = vpnError;
         }
 
         if (!closing_) {
@@ -1344,23 +1738,26 @@ void MainWindow::finishTokenAction() {
     std::wstring errorText;
     std::wstring endpoint;
     bool connect = false;
+    bool vpnError = false;
     {
         std::lock_guard<std::mutex> lock(tokenActionMutex_);
         status = std::move(pendingTokenActionStatus_);
         errorText = std::move(pendingTokenActionError_);
         endpoint = std::move(pendingTokenActionEndpoint_);
         connect = pendingTokenActionConnect_;
+        vpnError = pendingTokenActionVpnError_;
         pendingTokenActionStatus_.clear();
         pendingTokenActionError_.clear();
         pendingTokenActionEndpoint_.clear();
         pendingTokenActionConnect_ = false;
+        pendingTokenActionVpnError_ = false;
     }
 
     tokenActionRunning_ = false;
     setMainControlsEnabled(true);
 
     if (!errorText.empty()) {
-        if (connect && !endpoint.empty()) {
+        if (connect && !vpnError && !endpoint.empty()) {
             tokenActionFailureTicks_[endpoint] = GetTickCount64();
         }
         updateStatus(errorText.c_str());
@@ -1384,6 +1781,10 @@ void MainWindow::finishTokenAction() {
 }
 
 void MainWindow::refreshDevices() {
+    if (vpnWatchdogRunning_) {
+        updateStatus(L"Дождитесь окончания проверки VPN.");
+        return;
+    }
     if (tokenActionRunning_) {
         updateStatus(L"Сейчас выполняется операция с токеном...");
         return;
@@ -1512,7 +1913,7 @@ void MainWindow::exportExcel() {
         << "<table border=\"1\">"
         << "<tr>"
         << "<th>Endpoint</th><th>Имя</th><th>Продукт</th><th>Состояние</th>"
-        << "<th>Кем занят</th><th>Адрес</th><th>Осталось</th><th>Доступ</th>"
+        << "<th>Кем занят</th><th>Адрес</th><th>Осталось</th><th>VPN</th><th>Доступ</th>"
         << "</tr>";
     for (const DeviceViewModel& device : source) {
         stream << "<tr>"
@@ -1523,6 +1924,7 @@ void MainWindow::exportExcel() {
             << "<td>" << htmlEscape(device.usedBy) << "</td>"
             << "<td>" << htmlEscape(device.usedAt) << "</td>"
             << "<td>" << htmlEscape(adminRemainingText(device)) << "</td>"
+            << "<td>" << htmlEscape(device.vpnProfileId) << "</td>"
             << "<td>" << (device.allowed ? "Разрешён" : "Запрещён") << "</td>"
             << "</tr>";
     }
@@ -2215,6 +2617,111 @@ void MainWindow::updateActiveDeviceTracking() {
             ++it;
         }
     }
+}
+
+void MainWindow::checkActiveVpnHealth() {
+#ifdef DISKCONTROL_ADMIN
+    return;
+#else
+    if (closing_ || timeoutPromptActive_ || tokenActionRunning_ || refreshing_ || vpnWatchdogRunning_) {
+        return;
+    }
+
+    const ULONGLONG now = GetTickCount64();
+    if (lastVpnWatchdogTick_ != 0 && now - lastVpnWatchdogTick_ < kVpnWatchdogIntervalMs) {
+        return;
+    }
+
+    std::vector<DeviceViewModel> devicesToCheck;
+    for (const DeviceViewModel& device : allDevices_) {
+        if (device.vpnProfileId.empty()) {
+            continue;
+        }
+        const DeviceUsageInfo usage = DeviceParser::parseUsage(device.inUseBy, PolicyManager::currentUserName());
+        if (usage.isUsedByCurrentUser) {
+            devicesToCheck.push_back(device);
+        }
+    }
+    lastVpnWatchdogTick_ = now;
+    if (devicesToCheck.empty()) {
+        return;
+    }
+
+    bool expected = false;
+    if (!vpnWatchdogRunning_.compare_exchange_strong(expected, true)) {
+        return;
+    }
+    if (vpnWatchdogThread_.joinable()) {
+        vpnWatchdogThread_.join();
+    }
+
+    vpnWatchdogThread_ = std::thread([this, devicesToCheck]() {
+        DeviceViewModel failedDevice;
+        std::wstring errorText;
+        for (const DeviceViewModel& device : devicesToCheck) {
+            try {
+                service_.verifyVpnForDevice(device);
+            }
+            catch (const std::exception& error) {
+                failedDevice = device;
+                errorText = widenAscii(error.what());
+                break;
+            }
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(vpnWatchdogMutex_);
+            pendingVpnFailureDevice_ = std::move(failedDevice);
+            pendingVpnFailureError_ = std::move(errorText);
+        }
+        if (!closing_) {
+            PostMessageW(hwnd_, WM_VPN_WATCHDOG_COMPLETE, 0, 0);
+        }
+    });
+#endif
+}
+
+void MainWindow::finishVpnHealthCheck() {
+#ifdef DISKCONTROL_ADMIN
+    return;
+#else
+    if (vpnWatchdogThread_.joinable()) {
+        vpnWatchdogThread_.join();
+    }
+
+    DeviceViewModel failedDevice;
+    std::wstring technicalError;
+    {
+        std::lock_guard<std::mutex> lock(vpnWatchdogMutex_);
+        failedDevice = std::move(pendingVpnFailureDevice_);
+        technicalError = std::move(pendingVpnFailureError_);
+        pendingVpnFailureDevice_ = {};
+        pendingVpnFailureError_.clear();
+    }
+    vpnWatchdogRunning_ = false;
+    if (closing_ || technicalError.empty()) {
+        return;
+    }
+
+    auto current = std::find_if(allDevices_.begin(), allDevices_.end(), [&failedDevice](const DeviceViewModel& device) {
+        return device.endpoint == failedDevice.endpoint;
+    });
+    if (current == allDevices_.end() ||
+        !DeviceParser::parseUsage(current->inUseBy, PolicyManager::currentUserName()).isUsedByCurrentUser) {
+        return;
+    }
+
+    std::string asciiError;
+    asciiError.reserve(technicalError.size());
+    for (wchar_t ch : technicalError) {
+        asciiError.push_back(ch <= 127 ? static_cast<char>(ch) : '?');
+    }
+    const std::wstring status = L"Защитная проверка VPN не пройдена. " +
+        userFriendlyErrorMessage(asciiError.c_str()) + L" Токен будет освобождён.";
+    logUiError(L"UI VPN WATCHDOG ERROR", asciiError.c_str(), status);
+    updateStatus(status.c_str());
+    requestAutoRelease(*current);
+#endif
 }
 
 void MainWindow::checkActiveDeviceTimeouts() {

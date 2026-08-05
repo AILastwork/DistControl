@@ -5,6 +5,7 @@
 #include "IpcClient.h"
 #include "PolicyManager.h"
 #include "UsageStateStore.h"
+#include "VpnManager.h"
 
 #include <windows.h>
 
@@ -74,6 +75,9 @@ std::wstring stateDetails(const DeviceViewModel& device) {
     if (!device.inUseBy.empty()) {
         details += L"; rawInUseBy=" + device.inUseBy;
     }
+    if (!device.vpnProfileId.empty()) {
+        details += L"; vpnProfile=" + device.vpnProfileId;
+    }
     return details;
 }
 
@@ -97,6 +101,7 @@ DeviceViewModel toViewModel(const ParsedDevice& device, bool allowed, std::wstri
         usage.userText,
         usage.locationText,
         std::move(usageStartedAt),
+        L"",
         allowed
     };
 }
@@ -160,6 +165,24 @@ bool isPotentiallyAllowedByRules(const ParsedDevice& device, const std::vector<D
     }
     return false;
 }
+
+std::wstring vpnProfileIdForDevice(const ParsedDevice& device, const std::vector<DeviceRule>& rules) {
+    for (const DeviceRule& rule : rules) {
+        if (!equalsIgnoreCase(rule.endpoint, device.endpoint)) {
+            continue;
+        }
+        if (!rule.nickname.empty() && !device.nickname.empty() &&
+            !equalsIgnoreCase(rule.nickname, device.nickname)) {
+            continue;
+        }
+        if (!rule.product.empty() && !device.product.empty() &&
+            !equalsIgnoreCase(rule.product, device.product)) {
+            continue;
+        }
+        return rule.vpnProfileId;
+    }
+    return {};
+}
 }
 
 std::vector<DeviceViewModel> DeviceAccessService::listVisibleDevices() const {
@@ -188,6 +211,32 @@ std::wstring DeviceAccessService::useDevice(const DeviceViewModel& device) const
             L"OK",
             L"Policy and device check passed. " + stateDetails(verified));
         PolicyManager policy;
+        VpnProfile vpnProfile;
+        if (policy.tryGetVpnProfileForDevice(toParsedDevice(verified), vpnProfile)) {
+            AuditLogger::logDeviceAction(
+                L"VPN VERIFY",
+                verified,
+                L"START",
+                L"profileId=" + vpnProfile.id + L"; profileName=" + vpnProfile.name +
+                    L"; server=" + vpnProfile.serverAddress);
+            try {
+                const VpnVerificationResult vpn = VpnManager::connectAndVerify(vpnProfile);
+                AuditLogger::logDeviceAction(
+                    L"VPN VERIFY",
+                    verified,
+                    L"OK",
+                    L"profileId=" + vpnProfile.id + L"; profileName=" + vpn.profileName +
+                        L"; publicIp=" + vpn.publicIp +
+                        L"; alreadyConnected=" + (vpn.alreadyConnected ? L"true" : L"false"));
+            }
+            catch (const std::exception& error) {
+                AuditLogger::logDeviceAction(
+                    L"VPN VERIFY", verified, L"ERROR",
+                    L"profileId=" + vpnProfile.id + L"; profileName=" + vpnProfile.name +
+                        L"; technical=" + widenAscii(error.what()));
+                throw;
+            }
+        }
         IpcClient ipc(policy.pipeName());
         AuditLogger::logDeviceAction(
             L"USE COMMAND",
@@ -262,7 +311,8 @@ std::wstring DeviceAccessService::stopUsingOwnedDevice(const DeviceViewModel& de
             L"Checking current token owner before release. " + stateDetails(device));
         DeviceParser::applyDeviceInfo(current, ipc.issueCommand(L"DEVICE INFO," + current.endpoint));
         const DeviceUsageInfo usage = DeviceParser::parseUsage(current.inUseBy, PolicyManager::currentUserName());
-        const DeviceViewModel currentView = toViewModel(current, device.allowed);
+        DeviceViewModel currentView = toViewModel(current, device.allowed);
+        currentView.vpnProfileId = device.vpnProfileId;
         AuditLogger::logDeviceAction(
             L"STOP OWN VERIFY",
             currentView,
@@ -378,11 +428,78 @@ std::wstring DeviceAccessService::setDevicesForUser(const std::vector<DeviceView
     }
 }
 
+std::wstring DeviceAccessService::verifyVpnForDevice(const DeviceViewModel& device) const {
+    try {
+        PolicyManager policy;
+        VpnProfile profile;
+        if (!policy.tryGetVpnProfileForDevice(toParsedDevice(device), profile)) {
+            return {};
+        }
+        const VpnVerificationResult result = VpnManager::verifyConnected(profile);
+        AuditLogger::logDeviceAction(
+            L"VPN WATCHDOG", device, L"OK",
+            L"profileId=" + profile.id + L"; profileName=" + profile.name +
+                L"; publicIp=" + result.publicIp);
+        return result.publicIp;
+    }
+    catch (const std::exception& error) {
+        AuditLogger::logDeviceAction(
+            L"VPN WATCHDOG", device, L"ERROR", L"technical=" + widenAscii(error.what()));
+        throw;
+    }
+}
+
+std::wstring DeviceAccessService::setVpnProfileForDevice(
+    const DeviceViewModel& device,
+    const std::wstring& userName,
+    const std::wstring& vpnProfileId) const {
+    try {
+        PolicyManager policy;
+        policy.setVpnProfileForDevice(toParsedDevice(device), userName, vpnProfileId);
+        const std::wstring message = vpnProfileId.empty()
+            ? L"VPN-профиль снят с токена " + device.endpoint
+            : L"Токен " + device.endpoint + L" назначен VPN-профилю " + vpnProfileId;
+        AuditLogger::logDeviceAction(L"SET VPN PROFILE", device, L"OK", message + L"; user=" + userName);
+        return message;
+    }
+    catch (const std::exception& error) {
+        AuditLogger::logDeviceAction(L"SET VPN PROFILE", device, L"ERROR", widenAscii(error.what()));
+        throw;
+    }
+}
+
+std::vector<VpnProfile> DeviceAccessService::vpnProfiles() const {
+    PolicyManager policy;
+    return policy.vpnProfiles();
+}
+
+void DeviceAccessService::upsertVpnProfile(const VpnProfile& profile) const {
+    PolicyManager policy;
+    policy.upsertVpnProfile(profile);
+    AuditEvent event;
+    event.action = L"SAVE VPN PROFILE";
+    event.result = L"OK";
+    event.details = L"id=" + profile.id + L"; name=" + profile.name + L"; server=" + profile.serverAddress;
+    AuditLogger::log(event);
+}
+
+void DeviceAccessService::removeVpnProfile(const std::wstring& profileId) const {
+    PolicyManager policy;
+    policy.removeVpnProfile(profileId);
+    AuditEvent event;
+    event.action = L"REMOVE VPN PROFILE";
+    event.result = L"OK";
+    event.details = L"id=" + profileId;
+    AuditLogger::log(event);
+}
+
 void DeviceAccessService::updateAccessForUser(std::vector<DeviceViewModel>& devices, const std::wstring& userName) const {
     PolicyManager policy;
     const std::vector<DeviceRule> rules = policy.rulesForUser(userName);
     for (DeviceViewModel& device : devices) {
-        device.allowed = PolicyManager::isAllowedByRules(toParsedDevice(device), rules);
+        const ParsedDevice parsed = toParsedDevice(device);
+        device.allowed = PolicyManager::isAllowedByRules(parsed, rules);
+        device.vpnProfileId = vpnProfileIdForDevice(parsed, rules);
     }
 }
 
@@ -460,7 +577,9 @@ std::vector<DeviceViewModel> DeviceAccessService::listDevices(bool includeDenied
             const bool connectedByCurrentUser =
                 DeviceParser::parseUsage(device.inUseBy, PolicyManager::currentUserName()).isUsedByCurrentUser;
             if (allowed || includeDenied || connectedByCurrentUser) {
-                result.push_back(toViewModel(device, allowed, usageStartedAt));
+                DeviceViewModel view = toViewModel(device, allowed, usageStartedAt);
+                view.vpnProfileId = vpnProfileIdForDevice(device, activeRules);
+                result.push_back(std::move(view));
             }
         }
 
@@ -492,5 +611,7 @@ DeviceViewModel DeviceAccessService::enrichAndVerify(const DeviceViewModel& devi
         throw std::runtime_error("Device is not allowed by policy.");
     }
 
-    return toViewModel(current, true);
+    DeviceViewModel verified = toViewModel(current, true);
+    verified.vpnProfileId = vpnProfileIdForDevice(current, policy.effectiveRules());
+    return verified;
 }
