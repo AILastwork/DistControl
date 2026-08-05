@@ -134,6 +134,160 @@ void testIpcReadTimeout() {
     require(timedOut, "Named pipe read timeout should cancel the pending operation.");
 }
 
+void testIpcRetriesBusyPipe() {
+    const std::wstring pipeName = testPipeName(L"busy-retry");
+    HANDLE pipe = createTestPipe(pipeName);
+    require(pipe != INVALID_HANDLE_VALUE, "Busy retry test named pipe could not be created.");
+
+    HANDLE blocker = CreateFileW(
+        (L"\\\\.\\pipe\\" + pipeName).c_str(),
+        GENERIC_READ | GENERIC_WRITE,
+        0,
+        nullptr,
+        OPEN_EXISTING,
+        0,
+        nullptr);
+    require(blocker != INVALID_HANDLE_VALUE, "Busy retry test could not occupy the pipe instance.");
+
+    std::atomic_bool serverOk = false;
+    std::thread server([pipe, &serverOk]() {
+        connectTestPipe(pipe);
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+        DisconnectNamedPipe(pipe);
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+
+        char request[64]{};
+        DWORD read = 0;
+        if (connectTestPipe(pipe) && ReadFile(pipe, request, sizeof(request), &read, nullptr)) {
+            const std::string response = "OK";
+            DWORD written = 0;
+            serverOk = std::string(request, request + read) == "LIST" &&
+                WriteFile(pipe, response.data(), static_cast<DWORD>(response.size()), &written, nullptr) &&
+                written == response.size();
+            FlushFileBuffers(pipe);
+        }
+        DisconnectNamedPipe(pipe);
+        CloseHandle(pipe);
+    });
+
+    std::wstring response;
+    try {
+        response = IpcClient(pipeName).issueCommand(L"LIST", 2000);
+    }
+    catch (...) {
+        CloseHandle(blocker);
+        server.join();
+        throw;
+    }
+    CloseHandle(blocker);
+    server.join();
+    require(serverOk && response == L"OK", "IPC client should retry while every pipe instance is busy.");
+}
+
+void testDeviceInfoErrorKeepsAllowedListEntry() {
+    const char* policyFile = "policy-info-error-list-test.json";
+    const std::wstring pipeName = testPipeName(L"info-error-list");
+    std::remove(policyFile);
+    {
+        std::ofstream stream(policyFile, std::ios::binary);
+        stream << "{\n"
+            << "  \"pipeName\": \"" << narrowAscii(pipeName) << "\",\n"
+            << "  \"usageStatePath\": \"usage-info-error-list-test.json\",\n"
+            << "  \"userAssignments\": [{\"users\": [\""
+            << narrowAscii(PolicyManager::currentUserSid())
+            << "\"], \"groups\": [], \"allowedDevices\": [{\"endpoint\": \"OFFICE-HUB-Gr-1.3\", "
+            << "\"nickname\": \"Allowed Key\", \"product\": \"Rutoken\"}]}]\n"
+            << "}\n";
+    }
+
+    HANDLE pipe = createTestPipe(pipeName);
+    require(pipe != INVALID_HANDLE_VALUE, "DEVICE INFO error test pipe could not be created.");
+    std::atomic_bool serverOk = true;
+    std::thread server([pipe, &serverOk]() {
+        for (int requestIndex = 0; requestIndex < 2; ++requestIndex) {
+            char request[256]{};
+            DWORD read = 0;
+            if (!connectTestPipe(pipe) || !ReadFile(pipe, request, sizeof(request), &read, nullptr)) {
+                serverOk = false;
+                break;
+            }
+            const std::string command(request, request + read);
+            const std::string response = command == "LIST"
+                ? "--> Allowed Key (OFFICE-HUB-Gr-1.3)\n"
+                : "ERROR: Invalid address";
+            if (command != "LIST" && command != "DEVICE INFO,OFFICE-HUB-Gr-1.3") {
+                serverOk = false;
+            }
+            DWORD written = 0;
+            if (!WriteFile(pipe, response.data(), static_cast<DWORD>(response.size()), &written, nullptr) ||
+                written != response.size()) {
+                serverOk = false;
+            }
+            FlushFileBuffers(pipe);
+            DisconnectNamedPipe(pipe);
+        }
+        CloseHandle(pipe);
+    });
+
+    try {
+        PolicyManager::setConfigPathOverride(L"policy-info-error-list-test.json");
+        const std::vector<DeviceViewModel> devices = DeviceAccessService().listVisibleDevices();
+        require(devices.size() == 1 && devices[0].endpoint == L"OFFICE-HUB-Gr-1.3",
+            "A transient DEVICE INFO error must not hide an allowed LIST entry.");
+    }
+    catch (...) {
+        server.join();
+        PolicyManager::setConfigPathOverride(L"");
+        std::remove(policyFile);
+        throw;
+    }
+    server.join();
+    PolicyManager::setConfigPathOverride(L"");
+    require(serverOk, "DEVICE INFO error test pipe server failed.");
+    std::remove(policyFile);
+}
+
+void testEmptyDeviceCatalogIsTransientError() {
+    const char* policyFile = "policy-empty-list-test.json";
+    const std::wstring pipeName = testPipeName(L"empty-list");
+    std::remove(policyFile);
+    {
+        std::ofstream stream(policyFile, std::ios::binary);
+        stream << "{\n"
+            << "  \"pipeName\": \"" << narrowAscii(pipeName) << "\",\n"
+            << "  \"userAssignments\": []\n"
+            << "}\n";
+    }
+
+    HANDLE pipe = createTestPipe(pipeName);
+    require(pipe != INVALID_HANDLE_VALUE, "Empty LIST test pipe could not be created.");
+    std::thread server([pipe]() {
+        char request[64]{};
+        DWORD read = 0;
+        if (connectTestPipe(pipe) && ReadFile(pipe, request, sizeof(request), &read, nullptr)) {
+            const std::string response = "DistKontrolUSB Client IPC, below are the available devices:\n";
+            DWORD written = 0;
+            WriteFile(pipe, response.data(), static_cast<DWORD>(response.size()), &written, nullptr);
+            FlushFileBuffers(pipe);
+        }
+        DisconnectNamedPipe(pipe);
+        CloseHandle(pipe);
+    });
+
+    bool rejected = false;
+    try {
+        PolicyManager::setConfigPathOverride(L"policy-empty-list-test.json");
+        DeviceAccessService().listVisibleDevices();
+    }
+    catch (const std::exception& error) {
+        rejected = std::string(error.what()).find("temporarily empty") != std::string::npos;
+    }
+    server.join();
+    PolicyManager::setConfigPathOverride(L"");
+    std::remove(policyFile);
+    require(rejected, "An empty DistKontrol catalog must be reported as a transient error.");
+}
+
 void testUseDeviceAllowsSlowUseResponse() {
     const char* policyFile = "policy-slow-use-test.json";
     const char* usageFile = "usage-slow-use-test.json";
@@ -903,6 +1057,9 @@ int main() {
     try {
         testIpcRoundTrip();
         testIpcReadTimeout();
+        testIpcRetriesBusyPipe();
+        testDeviceInfoErrorKeepsAllowedListEntry();
+        testEmptyDeviceCatalogIsTransientError();
         testUseDeviceAllowsSlowUseResponse();
         testUseDeviceFailedResponseIsError();
         testRevokedActiveTokenCanBeStopped();

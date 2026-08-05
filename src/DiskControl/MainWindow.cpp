@@ -40,6 +40,8 @@ constexpr int IDC_AVAILABLE_LIST = 1020;
 constexpr int IDC_VPN = 1021;
 constexpr UINT_PTR IDT_DELAYED_REFRESH = 2001;
 constexpr UINT_PTR IDT_USAGE_WATCHDOG = 2002;
+constexpr UINT kRefreshRetryDelayMs = 3000;
+constexpr unsigned int kMaximumAutomaticRefreshRetries = 10;
 constexpr UINT WM_REFRESH_COMPLETE = WM_APP + 1;
 constexpr UINT WM_COMPUTER_LOAD_COMPLETE = WM_APP + 2;
 constexpr UINT WM_TOKEN_ACTION_COMPLETE = WM_APP + 3;
@@ -104,6 +106,12 @@ std::wstring userFriendlyErrorMessage(const char* error) {
     if (containsAscii(error, "VPN local network routes were replaced")) {
         return L"VPN изменил маршруты локальной сети. Токен не подключён, VPN-сеанс остановлен, чтобы сохранить доступ к локальным ресурсам.";
     }
+    if (containsAscii(error, "device catalog did not recover after VPN connection")) {
+        return L"После подключения VPN служба DistKontrolUSB ещё не восстановила список устройств. Токен не подключён; подождите немного и повторите попытку.";
+    }
+    if (containsAscii(error, "device catalog is temporarily empty")) {
+        return L"Служба DistKontrolUSB временно перестраивает список после изменения сети. Предыдущий список сохранён, обновление повторится автоматически.";
+    }
     if (containsAscii(error, "VPN connection") || containsAscii(error, "VPN credential")) {
         return L"Не удалось подключить VPN. Проверьте профиль Windows, логин, пароль и доступность VPN-сервера.";
     }
@@ -112,6 +120,9 @@ std::wstring userFriendlyErrorMessage(const char* error) {
     }
     if (containsAscii(error, "The token is not connected by the current user")) {
         return L"Токен нельзя отключить из DiskControl: сейчас он не закреплён за вашим пользователем.";
+    }
+    if (containsAscii(error, "Invalid address")) {
+        return L"Служба DistKontrolUSB видит токен в списке, но пока не принимает его адрес после изменения сети. DiskControl уже выполнил повторные попытки; проверьте доступность концентратора и повторите подключение.";
     }
     if (containsAscii(error, "DistKontrol returned FAILED") || containsAscii(error, "DistKontrol returned ERROR")) {
         return L"DistKontrolUSB отказал в операции. Обычно это значит, что токен уже занят, концентратор недоступен или служба dkclient работает с ошибкой.";
@@ -1803,6 +1814,7 @@ void MainWindow::refreshDevices() {
         return;
     }
 
+    KillTimer(hwnd_, IDT_DELAYED_REFRESH);
     setMainControlsEnabled(false);
     updateStatus(L"Загрузка списка устройств...");
 
@@ -1856,12 +1868,20 @@ void MainWindow::finishRefresh() {
     }
 
     if (!loadedError.empty()) {
+        ++consecutiveRefreshFailures_;
+        if (!allDevices_.empty()) {
+            loadedError += L" Предыдущий список оставлен на экране.";
+        }
         updateStatus(loadedError.c_str());
         refreshing_ = false;
         setMainControlsEnabled(true);
+        if (!closing_ && consecutiveRefreshFailures_ <= kMaximumAutomaticRefreshRetries) {
+            SetTimer(hwnd_, IDT_DELAYED_REFRESH, kRefreshRetryDelayMs, nullptr);
+        }
         return;
     }
 
+    consecutiveRefreshFailures_ = 0;
     allDevices_ = std::move(loadedDevices);
 
     try {

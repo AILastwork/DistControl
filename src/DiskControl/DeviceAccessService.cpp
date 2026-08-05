@@ -9,11 +9,16 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <stdexcept>
 #include <utility>
 
 namespace {
 constexpr unsigned long kUseCommandTimeoutMs = 120UL * 1000UL;
+constexpr unsigned long kVpnRecoveryCommandTimeoutMs = 5000UL;
+constexpr ULONGLONG kVpnDeviceRecoveryTimeoutMs = 60ULL * 1000ULL;
+constexpr DWORD kVpnDeviceRecoveryPollMs = 1000;
+constexpr int kVpnUseAttempts = 4;
 
 std::wstring widenAscii(const char* text) {
     std::wstring result;
@@ -81,6 +86,20 @@ std::wstring stateDetails(const DeviceViewModel& device) {
     return details;
 }
 
+bool containsIgnoreCase(const std::wstring& value, const wchar_t* needle) {
+    return FindStringOrdinal(
+        FIND_FROMSTART,
+        value.c_str(), static_cast<int>(value.size()),
+        needle, -1,
+        TRUE) >= 0;
+}
+
+bool isTransientUseFailureResponse(const std::wstring& response) {
+    const std::wstring trimmed = trimResponse(response);
+    return startsWithIgnoreCase(trimmed, L"FAILED") ||
+        containsIgnoreCase(trimmed, L"Invalid address");
+}
+
 void throwIfCommandFailed(const std::wstring& response, const char* action) {
     const std::wstring trimmed = trimResponse(response);
     if (!isCommandFailureResponse(response)) {
@@ -113,6 +132,71 @@ ParsedDevice toParsedDevice(const DeviceViewModel& device) {
         device.product,
         device.inUseBy
     };
+}
+
+bool equalsIgnoreCase(const std::wstring& left, const std::wstring& right);
+
+DeviceViewModel loadCurrentDevice(
+    const IpcClient& ipc,
+    const DeviceViewModel& device,
+    unsigned long timeoutMs) {
+    ParsedDevice current = toParsedDevice(device);
+    const std::wstring response = ipc.issueCommand(L"DEVICE INFO," + current.endpoint, timeoutMs);
+    throwIfCommandFailed(response, "DEVICE INFO");
+    DeviceParser::applyDeviceInfo(current, response);
+    DeviceViewModel result = toViewModel(current, device.allowed, device.usageStartedAt);
+    result.vpnProfileId = device.vpnProfileId;
+    return result;
+}
+
+DeviceViewModel waitForDeviceAfterVpn(
+    const PolicyManager& policy,
+    const DeviceViewModel& device) {
+    IpcClient ipc(policy.pipeName());
+    const ULONGLONG startedAt = GetTickCount64();
+    std::string lastError = "Device was not present in the DistKontrol catalog.";
+    const size_t separator = device.endpoint.rfind(L'.');
+    const std::wstring serverName = separator == std::wstring::npos
+        ? std::wstring{}
+        : device.endpoint.substr(0, separator);
+
+    while (GetTickCount64() - startedAt < kVpnDeviceRecoveryTimeoutMs) {
+        try {
+            const std::wstring listResponse = ipc.issueCommand(L"LIST", kVpnRecoveryCommandTimeoutMs);
+            throwIfCommandFailed(listResponse, "LIST");
+            const std::vector<ParsedDevice> devices = DeviceParser::parseList(listResponse);
+            const auto found = std::find_if(devices.begin(), devices.end(), [&device](const ParsedDevice& current) {
+                return equalsIgnoreCase(current.endpoint, device.endpoint);
+            });
+            if (found == devices.end()) {
+                lastError = "Device was not present in the DistKontrol catalog.";
+            }
+            else {
+                if (!serverName.empty()) {
+                    const std::wstring serverResponse =
+                        ipc.issueCommand(L"SERVER INFO," + serverName, kVpnRecoveryCommandTimeoutMs);
+                    throwIfCommandFailed(serverResponse, "SERVER INFO");
+                    if (!containsIgnoreCase(serverResponse, L"STATE: Logged in")) {
+                        throw std::runtime_error(
+                            "DistKontrol hub is not logged in after VPN connection. Response: " +
+                            narrowAsciiForError(trimResponse(serverResponse)));
+                    }
+                }
+                DeviceViewModel current = loadCurrentDevice(ipc, device, kVpnRecoveryCommandTimeoutMs);
+                if (!policy.isAllowed(toParsedDevice(current))) {
+                    throw std::runtime_error("Device is no longer allowed by policy after VPN connection.");
+                }
+                return current;
+            }
+        }
+        catch (const std::exception& error) {
+            lastError = error.what();
+        }
+        Sleep(kVpnDeviceRecoveryPollMs);
+    }
+
+    throw std::runtime_error(
+        "DistKontrol device catalog did not recover after VPN connection. Last error: " + lastError);
 }
 
 void logUsageStateWarning(const char* details) {
@@ -204,7 +288,7 @@ std::wstring DeviceAccessService::useDevice(const DeviceViewModel& device) const
             device,
             L"START",
             L"User requested token connection. " + stateDetails(device));
-        const DeviceViewModel verified = enrichAndVerify(device);
+        DeviceViewModel verified = enrichAndVerify(device);
         AuditLogger::logDeviceAction(
             L"USE VERIFY",
             verified,
@@ -212,7 +296,8 @@ std::wstring DeviceAccessService::useDevice(const DeviceViewModel& device) const
             L"Policy and device check passed. " + stateDetails(verified));
         PolicyManager policy;
         VpnProfile vpnProfile;
-        if (policy.tryGetVpnProfileForDevice(toParsedDevice(verified), vpnProfile)) {
+        const bool vpnRequired = policy.tryGetVpnProfileForDevice(toParsedDevice(verified), vpnProfile);
+        if (vpnRequired) {
             AuditLogger::logDeviceAction(
                 L"VPN VERIFY",
                 verified,
@@ -229,6 +314,17 @@ std::wstring DeviceAccessService::useDevice(const DeviceViewModel& device) const
                         L"; publicIp=" + vpn.publicIp +
                         L"; preservedLocalRoutes=" + std::to_wstring(vpn.preservedLocalRouteCount) +
                         L"; alreadyConnected=" + (vpn.alreadyConnected ? L"true" : L"false"));
+                AuditLogger::logDeviceAction(
+                    L"VPN DEVICE RECOVERY",
+                    verified,
+                    L"START",
+                    L"Waiting for dkclient to expose the token after the network route change.");
+                verified = waitForDeviceAfterVpn(policy, verified);
+                AuditLogger::logDeviceAction(
+                    L"VPN DEVICE RECOVERY",
+                    verified,
+                    L"OK",
+                    L"Token address is present in LIST and DEVICE INFO.");
             }
             catch (const std::exception& error) {
                 AuditLogger::logDeviceAction(
@@ -239,17 +335,49 @@ std::wstring DeviceAccessService::useDevice(const DeviceViewModel& device) const
             }
         }
         IpcClient ipc(policy.pipeName());
-        AuditLogger::logDeviceAction(
-            L"USE COMMAND",
-            verified,
-            L"START",
-            L"Sending USE command to pipe " + policy.pipeName() + L".");
-        const std::wstring response = ipc.issueCommand(L"USE," + verified.endpoint, kUseCommandTimeoutMs);
-        AuditLogger::logDeviceAction(
-            L"USE COMMAND",
-            verified,
-            isCommandFailureResponse(response) ? L"ERROR" : L"OK",
-            responseDetails(response));
+        std::wstring response;
+        const int maximumAttempts = vpnRequired ? kVpnUseAttempts : 1;
+        for (int attempt = 1; attempt <= maximumAttempts; ++attempt) {
+            if (vpnRequired && attempt > 1) {
+                verified = waitForDeviceAfterVpn(policy, verified);
+                const DeviceUsageInfo usage =
+                    DeviceParser::parseUsage(verified.inUseBy, PolicyManager::currentUserName());
+                if (usage.isUsedByCurrentUser) {
+                    response = L"OK";
+                    AuditLogger::logDeviceAction(
+                        L"USE RECOVERY",
+                        verified,
+                        L"OK",
+                        L"The previous USE attempt connected the token despite its failure response.");
+                    break;
+                }
+                if (!usage.isFree) {
+                    throw std::runtime_error("The token became occupied while dkclient was recovering after VPN connection.");
+                }
+            }
+
+            AuditLogger::logDeviceAction(
+                L"USE COMMAND",
+                verified,
+                L"START",
+                L"Sending USE command to pipe " + policy.pipeName() +
+                    L"; attempt=" + std::to_wstring(attempt) + L"/" + std::to_wstring(maximumAttempts) + L".");
+            response = ipc.issueCommand(L"USE," + verified.endpoint, kUseCommandTimeoutMs);
+            const bool retry = vpnRequired && attempt < maximumAttempts && isTransientUseFailureResponse(response);
+            AuditLogger::logDeviceAction(
+                L"USE COMMAND",
+                verified,
+                isCommandFailureResponse(response) ? (retry ? L"WARNING" : L"ERROR") : L"OK",
+                responseDetails(response) + L"; attempt=" + std::to_wstring(attempt) +
+                    L"/" + std::to_wstring(maximumAttempts));
+            if (!isCommandFailureResponse(response)) {
+                break;
+            }
+            if (!retry) {
+                throwIfCommandFailed(response, "USE");
+            }
+            Sleep(kVpnDeviceRecoveryPollMs);
+        }
         throwIfCommandFailed(response, "USE");
         markDeviceUsedBestEffort(policy, verified);
         const std::wstring message = response.empty() ? L"Команда USE отправлена: " + verified.endpoint : response;
@@ -310,7 +438,9 @@ std::wstring DeviceAccessService::stopUsingOwnedDevice(const DeviceViewModel& de
             device,
             L"START",
             L"Checking current token owner before release. " + stateDetails(device));
-        DeviceParser::applyDeviceInfo(current, ipc.issueCommand(L"DEVICE INFO," + current.endpoint));
+        const std::wstring infoResponse = ipc.issueCommand(L"DEVICE INFO," + current.endpoint);
+        throwIfCommandFailed(infoResponse, "DEVICE INFO");
+        DeviceParser::applyDeviceInfo(current, infoResponse);
         const DeviceUsageInfo usage = DeviceParser::parseUsage(current.inUseBy, PolicyManager::currentUserName());
         DeviceViewModel currentView = toViewModel(current, device.allowed);
         currentView.vpnProfileId = device.vpnProfileId;
@@ -519,7 +649,12 @@ std::vector<DeviceViewModel> DeviceAccessService::listDevices(bool includeDenied
         PolicyManager policy;
         IpcClient ipc(policy.pipeName());
         UsageStateStore usageState(policy.usageStatePath());
-        std::vector<ParsedDevice> devices = DeviceParser::parseList(ipc.issueCommand(L"LIST"));
+        const std::wstring listResponse = ipc.issueCommand(L"LIST");
+        throwIfCommandFailed(listResponse, "LIST");
+        std::vector<ParsedDevice> devices = DeviceParser::parseList(listResponse);
+        if (devices.empty()) {
+            throw std::runtime_error("DistKontrol device catalog is temporarily empty.");
+        }
         std::vector<DeviceViewModel> result;
         const std::vector<DeviceRule> policyUserRules = policyUser.empty()
             ? std::vector<DeviceRule>{}
@@ -544,9 +679,10 @@ std::vector<DeviceViewModel> DeviceAccessService::listDevices(bool includeDenied
             bool deviceInfoLoaded = false;
             if (GetTickCount64() - enrichmentStartedAt < enrichmentBudgetMs) {
                 try {
-                    DeviceParser::applyDeviceInfo(
-                        device,
-                        ipc.issueCommand(L"DEVICE INFO," + device.endpoint, deviceInfoTimeoutMs));
+                    const std::wstring infoResponse =
+                        ipc.issueCommand(L"DEVICE INFO," + device.endpoint, deviceInfoTimeoutMs);
+                    throwIfCommandFailed(infoResponse, "DEVICE INFO");
+                    DeviceParser::applyDeviceInfo(device, infoResponse);
                     deviceInfoLoaded = true;
                 }
                 catch (const std::exception& error) {
@@ -606,8 +742,8 @@ DeviceViewModel DeviceAccessService::enrichAndVerify(const DeviceViewModel& devi
     PolicyManager policy;
     IpcClient ipc(policy.pipeName());
 
-    ParsedDevice current = toParsedDevice(device);
-    DeviceParser::applyDeviceInfo(current, ipc.issueCommand(L"DEVICE INFO," + current.endpoint));
+    const DeviceViewModel loaded = loadCurrentDevice(ipc, device, 3000);
+    ParsedDevice current = toParsedDevice(loaded);
     if (!policy.isAllowed(current)) {
         AuditLogger::logDeviceAction(L"DENY", toViewModel(current, false), L"DENIED", L"Device is not allowed by policy.");
         throw std::runtime_error("Device is not allowed by policy.");

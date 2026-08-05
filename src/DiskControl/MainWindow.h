@@ -129,6 +129,7 @@ private:
     std::mutex tokenActionMutex_;
     std::mutex vpnWatchdogMutex_;
     std::atomic_bool refreshing_ = false;
+    unsigned int consecutiveRefreshFailures_ = 0;
     std::atomic_bool computerLoading_ = false;
     std::atomic_bool tokenActionRunning_ = false;
     std::atomic_bool vpnWatchdogRunning_ = false;

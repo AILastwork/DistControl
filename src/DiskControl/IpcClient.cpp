@@ -85,6 +85,55 @@ std::runtime_error win32Error(const char* message) {
         std::string(message) + " Win32 error " + std::to_string(error) + ": " + win32Message(error) + ".");
 }
 
+std::runtime_error win32Error(const char* message, DWORD error) {
+    return std::runtime_error(
+        std::string(message) + " Win32 error " + std::to_string(error) + ": " + win32Message(error) + ".");
+}
+
+HANDLE openPipeWithTimeout(const std::wstring& pipePath, DWORD timeoutMs) {
+    const ULONGLONG startedAt = GetTickCount64();
+    DWORD lastError = ERROR_PIPE_BUSY;
+
+    while (true) {
+        HANDLE pipe = CreateFileW(
+            pipePath.c_str(),
+            GENERIC_READ | GENERIC_WRITE,
+            0,
+            nullptr,
+            OPEN_EXISTING,
+            FILE_FLAG_OVERLAPPED,
+            nullptr);
+        if (pipe != INVALID_HANDLE_VALUE) {
+            return pipe;
+        }
+
+        lastError = GetLastError();
+        if (lastError != ERROR_PIPE_BUSY && lastError != ERROR_FILE_NOT_FOUND) {
+            throw win32Error("Cannot open DistKontrol pipe.", lastError);
+        }
+
+        const ULONGLONG elapsed = GetTickCount64() - startedAt;
+        if (elapsed >= timeoutMs) {
+            throw win32Error("DistKontrol pipe is not available.", lastError);
+        }
+        const DWORD remaining = static_cast<DWORD>(timeoutMs - elapsed);
+        const DWORD waitSlice = remaining < 250 ? remaining : 250;
+
+        if (lastError == ERROR_PIPE_BUSY) {
+            if (!WaitNamedPipeW(pipePath.c_str(), waitSlice)) {
+                const DWORD waitError = GetLastError();
+                if (waitError != ERROR_SEM_TIMEOUT && waitError != ERROR_FILE_NOT_FOUND &&
+                    waitError != ERROR_PIPE_BUSY) {
+                    throw win32Error("Cannot wait for DistKontrol pipe.", waitError);
+                }
+            }
+        }
+        else {
+            Sleep(waitSlice < 50 ? waitSlice : 50);
+        }
+    }
+}
+
 DWORD waitForPipeIo(HANDLE pipe, OVERLAPPED& overlapped, DWORD timeoutMs, const char* operationName) {
     const DWORD wait = WaitForSingleObject(overlapped.hEvent, timeoutMs);
     if (wait == WAIT_TIMEOUT) {
@@ -168,22 +217,7 @@ IpcClient::IpcClient(std::wstring pipeName)
 
 std::wstring IpcClient::issueCommand(const std::wstring& command, unsigned long timeoutMs) const {
     const std::wstring pipePath = L"\\\\.\\pipe\\" + pipeName_;
-    if (!WaitNamedPipeW(pipePath.c_str(), timeoutMs)) {
-        throw win32Error("DistKontrol pipe is not available.");
-    }
-
-    HANDLE pipe = CreateFileW(
-        pipePath.c_str(),
-        GENERIC_READ | GENERIC_WRITE,
-        0,
-        nullptr,
-        OPEN_EXISTING,
-        FILE_FLAG_OVERLAPPED,
-        nullptr);
-
-    if (pipe == INVALID_HANDLE_VALUE) {
-        throw win32Error("Cannot open DistKontrol pipe.");
-    }
+    HANDLE pipe = openPipeWithTimeout(pipePath, timeoutMs);
     HandleGuard pipeGuard(pipe);
 
     DWORD mode = PIPE_READMODE_MESSAGE;
