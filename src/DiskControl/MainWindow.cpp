@@ -122,6 +122,12 @@ std::wstring userFriendlyErrorMessage(const char* error) {
     if (containsAscii(error, "The token is not connected by the current user")) {
         return L"Токен нельзя отключить из DiskControl: сейчас он не закреплён за вашим пользователем.";
     }
+    if (containsAscii(error, "The token is occupied by another user")) {
+        return L"Токен уже занят другим пользователем. Обновите список, чтобы увидеть актуального владельца.";
+    }
+    if (containsAscii(error, "Another active token requires a different VPN profile")) {
+        return L"Сначала отключите другой активный токен: он использует иной VPN-профиль, а одновременно выбрать два внешних IP невозможно.";
+    }
     if (containsAscii(error, "Invalid address")) {
         return L"Служба DistKontrolUSB видит токен в списке, но пока не принимает его адрес после изменения сети. DiskControl уже выполнил повторные попытки; проверьте доступность концентратора и повторите подключение.";
     }
@@ -291,14 +297,12 @@ void loadVpnAdminProfile(HWND dialog, const VpnAdminDialogData& data) {
         SetDlgItemTextW(dialog, IDC_VPN_ADMIN_NAME, L"");
         SetDlgItemTextW(dialog, IDC_VPN_ADMIN_SERVER, L"");
         SetDlgItemTextW(dialog, IDC_VPN_ADMIN_IPS, L"");
-        CheckDlgButton(dialog, IDC_VPN_ADMIN_FULL_TUNNEL, BST_CHECKED);
         CheckDlgButton(dialog, IDC_VPN_ADMIN_ENABLED, BST_CHECKED);
         return;
     }
     SetDlgItemTextW(dialog, IDC_VPN_ADMIN_NAME, found->name.c_str());
     SetDlgItemTextW(dialog, IDC_VPN_ADMIN_SERVER, found->serverAddress.c_str());
     SetDlgItemTextW(dialog, IDC_VPN_ADMIN_IPS, joinVpnExpectedIps(found->expectedPublicIps).c_str());
-    CheckDlgButton(dialog, IDC_VPN_ADMIN_FULL_TUNNEL, found->fullTunnel ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(dialog, IDC_VPN_ADMIN_ENABLED, found->enabled ? BST_CHECKED : BST_UNCHECKED);
 }
 
@@ -353,7 +357,6 @@ INT_PTR CALLBACK vpnAdminDialogProc(HWND dialog, UINT message, WPARAM wParam, LP
             profile.tunnelType = L"L2TP";
             profile.expectedPublicIps = splitVpnExpectedIps(dialogItemText(dialog, IDC_VPN_ADMIN_IPS));
             profile.ipCheckUrl = L"https://api.ipify.org";
-            profile.fullTunnel = IsDlgButtonChecked(dialog, IDC_VPN_ADMIN_FULL_TUNNEL) == BST_CHECKED;
             profile.enabled = IsDlgButtonChecked(dialog, IDC_VPN_ADMIN_ENABLED) == BST_CHECKED;
             if (profile.id.empty() || profile.name.empty() || profile.serverAddress.empty() ||
                 profile.expectedPublicIps.empty()) {

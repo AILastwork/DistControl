@@ -14,7 +14,6 @@ param(
     [string]$VpnPsk = $env:DISKCONTROL_VPN_PSK,
     [string]$VpnExpectedIp = $env:DISKCONTROL_VPN_EXPECTED_IP,
     [string]$VpnTokenIdentity = $env:DISKCONTROL_VPN_TOKEN,
-    [string]$VpnFullTunnel = $env:DISKCONTROL_VPN_FULL_TUNNEL,
     [string]$VpnProfilesFile = $env:DISKCONTROL_VPN_PROFILES_FILE,
     [securestring]$ServicePassword,
     [switch]$SkipBuild,
@@ -32,7 +31,7 @@ try {
 catch {
 }
 $ProductName = "DiskControl"
-$ProductVersion = "0.3.1"
+$ProductVersion = "0.3.2"
 $Publisher = "DiskControl"
 $SourceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $ReleaseDir = Join-Path $SourceRoot "build\x64\Release"
@@ -45,7 +44,7 @@ $ClientStartupShortcut = Join-Path $env:ProgramData "Microsoft\Windows\Start Men
 $UninstallRegistryPath = "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\DiskControl"
 $script:InstallLogPath = $null
 $script:InstallWarnings = New-Object System.Collections.Generic.List[string]
-$VpnProfileId = if ([string]::IsNullOrWhiteSpace($VpnProfileIdInput)) { "salut" } else { $VpnProfileIdInput.Trim() }
+$VpnProfileId = if ([string]::IsNullOrWhiteSpace($VpnProfileIdInput)) { "" } else { $VpnProfileIdInput.Trim() }
 
 function Write-InstallLogLine([string]$Message) {
     if ([string]::IsNullOrWhiteSpace($script:InstallLogPath)) {
@@ -605,7 +604,7 @@ function Get-VpnInstallProfiles {
                 continue
             }
             $fields = $line.Split([char]9)
-            if ($fields.Count -ne 7) {
+            if ($fields.Count -ne 6 -and $fields.Count -ne 7) {
                 throw "VPN profiles input contains an invalid record."
             }
             $profiles += [pscustomobject]@{
@@ -615,7 +614,6 @@ function Get-VpnInstallProfiles {
                 Psk = ConvertFrom-VpnInstallSecret $fields[3]
                 ExpectedIpsText = ConvertFrom-VpnInstallField $fields[4]
                 TokenIdentity = ConvertFrom-VpnInstallField $fields[5]
-                FullTunnel = $fields[6] -eq "1"
             }
         }
         $ids = @{}
@@ -644,8 +642,6 @@ function Get-VpnInstallProfiles {
             Psk = $VpnPsk
             ExpectedIpsText = $VpnExpectedIp
             TokenIdentity = $VpnTokenIdentity
-            FullTunnel = [string]::Equals($VpnFullTunnel, "1", [StringComparison]::OrdinalIgnoreCase) -or
-                [string]::Equals($VpnFullTunnel, "true", [StringComparison]::OrdinalIgnoreCase)
         }
     }
     return $profiles
@@ -691,8 +687,7 @@ function Install-VpnProfiles([object[]]$Profiles) {
         $index++
         Assert-VpnInstallProfile $profile
         $expectedIps = Get-VpnExpectedIps $profile
-        $splitTunneling = -not [bool]$profile.FullTunnel
-        Write-Step "Configure Windows VPN profile $index/$($Profiles.Count) '$($profile.Name)': server=$($profile.Server); fullTunnel=$($profile.FullTunnel); expectedPublicIps=$($expectedIps -join ','); psk=<not logged>"
+        Write-Step "Configure Windows VPN profile $index/$($Profiles.Count) '$($profile.Name)': server=$($profile.Server); expectedPublicIps=$($expectedIps -join ','); psk=<not logged>"
         if ($DryRun) {
             continue
         }
@@ -700,12 +695,12 @@ function Install-VpnProfiles([object[]]$Profiles) {
             $existing = Get-VpnConnection -Name $profile.Name -AllUserConnection -ErrorAction SilentlyContinue
             if ($existing) {
                 Set-VpnConnection -Name $profile.Name -ServerAddress $profile.Server -TunnelType L2tp `
-                    -EncryptionLevel Required -AuthenticationMethod MSChapv2 -SplitTunneling $splitTunneling `
+                    -EncryptionLevel Required -AuthenticationMethod MSChapv2 -SplitTunneling $false `
                     -AllUserConnection -L2tpPsk $profile.Psk -RememberCredential $true -Force | Out-Null
             }
             else {
                 Add-VpnConnection -Name $profile.Name -ServerAddress $profile.Server -TunnelType L2tp `
-                    -EncryptionLevel Required -AuthenticationMethod MSChapv2 -SplitTunneling:$splitTunneling `
+                    -EncryptionLevel Required -AuthenticationMethod MSChapv2 -SplitTunneling:$false `
                     -AllUserConnection -L2tpPsk $profile.Psk -RememberCredential -Force | Out-Null
             }
         }
@@ -752,7 +747,6 @@ function Set-PolicyVpnConfigurations([object[]]$InstallProfiles) {
                 tunnelType = "L2TP"
                 expectedPublicIps = @(Get-VpnExpectedIps $installProfile)
                 ipCheckUrl = "https://api.ipify.org"
-                fullTunnel = [bool]$installProfile.FullTunnel
                 enabled = $true
             }
             $updatedProfiles = @()

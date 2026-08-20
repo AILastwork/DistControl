@@ -27,6 +27,9 @@ public:
         const VpnProfile& profile,
         const std::wstring& preSharedKey);
     static bool isConnected(const std::wstring& profileName);
+    static void disconnect(
+        const std::wstring& profileName,
+        const VpnProgressCallback& progress = {});
     static size_t localPhysicalRouteCount();
     static VpnVerificationResult connectAndVerify(
         const VpnProfile& profile,

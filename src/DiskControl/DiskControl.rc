@@ -36,8 +36,7 @@ BEGIN
     EDITTEXT        IDC_VPN_ADMIN_IPS, 112, 90, 246, 14, ES_AUTOHSCROLL
     LTEXT           "Общий ключ L2TP:", -1, 10, 120, 95, 10
     EDITTEXT        IDC_VPN_ADMIN_PSK, 112, 116, 246, 14, ES_PASSWORD | ES_AUTOHSCROLL
-    AUTOCHECKBOX    "Весь интернет через VPN", IDC_VPN_ADMIN_FULL_TUNNEL, 112, 142, 150, 12
-    AUTOCHECKBOX    "Профиль включён", IDC_VPN_ADMIN_ENABLED, 270, 142, 88, 12
+    AUTOCHECKBOX    "Профиль включён", IDC_VPN_ADMIN_ENABLED, 112, 142, 120, 12
     LTEXT           "Ключ нужен для создания профиля Windows и не сохраняется в allow.json или журнале.", IDC_VPN_ADMIN_NOTE, 10, 164, 348, 28
     DEFPUSHBUTTON   "Сохранить и назначить", IDC_VPN_ADMIN_SAVE, 10, 216, 118, 18
     PUSHBUTTON      "Снять с токена", IDC_VPN_ADMIN_UNASSIGN, 134, 216, 78, 18

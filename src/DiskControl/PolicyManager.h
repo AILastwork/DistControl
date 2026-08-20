@@ -19,7 +19,6 @@ struct VpnProfile {
     std::wstring tunnelType = L"L2TP";
     std::vector<std::wstring> expectedPublicIps;
     std::wstring ipCheckUrl = L"https://api.ipify.org";
-    bool fullTunnel = true;
     bool enabled = true;
 };
 

@@ -435,12 +435,7 @@ void VpnManager::installOrUpdateProfile(
         entry.dwFramingProtocol = RASFP_Ppp;
     }
 
-    if (profile.fullTunnel) {
-        entry.dwfOptions |= RASEO_RemoteDefaultGateway;
-    }
-    else {
-        entry.dwfOptions &= ~RASEO_RemoteDefaultGateway;
-    }
+    entry.dwfOptions |= RASEO_RemoteDefaultGateway;
     entry.dwfOptions &= ~(RASEO_RequireEAP | RASEO_RequirePAP | RASEO_RequireSPAP |
         RASEO_RequireCHAP | RASEO_RequireMsEncryptedPw);
     entry.dwfOptions |= RASEO_RequireMsCHAP2 | RASEO_RequireDataEncryption;
@@ -487,6 +482,34 @@ bool VpnManager::isConnected(const std::wstring& profileName) {
         }
     }
     return false;
+}
+
+void VpnManager::disconnect(
+    const std::wstring& profileName,
+    const VpnProgressCallback& progress) {
+    if (profileName.empty()) {
+        return;
+    }
+    if (!isConnected(profileName)) {
+        reportProgress(progress, L"VPN-профиль «" + profileName + L"» уже отключён.");
+        return;
+    }
+
+    reportProgress(progress, L"Отключаем VPN-профиль «" + profileName + L"».");
+    const DWORD error = hangUpProfileConnections(profileName);
+    if (error != ERROR_SUCCESS) {
+        throw rasError("VPN disconnect", error);
+    }
+
+    constexpr int maximumChecks = 50;
+    for (int check = 0; check < maximumChecks; ++check) {
+        if (!isConnected(profileName)) {
+            reportProgress(progress, L"VPN-профиль «" + profileName + L"» отключён.");
+            return;
+        }
+        Sleep(200);
+    }
+    throw std::runtime_error("VPN disconnect timed out.");
 }
 
 size_t VpnManager::localPhysicalRouteCount() {

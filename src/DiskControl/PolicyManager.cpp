@@ -829,7 +829,6 @@ VpnProfile vpnProfileFromJson(const JsonValue& value) {
     if (profile.ipCheckUrl.empty()) {
         profile.ipCheckUrl = L"https://api.ipify.org";
     }
-    profile.fullTunnel = boolValue(value.find(L"fullTunnel"), true);
     profile.enabled = boolValue(value.find(L"enabled"), true);
     return profile;
 }
@@ -860,7 +859,6 @@ JsonValue makeVpnProfile(const VpnProfile& profile) {
         { L"name", makeString(profile.name) },
         { L"serverAddress", makeString(profile.serverAddress) },
         { L"tunnelType", makeString(profile.tunnelType.empty() ? L"L2TP" : profile.tunnelType) },
-        { L"fullTunnel", makeBool(profile.fullTunnel) },
         { L"enabled", makeBool(profile.enabled) },
         { L"expectedPublicIps", std::move(expectedIps) },
         { L"ipCheckUrl", makeString(profile.ipCheckUrl.empty() ? L"https://api.ipify.org" : profile.ipCheckUrl) }

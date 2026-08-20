@@ -327,7 +327,7 @@ void testUseDeviceAllowsSlowUseResponse() {
     std::vector<std::string> commands;
     std::atomic_bool serverOk = true;
     std::thread server([pipe, &commands, &serverOk]() {
-        for (int requestIndex = 0; requestIndex < 2; ++requestIndex) {
+        for (int requestIndex = 0; requestIndex < 3; ++requestIndex) {
             char request[256]{};
             DWORD read = 0;
             if (!connectTestPipe(pipe) || !ReadFile(pipe, request, sizeof(request), &read, nullptr)) {
@@ -339,7 +339,9 @@ void testUseDeviceAllowsSlowUseResponse() {
             commands.push_back(command);
             std::string response;
             if (command == "DEVICE INFO,OFFICE-HUB-Gr-1.3") {
-                response = "NICKNAME: Slow Key\r\nPRODUCT: Rutoken\r\nIN USE BY: NO ONE\r\n";
+                response = requestIndex == 0
+                    ? "NICKNAME: Slow Key\r\nPRODUCT: Rutoken\r\nIN USE BY: NO ONE\r\n"
+                    : "NICKNAME: Slow Key\r\nPRODUCT: Rutoken\r\nIN USE BY: YOU\r\n";
             }
             else if (command == "USE,OFFICE-HUB-Gr-1.3") {
                 std::this_thread::sleep_for(std::chrono::milliseconds(150));
@@ -386,9 +388,10 @@ void testUseDeviceAllowsSlowUseResponse() {
     server.join();
     PolicyManager::setConfigPathOverride(L"");
     require(serverOk, "Slow USE test pipe server failed.");
-    require(commands.size() == 2 && commands[0] == "DEVICE INFO,OFFICE-HUB-Gr-1.3" &&
-        commands[1] == "USE,OFFICE-HUB-Gr-1.3",
-        "Slow USE test should issue DEVICE INFO before USE.");
+    require(commands.size() == 3 && commands[0] == "DEVICE INFO,OFFICE-HUB-Gr-1.3" &&
+        commands[1] == "USE,OFFICE-HUB-Gr-1.3" &&
+        commands[2] == "DEVICE INFO,OFFICE-HUB-Gr-1.3",
+        "Slow USE test should verify ownership before and after USE.");
 
     std::remove(policyFile);
     std::remove(usageFile);
@@ -427,7 +430,7 @@ void testUseDeviceFailedResponseIsError() {
 
     std::atomic_bool serverOk = true;
     std::thread server([pipe, &serverOk]() {
-        for (int requestIndex = 0; requestIndex < 2; ++requestIndex) {
+        for (int requestIndex = 0; requestIndex < 3; ++requestIndex) {
             char request[256]{};
             DWORD read = 0;
             if (!connectTestPipe(pipe) || !ReadFile(pipe, request, sizeof(request), &read, nullptr)) {
@@ -516,7 +519,7 @@ void testRevokedActiveTokenCanBeStopped() {
     std::vector<std::string> commands;
     std::atomic_bool serverOk = true;
     std::thread server([pipe, &commands, &serverOk]() {
-        for (int requestIndex = 0; requestIndex < 4; ++requestIndex) {
+        for (int requestIndex = 0; requestIndex < 5; ++requestIndex) {
             char request[256]{};
             DWORD read = 0;
             if (!connectTestPipe(pipe) || !ReadFile(pipe, request, sizeof(request), &read, nullptr)) {
@@ -531,7 +534,9 @@ void testRevokedActiveTokenCanBeStopped() {
                 response = "--> Revoked Key (OFFICE-HUB-Gr-1.3) (In-use by:YOU)\n";
             }
             else if (command == "DEVICE INFO,OFFICE-HUB-Gr-1.3") {
-                response = "NICKNAME: Revoked Key\r\nPRODUCT: Rutoken\r\nIN USE BY: YOU\r\n";
+                response = requestIndex < 4
+                    ? "NICKNAME: Revoked Key\r\nPRODUCT: Rutoken\r\nIN USE BY: YOU\r\n"
+                    : "NICKNAME: Revoked Key\r\nPRODUCT: Rutoken\r\nIN USE BY: NO ONE\r\n";
             }
             else if (command == "STOP USING,OFFICE-HUB-Gr-1.3") {
                 response = "OK";
@@ -575,8 +580,9 @@ void testRevokedActiveTokenCanBeStopped() {
     server.join();
     PolicyManager::setConfigPathOverride(L"");
     require(serverOk, "Revoked token test pipe server failed.");
-    require(commands.size() == 4 && commands.back() == "STOP USING,OFFICE-HUB-Gr-1.3",
-        "Revoked token cleanup must send STOP USING after ownership verification.");
+    require(commands.size() == 5 && commands[3] == "STOP USING,OFFICE-HUB-Gr-1.3" &&
+        commands.back() == "DEVICE INFO,OFFICE-HUB-Gr-1.3",
+        "Revoked token cleanup must verify release after STOP USING.");
     std::remove(policyFile);
     std::remove(usageFile);
     std::remove("usage-revoked-active-test.json.lock");
@@ -958,10 +964,10 @@ void testVpnPolicyRoundTrip() {
             << "  \"vpnProfiles\": [\n"
             << "    {\"id\": \"salut\", \"name\": \"Salut\", \"serverAddress\": \"89.108.64.96\", "
             << "\"tunnelType\": \"L2TP\", \"expectedPublicIps\": [\"89.108.64.96\"], "
-            << "\"ipCheckUrl\": \"https://api.ipify.org\", \"fullTunnel\": true, \"enabled\": true},\n"
+            << "\"ipCheckUrl\": \"https://api.ipify.org\", \"fullTunnel\": false, \"enabled\": true},\n"
             << "    {\"id\": \"backup\", \"name\": \"Backup VPN\", \"serverAddress\": \"203.0.113.20\", "
             << "\"tunnelType\": \"L2TP\", \"expectedPublicIps\": [\"203.0.113.21\"], "
-            << "\"ipCheckUrl\": \"https://api.ipify.org\", \"fullTunnel\": true, \"enabled\": true}\n"
+            << "\"ipCheckUrl\": \"https://api.ipify.org\", \"enabled\": true}\n"
             << "  ],\n"
             << "  \"userAssignments\": [\n"
             << "    {\"users\": [\"" << narrowAscii(PolicyManager::currentUserSid()) << "\"], \"groups\": [], "
@@ -981,7 +987,7 @@ void testVpnPolicyRoundTrip() {
         const VpnProfile& profile = policy.vpnProfiles()[0];
         require(profile.id == L"salut" && profile.name == L"Salut", "VPN profile identity mismatch.");
         require(profile.serverAddress == L"89.108.64.96", "VPN server should be parsed.");
-        require(profile.fullTunnel && profile.enabled, "VPN Boolean settings should be parsed.");
+        require(profile.enabled, "VPN enabled setting should be parsed.");
         require(profile.expectedPublicIps.size() == 1 &&
             profile.expectedPublicIps[0] == L"89.108.64.96", "Expected public IP should be parsed.");
 
@@ -1003,7 +1009,6 @@ void testVpnPolicyRoundTrip() {
 
         VpnProfile updated = policy.vpnProfiles()[0];
         updated.expectedPublicIps = { L"203.0.113.10", L"203.0.113.11" };
-        updated.fullTunnel = false;
         policy.upsertVpnProfile(updated);
     }
 
@@ -1012,7 +1017,12 @@ void testVpnPolicyRoundTrip() {
         require(policy.vpnProfiles().size() == 2 &&
             policy.vpnProfiles()[0].expectedPublicIps.size() == 2,
             "Updated VPN profile should be written.");
-        require(!policy.vpnProfiles()[0].fullTunnel, "Updated VPN Boolean should be written.");
+        {
+            std::ifstream stream(fileName, std::ios::binary);
+            const std::string saved((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+            require(saved.find("fullTunnel") == std::string::npos,
+                "Legacy fullTunnel setting should be removed when VPN policy is saved.");
+        }
         policy.removeVpnProfile(L"salut");
     }
 
