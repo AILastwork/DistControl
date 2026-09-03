@@ -1,0 +1,38 @@
+{
+  "pipeName": "dkclient",
+  "refreshSeconds": 5,
+  "userAssignments": [
+    {
+      "users": [
+        "DOMAIN\\ivanov",
+        "ivanov"
+      ],
+      "groups": [],
+      "allowedDevices": [
+        {
+          "endpoint": "diskkontrolusb64-1-Gr-01.1111",
+          "nickname": "BANK-KEY-01",
+          "product": "Rutoken lite"
+        },
+        {
+          "endpoint": "diskkontrolusb64-1-Gr-01.1112",
+          "nickname": "REPORT-KEY-01",
+          "product": "Rutoken lite"
+        }
+      ]
+    },
+    {
+      "users": [],
+      "groups": [
+        "DOMAIN\\Accounting"
+      ],
+      "allowedDevices": [
+        {
+          "endpoint": "diskkontrolusb32-1-Gr-01.1121",
+          "nickname": "ACCOUNTING-KEY-01",
+          "product": "Rutoken lite"
+        }
+      ]
+    }
+  ]
+}

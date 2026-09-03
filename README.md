@@ -3,10 +3,10 @@
 ## Готовая сборка
 
 Скачать ZIP:
-[DiskControl-0.1.0-win64.zip](https://github.com/AILastwork/DistControl/raw/main/release-assets/DiskControl-0.1.0-win64.zip)
+[DiskControl-0.1.1-win64.zip](release-assets/DiskControl-0.1.1-win64.zip)
 
 Checksum:
-[DiskControl-0.1.0-win64.zip.sha256](https://github.com/AILastwork/DistControl/raw/main/release-assets/DiskControl-0.1.0-win64.zip.sha256)
+[DiskControl-0.1.1-win64.zip.sha256](release-assets/DiskControl-0.1.1-win64.zip.sha256)
 
 Внутри архива:
 
