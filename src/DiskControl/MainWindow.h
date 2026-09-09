@@ -52,6 +52,8 @@ private:
     void checkActiveDeviceTimeouts();
     void checkActiveVpnHealth();
     void finishVpnHealthCheck();
+    void publishNetworkState();
+    void finishNetworkStatePublish();
     void retryPendingAutoReleases(ULONGLONG now);
     void requestAutoRelease(DeviceViewModel& device);
     void markDeviceLocallyReleased(const std::wstring& endpoint);
@@ -125,15 +127,19 @@ private:
     bool pendingTokenActionVpnError_ = false;
     DeviceViewModel pendingVpnFailureDevice_;
     std::wstring pendingVpnFailureError_;
+    std::wstring pendingNetworkStateError_;
     ULONGLONG lastVpnWatchdogTick_ = 0;
+    ULONGLONG lastNetworkStateTick_ = 0;
     std::thread refreshThread_;
     std::thread computerLoadThread_;
     std::thread tokenActionThread_;
     std::thread vpnWatchdogThread_;
+    std::thread networkStateThread_;
     std::mutex refreshMutex_;
     std::mutex computerLoadMutex_;
     std::mutex tokenActionMutex_;
     std::mutex vpnWatchdogMutex_;
+    std::mutex networkStateMutex_;
     std::atomic_bool refreshing_ = false;
     std::atomic_size_t refreshProcessed_ = 0;
     std::atomic_size_t refreshTotal_ = 0;
@@ -141,6 +147,7 @@ private:
     std::atomic_bool computerLoading_ = false;
     std::atomic_bool tokenActionRunning_ = false;
     std::atomic_bool vpnWatchdogRunning_ = false;
+    std::atomic_bool networkStateRunning_ = false;
     std::atomic_bool closing_ = false;
     bool populatingList_ = false;
     bool timeoutPromptActive_ = false;

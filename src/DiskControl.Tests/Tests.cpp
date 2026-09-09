@@ -26,6 +26,17 @@ void require(bool condition, const char* message) {
     }
 }
 
+class StubbedNetworkOperationsGuard {
+public:
+    StubbedNetworkOperationsGuard() {
+        VpnManager::setNetworkOperationsStubbedForTests(true);
+    }
+
+    ~StubbedNetworkOperationsGuard() {
+        VpnManager::setNetworkOperationsStubbedForTests(false);
+    }
+};
+
 bool removeFirstMatch(const char* pattern) {
     WIN32_FIND_DATAA data{};
     HANDLE find = FindFirstFileA(pattern, &data);
@@ -309,12 +320,15 @@ void testUseDeviceAllowsSlowUseResponse() {
         stream << "{\n"
             << "  \"pipeName\": \"" << narrowAscii(pipeName) << "\",\n"
             << "  \"usageStatePath\": \"" << usageFile << "\",\n"
+            << "  \"vpnProfiles\": [{\"id\": \"test-direct\", \"mode\": \"direct\", "
+            << "\"expectedPublicIps\": [\"203.0.113.10\"], \"enabled\": true}],\n"
             << "  \"userAssignments\": [\n"
             << "    {\n"
             << "      \"users\": [\"" << narrowAscii(PolicyManager::currentUserSid()) << "\"],\n"
             << "      \"groups\": [],\n"
             << "      \"allowedDevices\": [\n"
-            << "        { \"endpoint\": \"OFFICE-HUB-Gr-1.3\", \"nickname\": \"Slow Key\", \"product\": \"Rutoken\" }\n"
+            << "        { \"endpoint\": \"OFFICE-HUB-Gr-1.3\", \"nickname\": \"Slow Key\", "
+            << "\"product\": \"Rutoken\", \"vpnProfile\": \"test-direct\" }\n"
             << "      ]\n"
             << "    }\n"
             << "  ]\n"
@@ -327,7 +341,8 @@ void testUseDeviceAllowsSlowUseResponse() {
     std::vector<std::string> commands;
     std::atomic_bool serverOk = true;
     std::thread server([pipe, &commands, &serverOk]() {
-        for (int requestIndex = 0; requestIndex < 3; ++requestIndex) {
+        bool useReceived = false;
+        for (int requestIndex = 0; requestIndex < 7; ++requestIndex) {
             char request[256]{};
             DWORD read = 0;
             if (!connectTestPipe(pipe) || !ReadFile(pipe, request, sizeof(request), &read, nullptr)) {
@@ -339,12 +354,19 @@ void testUseDeviceAllowsSlowUseResponse() {
             commands.push_back(command);
             std::string response;
             if (command == "DEVICE INFO,OFFICE-HUB-Gr-1.3") {
-                response = requestIndex == 0
-                    ? "NICKNAME: Slow Key\r\nPRODUCT: Rutoken\r\nIN USE BY: NO ONE\r\n"
-                    : "NICKNAME: Slow Key\r\nPRODUCT: Rutoken\r\nIN USE BY: YOU\r\n";
+                response = useReceived
+                    ? "NICKNAME: Slow Key\r\nPRODUCT: Rutoken\r\nIN USE BY: YOU\r\n"
+                    : "NICKNAME: Slow Key\r\nPRODUCT: Rutoken\r\nIN USE BY: NO ONE\r\n";
+            }
+            else if (command == "LIST") {
+                response = "--> Slow Key (OFFICE-HUB-Gr-1.3)\n";
+            }
+            else if (command == "SERVER INFO,OFFICE-HUB-Gr-1") {
+                response = "STATE: Logged in\r\n";
             }
             else if (command == "USE,OFFICE-HUB-Gr-1.3") {
                 std::this_thread::sleep_for(std::chrono::milliseconds(150));
+                useReceived = true;
                 response = "OK";
             }
             else {
@@ -365,6 +387,7 @@ void testUseDeviceAllowsSlowUseResponse() {
 
     try {
         PolicyManager::setConfigPathOverride(L"policy-slow-use-test.json");
+        StubbedNetworkOperationsGuard networkGuard;
         DeviceAccessService service;
         DeviceViewModel device;
         device.endpoint = L"OFFICE-HUB-Gr-1.3";
@@ -388,10 +411,17 @@ void testUseDeviceAllowsSlowUseResponse() {
     server.join();
     PolicyManager::setConfigPathOverride(L"");
     require(serverOk, "Slow USE test pipe server failed.");
-    require(commands.size() == 3 && commands[0] == "DEVICE INFO,OFFICE-HUB-Gr-1.3" &&
-        commands[1] == "USE,OFFICE-HUB-Gr-1.3" &&
-        commands[2] == "DEVICE INFO,OFFICE-HUB-Gr-1.3",
-        "Slow USE test should verify ownership before and after USE.");
+    const std::vector<std::string> expectedCommands{
+        "DEVICE INFO,OFFICE-HUB-Gr-1.3",
+        "LIST",
+        "LIST",
+        "SERVER INFO,OFFICE-HUB-Gr-1",
+        "DEVICE INFO,OFFICE-HUB-Gr-1.3",
+        "USE,OFFICE-HUB-Gr-1.3",
+        "DEVICE INFO,OFFICE-HUB-Gr-1.3"
+    };
+    require(commands == expectedCommands,
+        "Slow USE test should prepare the network and verify ownership before and after USE.");
 
     std::remove(policyFile);
     std::remove(usageFile);
@@ -413,12 +443,15 @@ void testUseDeviceFailedResponseIsError() {
         stream << "{\n"
             << "  \"pipeName\": \"" << narrowAscii(pipeName) << "\",\n"
             << "  \"usageStatePath\": \"" << usageFile << "\",\n"
+            << "  \"vpnProfiles\": [{\"id\": \"test-direct\", \"mode\": \"direct\", "
+            << "\"expectedPublicIps\": [\"203.0.113.10\"], \"enabled\": true}],\n"
             << "  \"userAssignments\": [\n"
             << "    {\n"
             << "      \"users\": [\"" << narrowAscii(PolicyManager::currentUserSid()) << "\"],\n"
             << "      \"groups\": [],\n"
             << "      \"allowedDevices\": [\n"
-            << "        { \"endpoint\": \"OFFICE-HUB-Gr-1.3\", \"nickname\": \"Failed Key\", \"product\": \"Rutoken\" }\n"
+            << "        { \"endpoint\": \"OFFICE-HUB-Gr-1.3\", \"nickname\": \"Failed Key\", "
+            << "\"product\": \"Rutoken\", \"vpnProfile\": \"test-direct\" }\n"
             << "      ]\n"
             << "    }\n"
             << "  ]\n"
@@ -430,7 +463,9 @@ void testUseDeviceFailedResponseIsError() {
 
     std::atomic_bool serverOk = true;
     std::thread server([pipe, &serverOk]() {
-        for (int requestIndex = 0; requestIndex < 3; ++requestIndex) {
+        // One preparation cycle, four USE attempts with recovery between them,
+        // and one final DEVICE INFO confirmation.
+        for (int requestIndex = 0; requestIndex < 19; ++requestIndex) {
             char request[256]{};
             DWORD read = 0;
             if (!connectTestPipe(pipe) || !ReadFile(pipe, request, sizeof(request), &read, nullptr)) {
@@ -442,6 +477,12 @@ void testUseDeviceFailedResponseIsError() {
             std::string response;
             if (command == "DEVICE INFO,OFFICE-HUB-Gr-1.3") {
                 response = "NICKNAME: Failed Key\r\nPRODUCT: Rutoken\r\nIN USE BY: NO ONE\r\n";
+            }
+            else if (command == "LIST") {
+                response = "--> Failed Key (OFFICE-HUB-Gr-1.3)\n";
+            }
+            else if (command == "SERVER INFO,OFFICE-HUB-Gr-1") {
+                response = "STATE: Logged in\r\n";
             }
             else if (command == "USE,OFFICE-HUB-Gr-1.3") {
                 response = "FAILED";
@@ -465,6 +506,7 @@ void testUseDeviceFailedResponseIsError() {
     bool failed = false;
     try {
         PolicyManager::setConfigPathOverride(L"policy-failed-use-test.json");
+        StubbedNetworkOperationsGuard networkGuard;
         DeviceAccessService service;
         DeviceViewModel device;
         device.endpoint = L"OFFICE-HUB-Gr-1.3";
@@ -964,9 +1006,10 @@ void testVpnPolicyRoundTrip() {
             << "  \"vpnProfiles\": [\n"
             << "    {\"id\": \"salut\", \"name\": \"Salut\", \"serverAddress\": \"89.108.64.96\", "
             << "\"tunnelType\": \"L2TP\", \"expectedPublicIps\": [\"89.108.64.96\"], "
-            << "\"ipCheckUrl\": \"https://api.ipify.org\", \"fullTunnel\": false, \"enabled\": true},\n"
-            << "    {\"id\": \"backup\", \"name\": \"Backup VPN\", \"serverAddress\": \"203.0.113.20\", "
-            << "\"tunnelType\": \"L2TP\", \"expectedPublicIps\": [\"203.0.113.21\"], "
+            << "\"ipCheckUrl\": \"https://api.ipify.org\", \"mode\": \"windowsVpn\", "
+            << "\"phonebookScope\": \"allUsers\", \"fullTunnel\": false, \"enabled\": true},\n"
+            << "    {\"id\": \"backup\", \"name\": \"Direct network\", \"mode\": \"direct\", "
+            << "\"expectedPublicIps\": [\"203.0.113.21\"], "
             << "\"ipCheckUrl\": \"https://api.ipify.org\", \"enabled\": true}\n"
             << "  ],\n"
             << "  \"userAssignments\": [\n"
@@ -986,6 +1029,9 @@ void testVpnPolicyRoundTrip() {
         require(policy.vpnProfiles().size() == 2, "Multiple VPN profiles should be parsed.");
         const VpnProfile& profile = policy.vpnProfiles()[0];
         require(profile.id == L"salut" && profile.name == L"Salut", "VPN profile identity mismatch.");
+        require(profile.mode == VpnProfileMode::WindowsVpn &&
+            profile.phonebookScope == VpnPhonebookScope::AllUsers,
+            "Windows VPN mode and phonebook scope should be parsed.");
         require(profile.serverAddress == L"89.108.64.96", "VPN server should be parsed.");
         require(profile.enabled, "VPN enabled setting should be parsed.");
         require(profile.expectedPublicIps.size() == 1 &&
@@ -996,7 +1042,8 @@ void testVpnPolicyRoundTrip() {
         require(matched.id == L"salut", "Resolved VPN profile mismatch.");
         require(policy.tryGetVpnProfileForDevice(backupDevice, matched),
             "A second token should resolve its independent VPN profile.");
-        require(matched.id == L"backup", "Second VPN profile mapping mismatch.");
+        require(matched.id == L"backup" && matched.mode == VpnProfileMode::Direct,
+            "Direct network profile mapping mismatch.");
 
         policy.setDevicesForUser({ device, backupDevice }, PolicyManager::currentUserSid());
     }
@@ -1022,6 +1069,10 @@ void testVpnPolicyRoundTrip() {
             const std::string saved((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
             require(saved.find("fullTunnel") == std::string::npos,
                 "Legacy fullTunnel setting should be removed when VPN policy is saved.");
+            require(saved.find("\"mode\": \"windowsVpn\"") != std::string::npos &&
+                saved.find("\"mode\": \"direct\"") != std::string::npos &&
+                saved.find("\"phonebookScope\": \"allUsers\"") != std::string::npos,
+                "Network mode and Windows phonebook scope should be persisted.");
         }
         policy.removeVpnProfile(L"salut");
     }
@@ -1037,6 +1088,43 @@ void testVpnPolicyRoundTrip() {
             "Removing one VPN profile must preserve other token mappings.");
     }
 
+    std::remove(fileName);
+}
+
+void testNetworkStateReportParsing() {
+    require(VpnManager::isValidPublicIp(L"89.108.64.96") &&
+        VpnManager::isValidPublicIp(L"2001:db8::10") &&
+        !VpnManager::isValidPublicIp(L"89.108.64.999"),
+        "Network policy should accept only valid IPv4 or IPv6 addresses.");
+    const char* fileName = "network-state-test.json";
+    std::remove(fileName);
+    {
+        std::ofstream stream(fileName, std::ios::binary);
+        stream << "{\n"
+            << "  \"schemaVersion\": 1,\n"
+            << "  \"computerName\": \"WRK-406\",\n"
+            << "  \"userName\": \"OSNOVA\\\\a.nikitin\",\n"
+            << "  \"publicIp\": \"89.108.64.96\",\n"
+            << "  \"activeVpnNames\": [\"Salut\"],\n"
+            << "  \"updatedAtFileTime\": \"134000000000000000\"\n"
+            << "}\n";
+    }
+
+    NetworkStateSnapshot state;
+    std::wstring error;
+    require(PolicyManager::tryReadNetworkState(L"network-state-test.json", state, &error),
+        "A valid network state report should be parsed.");
+    require(state.computerName == L"WRK-406" && state.userName == L"OSNOVA\\a.nikitin" &&
+        state.publicIp == L"89.108.64.96" && state.activeVpnNames.size() == 1 &&
+        state.activeVpnNames[0] == L"Salut" && state.updatedAtFileTime == 134000000000000000ULL,
+        "Network state report fields mismatch.");
+
+    {
+        std::ofstream stream(fileName, std::ios::binary | std::ios::trunc);
+        stream << "{\"publicIp\":\"89.108.64.96\",\"activeVpnNames\":[]}";
+    }
+    require(!PolicyManager::tryReadNetworkState(L"network-state-test.json", state, &error) && !error.empty(),
+        "A network state report without a timestamp must be rejected.");
     std::remove(fileName);
 }
 
@@ -1069,6 +1157,38 @@ void testUnknownVpnMappingFailsClosed() {
     std::remove(fileName);
 }
 
+void testVpnWatchdogRejectsUnmappedToken() {
+    const char* fileName = "policy-vpn-unmapped-watchdog-test.json";
+    std::remove(fileName);
+    {
+        std::ofstream stream(fileName, std::ios::binary);
+        stream << "{\n"
+            << "  \"pipeName\": \"dkclient\",\n"
+            << "  \"vpnProfiles\": [],\n"
+            << "  \"userAssignments\": [{\"users\": [\""
+            << narrowAscii(PolicyManager::currentUserSid())
+            << "\"], \"groups\": [], \"allowedDevices\": [{\"endpoint\": \"OFFICE-HUB-Gr-1.3\", "
+            << "\"nickname\": \"Unmapped Key\", \"product\": \"Rutoken\"}]}]\n"
+            << "}\n";
+    }
+
+    bool rejected = false;
+    try {
+        PolicyManager::setConfigPathOverride(L"policy-vpn-unmapped-watchdog-test.json");
+        DeviceViewModel device;
+        device.endpoint = L"OFFICE-HUB-Gr-1.3";
+        device.nickname = L"Unmapped Key";
+        device.product = L"Rutoken";
+        DeviceAccessService().verifyVpnForDevice(device);
+    }
+    catch (const std::exception& error) {
+        rejected = std::string(error.what()).find("not assigned") != std::string::npos;
+    }
+    PolicyManager::setConfigPathOverride(L"");
+    std::remove(fileName);
+    require(rejected, "VPN watchdog must reject an active token without a network mapping.");
+}
+
 void testLocalRouteInspection() {
     const size_t routeCount = VpnManager::localPhysicalRouteCount();
     (void)routeCount;
@@ -1099,6 +1219,8 @@ int main() {
         testPolicyUsageStatePath();
         testVpnPolicyRoundTrip();
         testUnknownVpnMappingFailsClosed();
+        testVpnWatchdogRejectsUnmappedToken();
+        testNetworkStateReportParsing();
         testLocalRouteInspection();
         std::cout << "All DiskControl C++ tests passed.\n";
         return 0;

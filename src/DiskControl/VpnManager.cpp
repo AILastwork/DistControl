@@ -18,6 +18,7 @@
 #include <winhttp.h>
 #include <ws2tcpip.h>
 
+#include <algorithm>
 #include <array>
 #include <map>
 #include <mutex>
@@ -34,6 +35,10 @@ constexpr int kPublicIpAttempts = 3;
 
 std::mutex gLocalRouteMutex;
 std::map<std::wstring, std::set<std::wstring>> gLocalRouteBaselines;
+
+#ifdef DISKCONTROL_TESTING
+bool gNetworkOperationsStubbedForTests = false;
+#endif
 
 bool equalsIgnoreCase(const std::wstring& left, const std::wstring& right) {
     return CompareStringOrdinal(
@@ -118,40 +123,7 @@ std::wstring allUsersPhonebookPath() {
     return std::wstring(commonAppData) + L"\\Microsoft\\Network\\Connections\\Pbk\\rasphone.pbk";
 }
 
-std::wstring l2tpDeviceName() {
-    DWORD bytes = sizeof(RASDEVINFOW);
-    DWORD count = 0;
-    std::vector<RASDEVINFOW> devices(1);
-    devices[0].dwSize = sizeof(RASDEVINFOW);
-    DWORD error = RasEnumDevicesW(devices.data(), &bytes, &count);
-    if (error == ERROR_BUFFER_TOO_SMALL) {
-        devices.resize((bytes + sizeof(RASDEVINFOW) - 1) / sizeof(RASDEVINFOW));
-        devices[0].dwSize = sizeof(RASDEVINFOW);
-        error = RasEnumDevicesW(devices.data(), &bytes, &count);
-    }
-    if (error != ERROR_SUCCESS) {
-        throw rasError("VPN device enumeration", error);
-    }
-
-    std::wstring fallback;
-    for (DWORD index = 0; index < count; ++index) {
-        if (!equalsIgnoreCase(devices[index].szDeviceType, RASDT_Vpn)) {
-            continue;
-        }
-        if (fallback.empty()) {
-            fallback = devices[index].szDeviceName;
-        }
-        if (FindStringOrdinal(FIND_FROMSTART, devices[index].szDeviceName, -1, L"L2TP", -1, TRUE) >= 0) {
-            return devices[index].szDeviceName;
-        }
-    }
-    if (!fallback.empty()) {
-        return fallback;
-    }
-    throw std::runtime_error("Windows L2TP VPN device was not found.");
-}
-
-std::vector<RASCONNW> activeConnections() {
+std::vector<RASCONNW> rasActiveConnections() {
     DWORD bytes = sizeof(RASCONNW);
     DWORD count = 0;
     std::vector<RASCONNW> connections(1);
@@ -172,7 +144,7 @@ std::vector<RASCONNW> activeConnections() {
 
 DWORD hangUpProfileConnections(const std::wstring& profileName) {
     DWORD firstError = ERROR_SUCCESS;
-    for (const RASCONNW& connection : activeConnections()) {
+    for (const RASCONNW& connection : rasActiveConnections()) {
         if (!equalsIgnoreCase(connection.szEntryName, profileName)) {
             continue;
         }
@@ -184,7 +156,82 @@ DWORD hangUpProfileConnections(const std::wstring& profileName) {
     return firstError;
 }
 
-bool isValidIpAddress(const std::wstring& value) {
+const wchar_t* phonebookArgument(const std::wstring& phonebookPath) {
+    return phonebookPath.empty() ? nullptr : phonebookPath.c_str();
+}
+
+std::wstring phonebookForProfile(const VpnProfile& profile) {
+    return profile.phonebookScope == VpnPhonebookScope::AllUsers
+        ? allUsersPhonebookPath()
+        : std::wstring();
+}
+
+bool pathsEqual(const std::wstring& left, const std::wstring& right) {
+    if (left.empty() || right.empty()) {
+        return left.empty() && right.empty();
+    }
+    return equalsIgnoreCase(left, right);
+}
+
+bool connectionMatchesProfile(const RASCONNW& connection, const VpnProfile& profile) {
+    if (!equalsIgnoreCase(connection.szEntryName, profile.name)) {
+        return false;
+    }
+    const std::wstring allUsers = allUsersPhonebookPath();
+    const std::wstring connectionPhonebook = connection.szPhonebook;
+    if (profile.phonebookScope == VpnPhonebookScope::AllUsers) {
+        return pathsEqual(connectionPhonebook, allUsers);
+    }
+    return !pathsEqual(connectionPhonebook, allUsers);
+}
+
+std::vector<WindowsVpnProfileInfo> enumeratePhonebookProfiles(
+    const std::wstring& phonebookPath,
+    VpnPhonebookScope scope) {
+    DWORD bytes = sizeof(RASENTRYNAMEW);
+    DWORD count = 0;
+    std::vector<RASENTRYNAMEW> entries(1);
+    entries[0].dwSize = sizeof(RASENTRYNAMEW);
+    DWORD error = RasEnumEntriesW(
+        nullptr, phonebookArgument(phonebookPath), entries.data(), &bytes, &count);
+    if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND ||
+        error == ERROR_CANNOT_FIND_PHONEBOOK_ENTRY || error == ERROR_CANNOT_OPEN_PHONEBOOK) {
+        return {};
+    }
+    if (error == ERROR_BUFFER_TOO_SMALL) {
+        entries.resize((bytes + sizeof(RASENTRYNAMEW) - 1) / sizeof(RASENTRYNAMEW));
+        entries[0].dwSize = sizeof(RASENTRYNAMEW);
+        error = RasEnumEntriesW(
+            nullptr, phonebookArgument(phonebookPath), entries.data(), &bytes, &count);
+    }
+    if (error != ERROR_SUCCESS) {
+        throw rasError("VPN profile enumeration", error);
+    }
+
+    std::vector<WindowsVpnProfileInfo> result;
+    result.reserve(count);
+    for (DWORD index = 0; index < count; ++index) {
+        WindowsVpnProfileInfo profile;
+        profile.name = entries[index].szEntryName;
+        profile.phonebookScope = scope;
+
+        RASENTRYW entry{};
+        entry.dwSize = sizeof(entry);
+        DWORD entrySize = sizeof(entry);
+        DWORD deviceInfoSize = 0;
+        const DWORD readError = RasGetEntryPropertiesW(
+            phonebookArgument(phonebookPath), profile.name.c_str(),
+            &entry, &entrySize, nullptr, &deviceInfoSize);
+        if (readError == ERROR_SUCCESS) {
+            profile.serverAddress = entry.szLocalPhoneNumber;
+            profile.tunnelType = entry.szDeviceName;
+        }
+        result.push_back(std::move(profile));
+    }
+    return result;
+}
+
+bool isValidIpAddressValue(const std::wstring& value) {
     IN_ADDR ipv4{};
     if (InetPtonW(AF_INET, value.c_str(), &ipv4) == 1) {
         return true;
@@ -337,41 +384,30 @@ private:
 };
 }
 
-bool VpnManager::profileExists(const std::wstring& profileName) {
-    if (profileName.empty()) {
-        return false;
+bool VpnManager::profileExists(const VpnProfile& profile) {
+    if (profile.mode == VpnProfileMode::Direct) {
+        return true;
     }
-
-    DWORD bytes = 0;
-    DWORD count = 0;
-    DWORD error = RasEnumEntriesW(nullptr, nullptr, nullptr, &bytes, &count);
-    if (error != ERROR_BUFFER_TOO_SMALL && error != ERROR_SUCCESS) {
-        throw rasError("VPN profile enumeration", error);
-    }
-    if (bytes == 0) {
-        return false;
-    }
-
-    std::vector<unsigned char> buffer(bytes);
-    auto* entries = reinterpret_cast<RASENTRYNAMEW*>(buffer.data());
-    entries[0].dwSize = sizeof(RASENTRYNAMEW);
-    error = RasEnumEntriesW(nullptr, nullptr, entries, &bytes, &count);
-    if (error != ERROR_SUCCESS) {
-        throw rasError("VPN profile enumeration", error);
-    }
-    for (DWORD index = 0; index < count; ++index) {
-        if (equalsIgnoreCase(entries[index].szEntryName, profileName)) {
+    const std::wstring phonebook = phonebookForProfile(profile);
+    for (const WindowsVpnProfileInfo& installed : enumeratePhonebookProfiles(
+        phonebook, profile.phonebookScope)) {
+        if (equalsIgnoreCase(installed.name, profile.name)) {
             return true;
         }
     }
     return false;
 }
 
-bool VpnManager::hasStoredCredentials(const std::wstring& profileName) {
+bool VpnManager::hasStoredCredentials(const VpnProfile& profile) {
+    if (profile.mode == VpnProfileMode::Direct) {
+        return true;
+    }
+    const std::wstring phonebook = phonebookForProfile(profile);
     RASCREDENTIALSW credentials{};
     credentials.dwSize = sizeof(credentials);
     credentials.dwMask = RASCM_UserName | RASCM_Password;
-    const DWORD error = RasGetCredentialsW(nullptr, profileName.c_str(), &credentials);
+    const DWORD error = RasGetCredentialsW(
+        phonebookArgument(phonebook), profile.name.c_str(), &credentials);
     if (error == ERROR_CANNOT_FIND_PHONEBOOK_ENTRY) {
         return false;
     }
@@ -384,127 +420,162 @@ bool VpnManager::hasStoredCredentials(const std::wstring& profileName) {
 }
 
 void VpnManager::saveCredentials(
-    const std::wstring& profileName,
+    const VpnProfile& profile,
     const std::wstring& userName,
     const std::wstring& password) {
-    if (profileName.empty() || userName.empty() || password.empty()) {
+    if (profile.mode == VpnProfileMode::Direct) {
+        return;
+    }
+    if (profile.name.empty() || userName.empty() || password.empty()) {
         throw std::runtime_error("VPN profile, user name and password are required.");
     }
 
+    const std::wstring phonebook = phonebookForProfile(profile);
     RASCREDENTIALSW credentials{};
     credentials.dwSize = sizeof(credentials);
     credentials.dwMask = RASCM_UserName | RASCM_Password;
     copyRasText(credentials.szUserName, std::size(credentials.szUserName), userName);
     copyRasText(credentials.szPassword, std::size(credentials.szPassword), password);
-    const DWORD error = RasSetCredentialsW(nullptr, profileName.c_str(), &credentials, FALSE);
+    const DWORD error = RasSetCredentialsW(
+        phonebookArgument(phonebook), profile.name.c_str(), &credentials, FALSE);
     SecureZeroMemory(credentials.szPassword, sizeof(credentials.szPassword));
     if (error != ERROR_SUCCESS) {
         throw rasError("VPN credential save", error);
     }
 }
 
-void VpnManager::installOrUpdateProfile(
-    const VpnProfile& profile,
-    const std::wstring& preSharedKey) {
-    if (profile.name.empty() || profile.serverAddress.empty()) {
-        throw std::runtime_error("VPN profile name and server address are required.");
+bool VpnManager::isConnected(const VpnProfile& profile) {
+    if (profile.mode == VpnProfileMode::Direct) {
+        return rasActiveConnections().empty();
     }
-    if (!profile.tunnelType.empty() && !equalsIgnoreCase(profile.tunnelType, L"L2TP")) {
-        throw std::runtime_error("Only L2TP VPN profiles can be installed by DiskControl.");
-    }
-
-    const std::wstring phonebook = allUsersPhonebookPath();
-    RASENTRYW entry{};
-    entry.dwSize = sizeof(entry);
-    DWORD entrySize = sizeof(entry);
-    DWORD deviceInfoSize = 0;
-    const DWORD readError = RasGetEntryPropertiesW(
-        phonebook.c_str(), profile.name.c_str(), &entry, &entrySize, nullptr, &deviceInfoSize);
-    const bool exists = readError == ERROR_SUCCESS;
-    if (!exists && readError != ERROR_CANNOT_FIND_PHONEBOOK_ENTRY && readError != ERROR_FILE_NOT_FOUND) {
-        throw rasError("VPN profile read", readError);
-    }
-    if (!exists) {
-        if (preSharedKey.empty()) {
-            throw std::runtime_error("VPN pre-shared key is required for a new Windows profile.");
-        }
-        entry = {};
-        entry.dwSize = sizeof(entry);
-        entry.dwfOptions = RASEO_RequireMsCHAP2 | RASEO_RequireDataEncryption;
-        entry.dwfNetProtocols = RASNP_Ip;
-        entry.dwFramingProtocol = RASFP_Ppp;
-    }
-
-    entry.dwfOptions |= RASEO_RemoteDefaultGateway;
-    entry.dwfOptions &= ~(RASEO_RequireEAP | RASEO_RequirePAP | RASEO_RequireSPAP |
-        RASEO_RequireCHAP | RASEO_RequireMsEncryptedPw);
-    entry.dwfOptions |= RASEO_RequireMsCHAP2 | RASEO_RequireDataEncryption;
-    entry.dwfOptions2 |= RASEO2_UsePreSharedKey | RASEO2_ReconnectIfDropped;
-    entry.dwType = RASET_Vpn;
-    entry.dwVpnStrategy = VS_L2tpOnly;
-    entry.dwfNetProtocols = RASNP_Ip;
-    entry.dwFramingProtocol = RASFP_Ppp;
-    copyRasText(entry.szLocalPhoneNumber, std::size(entry.szLocalPhoneNumber), profile.serverAddress);
-    copyRasText(entry.szDeviceType, std::size(entry.szDeviceType), RASDT_Vpn);
-    copyRasText(entry.szDeviceName, std::size(entry.szDeviceName), l2tpDeviceName());
-
-    if (!exists) {
-        const DWORD validationError = RasValidateEntryNameW(phonebook.c_str(), profile.name.c_str());
-        if (validationError != ERROR_SUCCESS && validationError != ERROR_ALREADY_EXISTS) {
-            throw rasError("VPN profile name validation", validationError);
-        }
-    }
-
-    const DWORD writeError = RasSetEntryPropertiesW(
-        phonebook.c_str(), profile.name.c_str(), &entry, sizeof(entry), nullptr, 0);
-    if (writeError != ERROR_SUCCESS) {
-        throw rasError("VPN profile save", writeError);
-    }
-
-    if (!preSharedKey.empty()) {
-        RASCREDENTIALSW credentials{};
-        credentials.dwSize = sizeof(credentials);
-        credentials.dwMask = RASCM_PreSharedKey;
-        copyRasText(credentials.szPassword, std::size(credentials.szPassword), preSharedKey);
-        const DWORD credentialError = RasSetCredentialsW(
-            phonebook.c_str(), profile.name.c_str(), &credentials, FALSE);
-        SecureZeroMemory(credentials.szPassword, sizeof(credentials.szPassword));
-        if (credentialError != ERROR_SUCCESS) {
-            throw rasError("VPN pre-shared key save", credentialError);
-        }
-    }
-}
-
-bool VpnManager::isConnected(const std::wstring& profileName) {
-    for (const RASCONNW& connection : activeConnections()) {
-        if (equalsIgnoreCase(connection.szEntryName, profileName)) {
+    for (const RASCONNW& connection : rasActiveConnections()) {
+        if (connectionMatchesProfile(connection, profile)) {
             return true;
         }
     }
     return false;
 }
 
-void VpnManager::disconnect(
-    const std::wstring& profileName,
-    const VpnProgressCallback& progress) {
-    if (profileName.empty()) {
+std::vector<WindowsVpnProfileInfo> VpnManager::installedProfiles() {
+    return installedProfiles({}, allUsersPhonebookPath());
+}
+
+std::vector<WindowsVpnProfileInfo> VpnManager::installedProfiles(
+    const std::wstring& currentUserPhonebookPath,
+    const std::wstring& allUsersPhonebookPathValue) {
+    std::vector<WindowsVpnProfileInfo> result = enumeratePhonebookProfiles(
+        currentUserPhonebookPath, VpnPhonebookScope::CurrentUser);
+    std::vector<WindowsVpnProfileInfo> allUsers = enumeratePhonebookProfiles(
+        allUsersPhonebookPathValue, VpnPhonebookScope::AllUsers);
+    result.insert(result.end(), allUsers.begin(), allUsers.end());
+
+    const bool localEnumeration = currentUserPhonebookPath.empty() &&
+        pathsEqual(allUsersPhonebookPathValue, allUsersPhonebookPath());
+    if (localEnumeration) {
+        for (WindowsVpnProfileInfo& profile : result) {
+            VpnProfile configured;
+            configured.name = profile.name;
+            configured.phonebookScope = profile.phonebookScope;
+            profile.connected = isConnected(configured);
+        }
+    }
+    std::sort(result.begin(), result.end(), [](const auto& left, const auto& right) {
+        const int nameOrder = CompareStringOrdinal(
+            left.name.c_str(), static_cast<int>(left.name.size()),
+            right.name.c_str(), static_cast<int>(right.name.size()), TRUE);
+        if (nameOrder != CSTR_EQUAL) {
+            return nameOrder == CSTR_LESS_THAN;
+        }
+        return left.phonebookScope == VpnPhonebookScope::CurrentUser &&
+            right.phonebookScope == VpnPhonebookScope::AllUsers;
+    });
+    result.erase(std::unique(result.begin(), result.end(), [](const auto& left, const auto& right) {
+        return equalsIgnoreCase(left.name, right.name) &&
+            left.phonebookScope == right.phonebookScope;
+    }), result.end());
+    return result;
+}
+
+std::vector<ActiveVpnConnectionInfo> VpnManager::activeConnections() {
+#ifdef DISKCONTROL_TESTING
+    if (gNetworkOperationsStubbedForTests) {
+        return {};
+    }
+#endif
+    std::vector<ActiveVpnConnectionInfo> result;
+    for (const RASCONNW& connection : rasActiveConnections()) {
+        result.push_back({ connection.szEntryName, connection.szPhonebook });
+    }
+    return result;
+}
+
+void VpnManager::disconnectAll(const VpnProgressCallback& progress) {
+#ifdef DISKCONTROL_TESTING
+    if (gNetworkOperationsStubbedForTests) {
+        reportProgress(progress, L"Тестовый режим: активных VPN Windows нет.");
         return;
     }
-    if (!isConnected(profileName)) {
-        reportProgress(progress, L"VPN-профиль «" + profileName + L"» уже отключён.");
+#endif
+    std::vector<RASCONNW> connections = rasActiveConnections();
+    if (connections.empty()) {
+        reportProgress(progress, L"Активных VPN-подключений Windows нет.");
         return;
     }
 
-    reportProgress(progress, L"Отключаем VPN-профиль «" + profileName + L"».");
-    const DWORD error = hangUpProfileConnections(profileName);
+    DWORD firstError = ERROR_SUCCESS;
+    for (const RASCONNW& connection : connections) {
+        reportProgress(progress, L"Отключаем VPN-профиль «" +
+            std::wstring(connection.szEntryName) + L"».");
+        const DWORD error = RasHangUpW(connection.hrasconn);
+        if (firstError == ERROR_SUCCESS && error != ERROR_SUCCESS) {
+            firstError = error;
+        }
+    }
+    if (firstError != ERROR_SUCCESS) {
+        throw rasError("VPN disconnect all", firstError);
+    }
+
+    constexpr int maximumChecks = 75;
+    for (int check = 0; check < maximumChecks; ++check) {
+        if (rasActiveConnections().empty()) {
+            reportProgress(progress, L"Все VPN-подключения Windows отключены.");
+            return;
+        }
+        Sleep(200);
+    }
+    throw std::runtime_error("VPN disconnect all timed out.");
+}
+
+void VpnManager::disconnect(
+    const VpnProfile& profile,
+    const VpnProgressCallback& progress) {
+    if (profile.mode == VpnProfileMode::Direct || profile.name.empty()) {
+        return;
+    }
+    if (!isConnected(profile)) {
+        reportProgress(progress, L"VPN-профиль «" + profile.name + L"» уже отключён.");
+        return;
+    }
+
+    reportProgress(progress, L"Отключаем VPN-профиль «" + profile.name + L"».");
+    DWORD error = ERROR_SUCCESS;
+    for (const RASCONNW& connection : rasActiveConnections()) {
+        if (!connectionMatchesProfile(connection, profile)) {
+            continue;
+        }
+        const DWORD currentError = RasHangUpW(connection.hrasconn);
+        if (error == ERROR_SUCCESS && currentError != ERROR_SUCCESS) {
+            error = currentError;
+        }
+    }
     if (error != ERROR_SUCCESS) {
         throw rasError("VPN disconnect", error);
     }
 
     constexpr int maximumChecks = 50;
     for (int check = 0; check < maximumChecks; ++check) {
-        if (!isConnected(profileName)) {
-            reportProgress(progress, L"VPN-профиль «" + profileName + L"» отключён.");
+        if (!isConnected(profile)) {
+            reportProgress(progress, L"VPN-профиль «" + profile.name + L"» отключён.");
             return;
         }
         Sleep(200);
@@ -519,6 +590,23 @@ size_t VpnManager::localPhysicalRouteCount() {
 VpnVerificationResult VpnManager::connectAndVerify(
     const VpnProfile& profile,
     const VpnProgressCallback& progress) {
+#ifdef DISKCONTROL_TESTING
+    if (gNetworkOperationsStubbedForTests) {
+        if (!profile.enabled || profile.expectedPublicIps.empty()) {
+            throw std::runtime_error("Test network profile is incomplete.");
+        }
+        reportProgress(progress, L"Тестовый режим: сетевой профиль проверен.");
+        return {
+            profile.mode == VpnProfileMode::Direct ? L"Без VPN" : profile.name,
+            profile.expectedPublicIps.front(),
+            false,
+            0
+        };
+    }
+#endif
+    if (profile.mode == VpnProfileMode::Direct) {
+        return verifyDirect(profile, progress);
+    }
     reportProgress(progress, L"Начинаем проверку VPN-профиля «" + profile.name + L"».");
     if (!profile.enabled) {
         throw std::runtime_error("VPN profile is disabled by policy.");
@@ -529,13 +617,13 @@ VpnVerificationResult VpnManager::connectAndVerify(
     if (profile.expectedPublicIps.empty()) {
         throw std::runtime_error("VPN expected public IP is not configured.");
     }
-    if (!profileExists(profile.name)) {
+    if (!profileExists(profile)) {
         throw std::runtime_error("VPN Windows profile is not installed: " + narrowAscii(profile.name));
     }
 
     VpnVerificationResult result;
     result.profileName = profile.name;
-    result.alreadyConnected = isConnected(profile.name);
+    result.alreadyConnected = isConnected(profile);
     reportProgress(progress, result.alreadyConnected
         ? L"VPN-профиль уже подключён. Повторное соединение не требуется."
         : L"VPN-профиль пока не подключён. Готовим соединение Windows RAS.");
@@ -550,7 +638,9 @@ VpnVerificationResult VpnManager::connectAndVerify(
         RASCREDENTIALSW credentials{};
         credentials.dwSize = sizeof(credentials);
         credentials.dwMask = RASCM_UserName | RASCM_Password | RASCM_Domain;
-        DWORD error = RasGetCredentialsW(nullptr, profile.name.c_str(), &credentials);
+        const std::wstring phonebook = phonebookForProfile(profile);
+        DWORD error = RasGetCredentialsW(
+            phonebookArgument(phonebook), profile.name.c_str(), &credentials);
         if (error != ERROR_SUCCESS) {
             throw rasError("VPN credential read", error);
         }
@@ -572,7 +662,8 @@ VpnVerificationResult VpnManager::connectAndVerify(
         SecureZeroMemory(credentials.szPassword, sizeof(credentials.szPassword));
 
         reportProgress(progress, L"Передаём Windows команду подключения VPN.");
-        error = RasDialW(nullptr, nullptr, &parameters, 0, nullptr, &openedConnection);
+        error = RasDialW(
+            nullptr, phonebookArgument(phonebook), &parameters, 0, nullptr, &openedConnection);
         SecureZeroMemory(parameters.szPassword, sizeof(parameters.szPassword));
         if (error != ERROR_SUCCESS) {
             if (openedConnection) {
@@ -601,6 +692,9 @@ VpnVerificationResult VpnManager::connectAndVerify(
 VpnVerificationResult VpnManager::verifyConnected(
     const VpnProfile& profile,
     const VpnProgressCallback& progress) {
+    if (profile.mode == VpnProfileMode::Direct) {
+        return verifyDirect(profile, progress);
+    }
     if (!profile.enabled) {
         throw std::runtime_error("VPN profile is disabled by policy.");
     }
@@ -610,11 +704,16 @@ VpnVerificationResult VpnManager::verifyConnected(
     if (profile.expectedPublicIps.empty()) {
         throw std::runtime_error("VPN expected public IP is not configured.");
     }
-    if (!profileExists(profile.name)) {
+    if (!profileExists(profile)) {
         throw std::runtime_error("VPN Windows profile is not installed: " + narrowAscii(profile.name));
     }
-    if (!isConnected(profile.name)) {
+    if (!isConnected(profile)) {
         throw std::runtime_error("VPN connection is not active: " + narrowAscii(profile.name));
+    }
+
+    const std::vector<ActiveVpnConnectionInfo> connections = activeConnections();
+    if (connections.size() != 1) {
+        throw std::runtime_error("Unexpected additional Windows VPN connection is active.");
     }
 
     VpnVerificationResult result;
@@ -649,6 +748,63 @@ VpnVerificationResult VpnManager::verifyConnected(
     }
     throw lastError;
 }
+
+VpnVerificationResult VpnManager::verifyDirect(
+    const VpnProfile& profile,
+    const VpnProgressCallback& progress) {
+    if (!profile.enabled) {
+        throw std::runtime_error("VPN profile is disabled by policy.");
+    }
+    if (profile.expectedPublicIps.empty()) {
+        throw std::runtime_error("VPN expected public IP is not configured.");
+    }
+    if (!rasActiveConnections().empty()) {
+        throw std::runtime_error("Direct network mode requires all Windows VPN connections to be disconnected.");
+    }
+
+    VpnVerificationResult result;
+    result.profileName = profile.name.empty() ? L"Без VPN" : profile.name;
+    std::runtime_error lastError("VPN public IP check failed.");
+    for (int attempt = 0; attempt < kPublicIpAttempts; ++attempt) {
+        try {
+            reportProgress(progress, L"Проверяем внешний IP без VPN. Попытка " +
+                std::to_wstring(attempt + 1) + L" из " + std::to_wstring(kPublicIpAttempts) + L".");
+            result.publicIp = queryPublicIp(profile.ipCheckUrl);
+            if (!isExpectedPublicIp(result.publicIp, profile.expectedPublicIps)) {
+                throw std::runtime_error(
+                    "VPN public IP mismatch. Actual=" + narrowAscii(result.publicIp) +
+                    "; expected=" + narrowAscii(expectedIpsText(profile.expectedPublicIps)) + ".");
+            }
+            reportProgress(progress, L"Внешний IP без VPN подтверждён: " + result.publicIp + L".");
+            return result;
+        }
+        catch (const std::runtime_error& error) {
+            lastError = error;
+            if (attempt + 1 < kPublicIpAttempts) {
+                Sleep(1200);
+            }
+        }
+    }
+    throw lastError;
+}
+
+std::wstring VpnManager::currentPublicIp(const std::wstring& url) {
+    return queryPublicIp(url.empty() ? L"https://api.ipify.org" : url);
+}
+
+bool VpnManager::isValidPublicIp(const std::wstring& value) {
+    return isValidIpAddressValue(trim(value));
+}
+
+std::wstring VpnManager::allUsersPhonebook() {
+    return allUsersPhonebookPath();
+}
+
+#ifdef DISKCONTROL_TESTING
+void VpnManager::setNetworkOperationsStubbedForTests(bool enabled) {
+    gNetworkOperationsStubbedForTests = enabled;
+}
+#endif
 
 std::wstring VpnManager::queryPublicIp(const std::wstring& url) {
     URL_COMPONENTSW components{};
@@ -725,7 +881,7 @@ std::wstring VpnManager::queryPublicIp(const std::wstring& url) {
     }
 
     const std::wstring publicIp = trim(utf8ToWide(response));
-    if (!isValidIpAddress(publicIp)) {
+    if (!isValidIpAddressValue(publicIp)) {
         throw std::runtime_error("VPN public IP verification service returned an invalid IP address.");
     }
     return publicIp;

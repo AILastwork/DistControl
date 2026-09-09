@@ -401,6 +401,27 @@ std::wstring programDataUsageStatePath() {
     return programDataDiskControlPath(L"usage.json");
 }
 
+std::wstring widenDiagnostic(const char* text) {
+    std::wstring result;
+    if (!text) {
+        return result;
+    }
+    while (*text) {
+        result.push_back(static_cast<unsigned char>(*text++));
+    }
+    return result;
+}
+
+std::wstring localAppDataNetworkStatePath() {
+    wchar_t buffer[32768]{};
+    const DWORD needed = GetEnvironmentVariableW(
+        L"LOCALAPPDATA", buffer, static_cast<DWORD>(std::size(buffer)));
+    if (needed == 0 || needed >= std::size(buffer)) {
+        return {};
+    }
+    return std::wstring(buffer) + L"\\DiskControl\\network-state.json";
+}
+
 std::wstring parentOf(const std::wstring& path) {
     const size_t slash = path.find_last_of(L"\\/");
     if (slash == std::wstring::npos) {
@@ -647,6 +668,13 @@ JsonValue makeBool(bool value) {
     return json;
 }
 
+JsonValue makeNumber(double value) {
+    JsonValue json;
+    json.type = JsonValue::Type::Number;
+    json.numberValue = value;
+    return json;
+}
+
 JsonValue makeArray(std::vector<JsonValue> values = {}) {
     JsonValue json;
     json.type = JsonValue::Type::Array;
@@ -825,6 +853,14 @@ VpnProfile vpnProfileFromJson(const JsonValue& value) {
         profile.tunnelType = L"L2TP";
     }
     profile.expectedPublicIps = stringArray(value.find(L"expectedPublicIps"));
+    const std::wstring mode = stringValue(value.find(L"mode"));
+    profile.mode = equalsIgnoreCase(mode, L"direct")
+        ? VpnProfileMode::Direct
+        : VpnProfileMode::WindowsVpn;
+    const std::wstring phonebookScope = stringValue(value.find(L"phonebookScope"));
+    profile.phonebookScope = equalsIgnoreCase(phonebookScope, L"allUsers")
+        ? VpnPhonebookScope::AllUsers
+        : VpnPhonebookScope::CurrentUser;
     profile.ipCheckUrl = stringValue(value.find(L"ipCheckUrl"));
     if (profile.ipCheckUrl.empty()) {
         profile.ipCheckUrl = L"https://api.ipify.org";
@@ -840,7 +876,9 @@ std::vector<VpnProfile> vpnProfilesFromJson(const JsonValue* value) {
     }
     for (const JsonValue& item : value->arrayValue) {
         VpnProfile profile = vpnProfileFromJson(item);
-        if (!profile.id.empty() && !profile.name.empty() && !profile.serverAddress.empty()) {
+        const bool validWindowsProfile = profile.mode == VpnProfileMode::WindowsVpn && !profile.name.empty();
+        const bool validDirectProfile = profile.mode == VpnProfileMode::Direct;
+        if (!profile.id.empty() && (validWindowsProfile || validDirectProfile)) {
             profiles.push_back(std::move(profile));
         }
     }
@@ -859,6 +897,9 @@ JsonValue makeVpnProfile(const VpnProfile& profile) {
         { L"name", makeString(profile.name) },
         { L"serverAddress", makeString(profile.serverAddress) },
         { L"tunnelType", makeString(profile.tunnelType.empty() ? L"L2TP" : profile.tunnelType) },
+        { L"mode", makeString(profile.mode == VpnProfileMode::Direct ? L"direct" : L"windowsVpn") },
+        { L"phonebookScope", makeString(profile.phonebookScope == VpnPhonebookScope::AllUsers
+            ? L"allUsers" : L"currentUser") },
         { L"enabled", makeBool(profile.enabled) },
         { L"expectedPublicIps", std::move(expectedIps) },
         { L"ipCheckUrl", makeString(profile.ipCheckUrl.empty() ? L"https://api.ipify.org" : profile.ipCheckUrl) }
@@ -1100,8 +1141,10 @@ void PolicyManager::setVpnProfileForDevice(
 }
 
 void PolicyManager::upsertVpnProfile(const VpnProfile& profile) const {
-    if (profile.id.empty() || profile.name.empty() || profile.serverAddress.empty()) {
-        throw std::runtime_error("VPN profile id, name and server address are required.");
+    if (profile.id.empty() ||
+        (profile.mode == VpnProfileMode::WindowsVpn && profile.name.empty()) ||
+        profile.expectedPublicIps.empty()) {
+        throw std::runtime_error("Network profile id, Windows profile and expected public IP are required.");
     }
 
     JsonValue root = readPolicyRoot(configPath_);
@@ -1199,6 +1242,68 @@ std::wstring PolicyManager::currentUserName() {
 
 std::wstring PolicyManager::currentUserSid() {
     return getCurrentUserSid();
+}
+
+std::wstring PolicyManager::currentNetworkStatePath() {
+    return localAppDataNetworkStatePath();
+}
+
+void PolicyManager::writeNetworkState(const NetworkStateSnapshot& state) {
+    const std::wstring path = currentNetworkStatePath();
+    if (path.empty()) {
+        throw std::runtime_error("Cannot locate the current user's local application data folder.");
+    }
+
+    JsonValue activeVpnNames = makeArray();
+    for (const std::wstring& name : state.activeVpnNames) {
+        if (!name.empty()) {
+            activeVpnNames.arrayValue.push_back(makeString(name));
+        }
+    }
+    JsonValue root = makeObject({
+        { L"schemaVersion", makeNumber(1) },
+        { L"computerName", makeString(state.computerName) },
+        { L"userName", makeString(state.userName) },
+        { L"publicIp", makeString(state.publicIp) },
+        { L"activeVpnNames", std::move(activeVpnNames) },
+        { L"updatedAtFileTime", makeString(std::to_wstring(state.updatedAtFileTime)) }
+    });
+    ensureParentDirectoryForFile(path);
+    writeUtf8File(path, serializeJson(root));
+}
+
+bool PolicyManager::tryReadNetworkState(
+    const std::wstring& path,
+    NetworkStateSnapshot& state,
+    std::wstring* errorMessage) {
+    try {
+        const JsonValue root = JsonParser(readUtf8File(path)).parse();
+        if (root.type != JsonValue::Type::Object) {
+            throw std::runtime_error("Network state root must be an object.");
+        }
+
+        NetworkStateSnapshot loaded;
+        loaded.computerName = stringValue(root.find(L"computerName"));
+        loaded.userName = stringValue(root.find(L"userName"));
+        loaded.publicIp = stringValue(root.find(L"publicIp"));
+        loaded.activeVpnNames = stringArray(root.find(L"activeVpnNames"));
+        const std::wstring ticks = stringValue(root.find(L"updatedAtFileTime"));
+        if (ticks.empty()) {
+            throw std::runtime_error("Network state timestamp is missing.");
+        }
+        loaded.updatedAtFileTime = std::stoull(ticks);
+        state = std::move(loaded);
+        if (errorMessage) {
+            errorMessage->clear();
+        }
+        return true;
+    }
+    catch (const std::exception& error) {
+        if (errorMessage) {
+            *errorMessage = widenDiagnostic(error.what());
+        }
+        return false;
+    }
 }
 
 std::vector<DeviceRule> PolicyManager::rulesForUser(const std::wstring& userName) const {

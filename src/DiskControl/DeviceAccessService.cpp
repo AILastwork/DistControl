@@ -54,6 +54,9 @@ std::wstring humanErrorDescription(const char* error) {
     if (containsTechnicalText(error, "device catalog is temporarily empty")) {
         explanation = L"Служба DistKontrolUSB временно вернула пустой список устройств";
     }
+    else if (containsTechnicalText(error, "Network profile is not assigned to the token")) {
+        explanation = L"Для токена не назначен разрешённый VPN или внешний IP";
+    }
     else if (containsTechnicalText(error, "device catalog did not recover after VPN connection")) {
         explanation = L"После подключения VPN служба DistKontrolUSB не успела восстановить список устройств";
     }
@@ -81,6 +84,15 @@ std::wstring humanErrorDescription(const char* error) {
     }
     else if (containsTechnicalText(error, "VPN local network routes were replaced")) {
         explanation = L"VPN изменил маршруты локальной сети, поэтому подключение токена остановлено";
+    }
+    else if (containsTechnicalText(error, "Direct network mode requires all Windows VPN connections")) {
+        explanation = L"Для прямого подключения осталось активное VPN-соединение Windows";
+    }
+    else if (containsTechnicalText(error, "Unexpected additional Windows VPN connection")) {
+        explanation = L"После переключения осталось лишнее VPN-соединение Windows";
+    }
+    else if (containsTechnicalText(error, "VPN disconnect all timed out")) {
+        explanation = L"Windows не успела отключить все VPN-соединения";
     }
     else if (containsTechnicalText(error, "VPN credentials are not configured")) {
         explanation = L"Для VPN не сохранены логин и пароль";
@@ -475,17 +487,23 @@ void prepareVpnForTokenConnection(
         }
     }
 
-    trace.step(L"Конфликтующих активных токенов не найдено. Проверяем ранее подключённые профили DiskControl.");
-    for (const VpnProfile& profile : policy.vpnProfiles()) {
-        if (equalsIgnoreCase(profile.name, targetProfile.name) || !VpnManager::isConnected(profile.name)) {
-            continue;
-        }
-        trace.step(L"Найден неиспользуемый VPN-профиль «" + profile.name +
-            L"». Отключаем его перед выбором требуемого канала.");
-        VpnManager::disconnect(
-            profile.name,
-            [&trace](const std::wstring& message) { trace.step(message); });
+    trace.step(L"Конфликтующих активных токенов не найдено. Отключаем все активные VPN Windows перед выбором канала.");
+    const std::vector<ActiveVpnConnectionInfo> activeConnections = VpnManager::activeConnections();
+    if (activeConnections.empty()) {
+        trace.step(L"Активных VPN Windows перед операцией нет.");
     }
+    else {
+        std::wstring names;
+        for (const ActiveVpnConnectionInfo& connection : activeConnections) {
+            if (!names.empty()) {
+                names += L", ";
+            }
+            names += connection.name;
+        }
+        trace.step(L"Перед переключением активны VPN Windows: " + names + L".");
+    }
+    VpnManager::disconnectAll(
+        [&trace](const std::wstring& message) { trace.step(message); });
 }
 
 std::wstring disconnectReleasedTokenVpnBestEffort(
@@ -505,6 +523,10 @@ std::wstring disconnectReleasedTokenVpnBestEffort(
     if (profile == policy.vpnProfiles().end()) {
         trace.step(L"VPN после отключения токена не изменяем: назначенный профиль отсутствует в конфигурации.");
         return L" VPN оставлен включённым: назначенный профиль отсутствует в конфигурации.";
+    }
+    if (profile->mode == VpnProfileMode::Direct) {
+        trace.step(L"Токен работал в режиме без VPN; отключать сетевое соединение не требуется.");
+        return {};
     }
 
     try {
@@ -532,7 +554,7 @@ std::wstring disconnectReleasedTokenVpnBestEffort(
         }
 
         VpnManager::disconnect(
-            profile->name,
+            *profile,
             [&trace](const std::wstring& message) { trace.step(message); });
         AuditLogger::logDeviceAction(
             L"VPN DISCONNECT", released, L"OK", L"profileId=" + profile->id + L"; profileName=" + profile->name);
@@ -569,6 +591,10 @@ std::wstring DeviceAccessService::useDevice(
     const DeviceViewModel& device,
     const std::wstring& operationId) const {
     HumanOperationTrace trace(L"CONNECT", operationId);
+    VpnProfile preparedProfile;
+    bool profileResolved = false;
+    bool useCommandSent = false;
+    DeviceViewModel rollbackDevice = device;
     trace.step(L"Пользователь запросил подключение токена «" + device.nickname +
         L"», endpoint=" + device.endpoint + L".");
     try {
@@ -597,59 +623,68 @@ std::wstring DeviceAccessService::useDevice(
             L"Policy and device check passed. " + stateDetails(verified));
         PolicyManager policy;
         VpnProfile vpnProfile;
-        const bool vpnRequired = policy.tryGetVpnProfileForDevice(toParsedDevice(verified), vpnProfile);
-        if (vpnRequired) {
-            IpcClient preparationIpc(policy.pipeName());
-            prepareVpnForTokenConnection(policy, preparationIpc, verified, vpnProfile, trace);
-            trace.step(L"Токену назначен VPN-профиль «" + vpnProfile.id + L"» (Windows: «" +
-                vpnProfile.name + L"»). Начинаем VPN-проверку.");
+        if (!policy.tryGetVpnProfileForDevice(toParsedDevice(verified), vpnProfile)) {
+            throw std::runtime_error("Network profile is not assigned to the token.");
+        }
+        preparedProfile = vpnProfile;
+        profileResolved = true;
+        rollbackDevice = verified;
+        rollbackDevice.vpnProfileId = vpnProfile.id;
+
+        IpcClient preparationIpc(policy.pipeName());
+        prepareVpnForTokenConnection(policy, preparationIpc, verified, vpnProfile, trace);
+        const std::wstring channelName = vpnProfile.mode == VpnProfileMode::Direct
+            ? (vpnProfile.name.empty() ? L"Без VPN" : vpnProfile.name)
+            : L"VPN Windows «" + vpnProfile.name + L"»";
+        trace.step(L"Токену назначен сетевой профиль «" + vpnProfile.id + L"»: " +
+            channelName + L". Начинаем проверку канала.");
+        AuditLogger::logDeviceAction(
+            L"VPN VERIFY",
+            verified,
+            L"START",
+            L"profileId=" + vpnProfile.id + L"; profileName=" + vpnProfile.name +
+                L"; mode=" + (vpnProfile.mode == VpnProfileMode::Direct ? L"direct" : L"windowsVpn") +
+                L"; server=" + vpnProfile.serverAddress);
+        try {
+            const VpnVerificationResult vpn = VpnManager::connectAndVerify(
+                vpnProfile,
+                [&trace](const std::wstring& message) { trace.step(message); });
             AuditLogger::logDeviceAction(
                 L"VPN VERIFY",
                 verified,
+                L"OK",
+                L"profileId=" + vpnProfile.id + L"; profileName=" + vpn.profileName +
+                    L"; publicIp=" + vpn.publicIp +
+                    L"; preservedLocalRoutes=" + std::to_wstring(vpn.preservedLocalRouteCount) +
+                    L"; alreadyConnected=" + (vpn.alreadyConnected ? L"true" : L"false"));
+            AuditLogger::logDeviceAction(
+                L"VPN DEVICE RECOVERY",
+                verified,
                 L"START",
+                L"Waiting for dkclient to expose the token after the network route change.");
+            verified = waitForDeviceAfterVpn(policy, verified, trace);
+            rollbackDevice = verified;
+            rollbackDevice.vpnProfileId = vpnProfile.id;
+            AuditLogger::logDeviceAction(
+                L"VPN DEVICE RECOVERY",
+                verified,
+                L"OK",
+                L"Token address is present in LIST and DEVICE INFO.");
+        }
+        catch (const std::exception& error) {
+            trace.step(L"Подключение остановлено на этапе проверки сети. " + humanErrorDescription(error.what()) + L".");
+            AuditLogger::logDeviceAction(
+                L"VPN VERIFY", verified, L"ERROR",
                 L"profileId=" + vpnProfile.id + L"; profileName=" + vpnProfile.name +
-                    L"; server=" + vpnProfile.serverAddress);
-            try {
-                const VpnVerificationResult vpn = VpnManager::connectAndVerify(
-                    vpnProfile,
-                    [&trace](const std::wstring& message) { trace.step(message); });
-                AuditLogger::logDeviceAction(
-                    L"VPN VERIFY",
-                    verified,
-                    L"OK",
-                    L"profileId=" + vpnProfile.id + L"; profileName=" + vpn.profileName +
-                        L"; publicIp=" + vpn.publicIp +
-                        L"; preservedLocalRoutes=" + std::to_wstring(vpn.preservedLocalRouteCount) +
-                        L"; alreadyConnected=" + (vpn.alreadyConnected ? L"true" : L"false"));
-                AuditLogger::logDeviceAction(
-                    L"VPN DEVICE RECOVERY",
-                    verified,
-                    L"START",
-                    L"Waiting for dkclient to expose the token after the network route change.");
-                verified = waitForDeviceAfterVpn(policy, verified, trace);
-                AuditLogger::logDeviceAction(
-                    L"VPN DEVICE RECOVERY",
-                    verified,
-                    L"OK",
-                    L"Token address is present in LIST and DEVICE INFO.");
-            }
-            catch (const std::exception& error) {
-                trace.step(L"Подключение остановлено на этапе VPN. " + humanErrorDescription(error.what()) + L".");
-                AuditLogger::logDeviceAction(
-                    L"VPN VERIFY", verified, L"ERROR",
-                    L"profileId=" + vpnProfile.id + L"; profileName=" + vpnProfile.name +
-                        L"; technical=" + widenAscii(error.what()));
-                throw;
-            }
+                    L"; technical=" + widenAscii(error.what()));
+            throw;
         }
-        else {
-            trace.step(L"Для токена VPN-профиль не назначен. Переходим сразу к DistKontrolUSB.");
-        }
+
         IpcClient ipc(policy.pipeName());
         std::wstring response;
-        const int maximumAttempts = vpnRequired ? kVpnUseAttempts : 1;
+        const int maximumAttempts = kVpnUseAttempts;
         for (int attempt = 1; attempt <= maximumAttempts; ++attempt) {
-            if (vpnRequired && attempt > 1) {
+            if (attempt > 1) {
                 trace.step(L"Перед повторной командой USE ещё раз проверяем готовность каталога DistKontrolUSB.");
                 verified = waitForDeviceAfterVpn(policy, verified, trace);
                 const DeviceUsageInfo usage =
@@ -678,11 +713,12 @@ std::wstring DeviceAccessService::useDevice(
             trace.step(L"Отправляем команду USE в службу dkclient. Попытка " +
                 std::to_wstring(attempt) + L" из " + std::to_wstring(maximumAttempts) + L".");
             const ULONGLONG commandStartedAt = GetTickCount64();
+            useCommandSent = true;
             response = ipc.issueCommand(L"USE," + verified.endpoint, kUseCommandTimeoutMs);
             trace.step(L"Служба dkclient ответила на USE за " +
                 std::to_wstring(GetTickCount64() - commandStartedAt) + L" мс: " +
                 (trimResponse(response).empty() ? L"пустой ответ" : trimResponse(response)) + L".");
-            const bool retry = vpnRequired && attempt < maximumAttempts && isTransientUseFailureResponse(response);
+            const bool retry = attempt < maximumAttempts && isTransientUseFailureResponse(response);
             AuditLogger::logDeviceAction(
                 L"USE COMMAND",
                 verified,
@@ -721,6 +757,19 @@ std::wstring DeviceAccessService::useDevice(
         return message;
     }
     catch (const std::exception& error) {
+        if (profileResolved && preparedProfile.mode == VpnProfileMode::WindowsVpn && !useCommandSent) {
+            try {
+                PolicyManager rollbackPolicy;
+                IpcClient rollbackIpc(rollbackPolicy.pipeName());
+                trace.step(L"Команда USE ещё не отправлялась. Выполняем безопасный откат VPN.");
+                disconnectReleasedTokenVpnBestEffort(
+                    rollbackPolicy, rollbackIpc, rollbackDevice, trace);
+            }
+            catch (const std::exception& rollbackError) {
+                trace.step(L"Безопасный откат VPN не завершён. Техническая причина: " +
+                    widenAscii(rollbackError.what()) + L".");
+            }
+        }
         trace.step(L"Подключение токена завершилось ошибкой. " + humanErrorDescription(error.what()) + L".");
         AuditLogger::logDeviceAction(L"USE", device, L"ERROR",
             L"operationId=" + trace.id() + L"; elapsedMs=" + std::to_wstring(trace.elapsedMs()) +
@@ -904,7 +953,7 @@ std::wstring DeviceAccessService::verifyVpnForDevice(const DeviceViewModel& devi
         PolicyManager policy;
         VpnProfile profile;
         if (!policy.tryGetVpnProfileForDevice(toParsedDevice(device), profile)) {
-            return {};
+            throw std::runtime_error("Network profile is not assigned to the token.");
         }
         const VpnVerificationResult result = VpnManager::verifyConnected(profile);
         AuditLogger::logDeviceAction(
@@ -952,18 +1001,6 @@ void DeviceAccessService::upsertVpnProfile(const VpnProfile& profile) const {
     event.action = L"SAVE VPN PROFILE";
     event.result = L"OK";
     event.details = L"id=" + profile.id + L"; name=" + profile.name + L"; server=" + profile.serverAddress;
-    AuditLogger::log(event);
-}
-
-void DeviceAccessService::installOrUpdateWindowsVpnProfile(
-    const VpnProfile& profile,
-    const std::wstring& preSharedKey) const {
-    VpnManager::installOrUpdateProfile(profile, preSharedKey);
-    AuditEvent event;
-    event.action = L"INSTALL VPN PROFILE";
-    event.result = L"OK";
-    event.details = L"id=" + profile.id + L"; name=" + profile.name +
-        L"; server=" + profile.serverAddress + L"; psk=<not logged>";
     AuditLogger::log(event);
 }
 

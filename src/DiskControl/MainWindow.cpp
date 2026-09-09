@@ -12,6 +12,7 @@
 #include <windows.h>
 #include <windowsx.h>
 
+#include <cstdint>
 #include <exception>
 #include <fstream>
 #include <iomanip>
@@ -47,6 +48,7 @@ constexpr UINT WM_COMPUTER_LOAD_COMPLETE = WM_APP + 2;
 constexpr UINT WM_TOKEN_ACTION_COMPLETE = WM_APP + 3;
 constexpr UINT WM_VPN_WATCHDOG_COMPLETE = WM_APP + 4;
 constexpr UINT WM_REFRESH_PROGRESS = WM_APP + 5;
+constexpr UINT WM_NETWORK_STATE_COMPLETE = WM_APP + 6;
 constexpr LPARAM kTreeGroupParam = -1;
 constexpr ULONGLONG kTokenSessionLimitMs = 20ULL * 60ULL * 1000ULL;
 constexpr ULONGLONG kAutoReleaseRetryMs = 15ULL * 1000ULL;
@@ -83,14 +85,17 @@ std::wstring userFriendlyErrorMessage(const char* error) {
     if (containsAscii(error, "VPN profile is disabled")) {
         return L"VPN-профиль для этого токена отключён администратором. Токен не подключён.";
     }
+    if (containsAscii(error, "Network profile is not assigned to the token")) {
+        return L"Для токена не настроен разрешённый VPN или внешний IP. Обратитесь к администратору DiskControl.";
+    }
     if (containsAscii(error, "VPN profile mapping references an unknown profile")) {
         return L"Токену назначен VPN-профиль, которого нет в конфигурации. Токен не подключён; исправьте назначение в админке.";
     }
     if (containsAscii(error, "VPN expected public IP is not configured")) {
-        return L"Для VPN-профиля не указан разрешённый внешний IP. Администратор должен заполнить его в конфигурации.";
+        return L"Для сетевого профиля не указан разрешённый внешний IP. Администратор должен заполнить его в конфигурации.";
     }
     if (containsAscii(error, "VPN Windows profile is not installed")) {
-        return L"На компьютере не установлен нужный профиль VPN Windows. Запустите установщик DiskControl или обратитесь к администратору.";
+        return L"На компьютере не найден нужный профиль VPN Windows. Создайте его в параметрах Windows или обратитесь к администратору.";
     }
     if (containsAscii(error, "VPN credentials are not configured")) {
         return L"Не сохранены логин и пароль VPN. Выберите токен и нажмите «Учётные данные VPN».";
@@ -98,14 +103,38 @@ std::wstring userFriendlyErrorMessage(const char* error) {
     if (containsAscii(error, "RAS error 691")) {
         return L"VPN отклонил логин или пароль. Нажмите «Учётные данные VPN» и введите их заново.";
     }
+    if (containsAscii(error, "RAS error 789")) {
+        return L"Не удалось согласовать L2TP/IPsec. Проверьте общий ключ и параметры безопасности VPN в Windows.";
+    }
+    if (containsAscii(error, "RAS error 809")) {
+        return L"VPN-сервер не отвечает. Проверьте интернет, адрес сервера и разрешение VPN в межсетевом экране.";
+    }
+    if (containsAscii(error, "RAS error 868")) {
+        return L"Windows не смогла найти VPN-сервер. Проверьте имя или адрес сервера в свойствах подключения.";
+    }
+    if (containsAscii(error, "RAS error 812")) {
+        return L"VPN-сервер отклонил подключение по своей политике. Обратитесь к администратору VPN.";
+    }
+    if (containsAscii(error, "RAS error 5") || containsAscii(error, "VPN profile enumeration")) {
+        return L"Не удалось прочитать VPN-профили Windows. Проверьте права администратора и доступ к профилю пользователя или общей папке C$.";
+    }
     if (containsAscii(error, "VPN public IP mismatch")) {
-        return L"VPN подключён, но внешний IP не совпадает с разрешённым. Токен не подключён. " + widenAscii(error);
+        return L"Фактический внешний IP не входит в разрешённый список для этого токена. Токен не подключён; проверьте выбранный VPN.";
     }
     if (containsAscii(error, "VPN public IP") || containsAscii(error, "verification service")) {
         return L"Не удалось безопасно проверить внешний IP после подключения VPN. Токен не подключён; проверьте интернет и VPN.";
     }
     if (containsAscii(error, "VPN local network routes were replaced")) {
         return L"VPN изменил маршруты локальной сети. Токен не подключён, VPN-сеанс остановлен, чтобы сохранить доступ к локальным ресурсам.";
+    }
+    if (containsAscii(error, "Direct network mode requires all Windows VPN connections")) {
+        return L"Для этого токена требуется подключение без VPN, но в Windows осталось активное VPN-соединение. Токен не подключён.";
+    }
+    if (containsAscii(error, "Unexpected additional Windows VPN connection")) {
+        return L"Одновременно активно лишнее VPN-подключение Windows. Токен не подключён, чтобы исключить неверный внешний IP.";
+    }
+    if (containsAscii(error, "VPN disconnect all timed out")) {
+        return L"Windows не успела отключить все VPN-соединения. Токен не подключён; отключите VPN вручную и повторите попытку.";
     }
     if (containsAscii(error, "device catalog did not recover after VPN connection")) {
         return L"После подключения VPN служба DistKontrolUSB ещё не восстановила список устройств. Токен не подключён; подождите немного и повторите попытку.";
@@ -166,6 +195,9 @@ std::wstring userFriendlyErrorMessage(const char* error) {
     }
     if (containsAscii(error, "User name is required")) {
         return L"Не указан пользователь. Выберите пользователя и повторите действие.";
+    }
+    if (containsAscii(error, "Network profile id, Windows profile and expected public IP are required")) {
+        return L"Не заполнены обязательные поля сетевой настройки. Укажите ID, существующий VPN Windows или режим «Без VPN» и разрешённый внешний IP.";
     }
     return L"Произошла ошибка DiskControl. Подробности записаны в журнал C:\\ProgramData\\DiskControl\\logs.";
 }
@@ -252,8 +284,9 @@ struct VpnAdminDialogData {
     DeviceViewModel device;
     std::wstring userName;
     std::vector<VpnProfile> profiles;
-    bool installWindowsProfile = false;
-    bool windowsProfileInstalled = false;
+    std::vector<WindowsVpnProfileInfo> windowsProfiles;
+    NetworkStateSnapshot networkState;
+    bool networkStateFresh = false;
     bool changed = false;
 };
 
@@ -285,8 +318,65 @@ std::wstring joinVpnExpectedIps(const std::vector<std::wstring>& values) {
     return result;
 }
 
+std::wstring windowsVpnDisplayName(const WindowsVpnProfileInfo& profile) {
+    return profile.name + (profile.phonebookScope == VpnPhonebookScope::AllUsers
+        ? L" [все пользователи]"
+        : L" [пользователь]");
+}
+
+const WindowsVpnProfileInfo* selectedWindowsVpnProfile(HWND dialog, const VpnAdminDialogData& data) {
+    const LRESULT selection = SendDlgItemMessageW(
+        dialog, IDC_VPN_ADMIN_WINDOWS_PROFILE, CB_GETCURSEL, 0, 0);
+    if (selection == CB_ERR) {
+        return nullptr;
+    }
+    const LRESULT index = SendDlgItemMessageW(
+        dialog, IDC_VPN_ADMIN_WINDOWS_PROFILE, CB_GETITEMDATA,
+        static_cast<WPARAM>(selection), 0);
+    if (index == CB_ERR || static_cast<size_t>(index) >= data.windowsProfiles.size()) {
+        return nullptr;
+    }
+    return &data.windowsProfiles[static_cast<size_t>(index)];
+}
+
+void updateVpnAdminMode(HWND dialog, const VpnAdminDialogData& data) {
+    const bool windowsVpn = IsDlgButtonChecked(dialog, IDC_VPN_ADMIN_MODE_VPN) == BST_CHECKED;
+    EnableWindow(GetDlgItem(dialog, IDC_VPN_ADMIN_WINDOWS_PROFILE), windowsVpn);
+    const WindowsVpnProfileInfo* selected = windowsVpn ? selectedWindowsVpnProfile(dialog, data) : nullptr;
+    if (!windowsVpn) {
+        SetDlgItemTextW(dialog, IDC_VPN_ADMIN_SERVER, L"VPN Windows будет отключён перед проверкой IP.");
+    }
+    else if (!selected) {
+        SetDlgItemTextW(dialog, IDC_VPN_ADMIN_SERVER, L"Выберите существующий профиль VPN Windows.");
+    }
+    else {
+        std::wstring details = selected->serverAddress.empty() ? L"сервер не указан" : selected->serverAddress;
+        if (!selected->tunnelType.empty()) {
+            details += L" / " + selected->tunnelType;
+        }
+        SetDlgItemTextW(dialog, IDC_VPN_ADMIN_SERVER, details.c_str());
+    }
+}
+
+void selectWindowsVpnProfile(
+    HWND dialog,
+    const VpnAdminDialogData& data,
+    const std::wstring& name,
+    VpnPhonebookScope scope) {
+    for (size_t index = 0; index < data.windowsProfiles.size(); ++index) {
+        const WindowsVpnProfileInfo& candidate = data.windowsProfiles[index];
+        if (candidate.phonebookScope == scope && CompareStringOrdinal(
+            candidate.name.c_str(), static_cast<int>(candidate.name.size()),
+            name.c_str(), static_cast<int>(name.size()), TRUE) == CSTR_EQUAL) {
+            SendDlgItemMessageW(dialog, IDC_VPN_ADMIN_WINDOWS_PROFILE, CB_SETCURSEL, index, 0);
+            return;
+        }
+    }
+    SendDlgItemMessageW(dialog, IDC_VPN_ADMIN_WINDOWS_PROFILE, CB_SETCURSEL,
+        name.empty() && !data.windowsProfiles.empty() ? 0 : static_cast<WPARAM>(-1), 0);
+}
+
 void loadVpnAdminProfile(HWND dialog, const VpnAdminDialogData& data) {
-    SetDlgItemTextW(dialog, IDC_VPN_ADMIN_PSK, L"");
     const std::wstring id = trim(dialogItemText(dialog, IDC_VPN_PROFILE_ID));
     const auto found = std::find_if(data.profiles.begin(), data.profiles.end(), [&id](const VpnProfile& profile) {
         return CompareStringOrdinal(
@@ -294,16 +384,22 @@ void loadVpnAdminProfile(HWND dialog, const VpnAdminDialogData& data) {
             id.c_str(), static_cast<int>(id.size()), TRUE) == CSTR_EQUAL;
     });
     if (found == data.profiles.end()) {
-        SetDlgItemTextW(dialog, IDC_VPN_ADMIN_NAME, L"");
-        SetDlgItemTextW(dialog, IDC_VPN_ADMIN_SERVER, L"");
+        CheckRadioButton(dialog, IDC_VPN_ADMIN_MODE_VPN, IDC_VPN_ADMIN_MODE_DIRECT,
+            IDC_VPN_ADMIN_MODE_VPN);
+        selectWindowsVpnProfile(dialog, data, L"", VpnPhonebookScope::CurrentUser);
         SetDlgItemTextW(dialog, IDC_VPN_ADMIN_IPS, L"");
         CheckDlgButton(dialog, IDC_VPN_ADMIN_ENABLED, BST_CHECKED);
+        updateVpnAdminMode(dialog, data);
         return;
     }
-    SetDlgItemTextW(dialog, IDC_VPN_ADMIN_NAME, found->name.c_str());
-    SetDlgItemTextW(dialog, IDC_VPN_ADMIN_SERVER, found->serverAddress.c_str());
+    CheckRadioButton(dialog, IDC_VPN_ADMIN_MODE_VPN, IDC_VPN_ADMIN_MODE_DIRECT,
+        found->mode == VpnProfileMode::Direct
+            ? IDC_VPN_ADMIN_MODE_DIRECT
+            : IDC_VPN_ADMIN_MODE_VPN);
+    selectWindowsVpnProfile(dialog, data, found->name, found->phonebookScope);
     SetDlgItemTextW(dialog, IDC_VPN_ADMIN_IPS, joinVpnExpectedIps(found->expectedPublicIps).c_str());
     CheckDlgButton(dialog, IDC_VPN_ADMIN_ENABLED, found->enabled ? BST_CHECKED : BST_UNCHECKED);
+    updateVpnAdminMode(dialog, data);
 }
 
 INT_PTR CALLBACK vpnAdminDialogProc(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam) {
@@ -316,19 +412,30 @@ INT_PTR CALLBACK vpnAdminDialogProc(HWND dialog, UINT message, WPARAM wParam, LP
             SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(profile.id.c_str()));
         }
         std::wstring selectedId = data->device.vpnProfileId;
-        if (selectedId.empty() && !data->profiles.empty()) {
-            selectedId = data->profiles.front().id;
-        }
         SetWindowTextW(combo, selectedId.c_str());
+        HWND windowsCombo = GetDlgItem(dialog, IDC_VPN_ADMIN_WINDOWS_PROFILE);
+        for (size_t index = 0; index < data->windowsProfiles.size(); ++index) {
+            const std::wstring display = windowsVpnDisplayName(data->windowsProfiles[index]);
+            const LRESULT item = SendMessageW(
+                windowsCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(display.c_str()));
+            if (item != CB_ERR && item != CB_ERRSPACE) {
+                SendMessageW(windowsCombo, CB_SETITEMDATA, item, static_cast<LPARAM>(index));
+            }
+        }
         loadVpnAdminProfile(dialog, *data);
-        if (data->installWindowsProfile) {
-            SetDlgItemTextW(dialog, IDC_VPN_ADMIN_NOTE,
-                L"Новый профиль будет создан в Windows. Для существующего профиля общий ключ можно не вводить.");
+        if (data->networkStateFresh) {
+            std::wstring state = L"Текущий внешний IP: " + data->networkState.publicIp + L". VPN Windows: ";
+            if (data->networkState.activeVpnNames.empty()) {
+                state += L"нет";
+            }
+            else {
+                state += joinVpnExpectedIps(data->networkState.activeVpnNames);
+            }
+            SetDlgItemTextW(dialog, IDC_VPN_ADMIN_STATE, state.c_str());
         }
         else {
-            EnableWindow(GetDlgItem(dialog, IDC_VPN_ADMIN_PSK), FALSE);
-            SetDlgItemTextW(dialog, IDC_VPN_ADMIN_NOTE,
-                L"Редактируется удалённый allow.json. Профиль Windows создаётся установщиком или локальной админкой на целевом компьютере.");
+            SetDlgItemTextW(dialog, IDC_VPN_ADMIN_STATE,
+                L"Нет свежего отчёта клиента. Внешний IP можно ввести вручную.");
         }
         return TRUE;
     }
@@ -347,20 +454,96 @@ INT_PTR CALLBACK vpnAdminDialogProc(HWND dialog, UINT message, WPARAM wParam, LP
         }
         return TRUE;
     }
+    if ((LOWORD(wParam) == IDC_VPN_ADMIN_MODE_VPN ||
+         LOWORD(wParam) == IDC_VPN_ADMIN_MODE_DIRECT) && HIWORD(wParam) == BN_CLICKED) {
+        updateVpnAdminMode(dialog, *data);
+        return TRUE;
+    }
+    if (LOWORD(wParam) == IDC_VPN_ADMIN_WINDOWS_PROFILE && HIWORD(wParam) == CBN_SELCHANGE) {
+        updateVpnAdminMode(dialog, *data);
+        return TRUE;
+    }
 
     try {
+        if (LOWORD(wParam) == IDC_VPN_ADMIN_USE_CURRENT_IP) {
+            if (!data->networkStateFresh || data->networkState.publicIp.empty()) {
+                MessageBoxW(dialog,
+                    L"Нет свежего внешнего IP от клиентской программы. Запустите DiskControl на выбранном компьютере или введите IP вручную.",
+                    L"DiskControl Admin", MB_OK | MB_ICONWARNING);
+                return TRUE;
+            }
+            const bool direct = IsDlgButtonChecked(dialog, IDC_VPN_ADMIN_MODE_DIRECT) == BST_CHECKED;
+            if (direct && !data->networkState.activeVpnNames.empty()) {
+                MessageBoxW(dialog,
+                    L"Сейчас на компьютере включён VPN. Отключите его и дождитесь обновления отчёта, чтобы записать IP режима «Без VPN».",
+                    L"DiskControl Admin", MB_OK | MB_ICONWARNING);
+                return TRUE;
+            }
+            if (!direct) {
+                const WindowsVpnProfileInfo* selected = selectedWindowsVpnProfile(dialog, *data);
+                if (!selected) {
+                    MessageBoxW(dialog, L"Выберите профиль VPN Windows.",
+                        L"DiskControl Admin", MB_OK | MB_ICONWARNING);
+                    return TRUE;
+                }
+                if (data->networkState.activeVpnNames.size() != 1 || CompareStringOrdinal(
+                    data->networkState.activeVpnNames.front().c_str(),
+                    static_cast<int>(data->networkState.activeVpnNames.front().size()),
+                    selected->name.c_str(), static_cast<int>(selected->name.size()), TRUE) != CSTR_EQUAL) {
+                    MessageBoxW(dialog,
+                        L"Чтобы определить IP этого профиля, на выбранном компьютере должен быть подключён только этот VPN.",
+                        L"DiskControl Admin", MB_OK | MB_ICONWARNING);
+                    return TRUE;
+                }
+            }
+
+            std::vector<std::wstring> ips = splitVpnExpectedIps(
+                dialogItemText(dialog, IDC_VPN_ADMIN_IPS));
+            const bool exists = std::any_of(ips.begin(), ips.end(), [data](const std::wstring& ip) {
+                return CompareStringOrdinal(
+                    ip.c_str(), static_cast<int>(ip.size()),
+                    data->networkState.publicIp.c_str(),
+                    static_cast<int>(data->networkState.publicIp.size()), TRUE) == CSTR_EQUAL;
+            });
+            if (!exists) {
+                ips.push_back(data->networkState.publicIp);
+            }
+            SetDlgItemTextW(dialog, IDC_VPN_ADMIN_IPS, joinVpnExpectedIps(ips).c_str());
+            return TRUE;
+        }
         if (LOWORD(wParam) == IDC_VPN_ADMIN_SAVE) {
             VpnProfile profile;
             profile.id = trim(dialogItemText(dialog, IDC_VPN_PROFILE_ID));
-            profile.name = trim(dialogItemText(dialog, IDC_VPN_ADMIN_NAME));
-            profile.serverAddress = trim(dialogItemText(dialog, IDC_VPN_ADMIN_SERVER));
-            profile.tunnelType = L"L2TP";
             profile.expectedPublicIps = splitVpnExpectedIps(dialogItemText(dialog, IDC_VPN_ADMIN_IPS));
             profile.ipCheckUrl = L"https://api.ipify.org";
             profile.enabled = IsDlgButtonChecked(dialog, IDC_VPN_ADMIN_ENABLED) == BST_CHECKED;
-            if (profile.id.empty() || profile.name.empty() || profile.serverAddress.empty() ||
-                profile.expectedPublicIps.empty()) {
-                MessageBoxW(dialog, L"Заполните ID, имя подключения Windows, сервер и хотя бы один внешний IP.",
+            profile.mode = IsDlgButtonChecked(dialog, IDC_VPN_ADMIN_MODE_DIRECT) == BST_CHECKED
+                ? VpnProfileMode::Direct
+                : VpnProfileMode::WindowsVpn;
+            if (profile.mode == VpnProfileMode::Direct) {
+                profile.name = L"Без VPN";
+                profile.tunnelType.clear();
+            }
+            else {
+                const WindowsVpnProfileInfo* selected = selectedWindowsVpnProfile(dialog, *data);
+                if (!selected) {
+                    MessageBoxW(dialog, L"Выберите существующий профиль VPN Windows.",
+                        L"DiskControl Admin", MB_OK | MB_ICONWARNING);
+                    return TRUE;
+                }
+                profile.name = selected->name;
+                profile.serverAddress = selected->serverAddress;
+                profile.tunnelType = selected->tunnelType;
+                profile.phonebookScope = selected->phonebookScope;
+            }
+            if (profile.id.empty() || profile.expectedPublicIps.empty()) {
+                MessageBoxW(dialog, L"Укажите ID настройки и хотя бы один разрешённый внешний IP.",
+                    L"DiskControl Admin", MB_OK | MB_ICONWARNING);
+                return TRUE;
+            }
+            if (!std::all_of(profile.expectedPublicIps.begin(), profile.expectedPublicIps.end(),
+                    [](const std::wstring& ip) { return VpnManager::isValidPublicIp(ip); })) {
+                MessageBoxW(dialog, L"Разрешённые адреса должны быть корректными IPv4 или IPv6.",
                     L"DiskControl Admin", MB_OK | MB_ICONWARNING);
                 return TRUE;
             }
@@ -373,17 +556,6 @@ INT_PTR CALLBACK vpnAdminDialogProc(HWND dialog, UINT message, WPARAM wParam, LP
                     L"ID профиля может содержать только латинские буквы, цифры, точку, дефис и подчёркивание.",
                     L"DiskControl Admin", MB_OK | MB_ICONWARNING);
                 return TRUE;
-            }
-            if (data->installWindowsProfile) {
-                const std::wstring preSharedKey = dialogItemText(dialog, IDC_VPN_ADMIN_PSK);
-                if (!VpnManager::profileExists(profile.name) && preSharedKey.empty()) {
-                    MessageBoxW(dialog,
-                        L"Для создания нового VPN-профиля Windows введите общий ключ L2TP.",
-                        L"DiskControl Admin", MB_OK | MB_ICONWARNING);
-                    return TRUE;
-                }
-                data->service->installOrUpdateWindowsVpnProfile(profile, preSharedKey);
-                data->windowsProfileInstalled = true;
             }
             data->service->upsertVpnProfile(profile);
             data->service->setVpnProfileForDevice(data->device, data->userName, profile.id);
@@ -403,8 +575,8 @@ INT_PTR CALLBACK vpnAdminDialogProc(HWND dialog, UINT message, WPARAM wParam, LP
                 MessageBoxW(dialog, L"Выберите профиль для удаления.", L"DiskControl Admin", MB_OK | MB_ICONWARNING);
                 return TRUE;
             }
-            const std::wstring question = L"Удалить VPN-профиль «" + id +
-                L"» и снять его со всех токенов в этом allow.json?";
+            const std::wstring question = L"Удалить сетевую настройку «" + id +
+                L"» и снять её со всех токенов в этом allow.json?";
             if (MessageBoxW(dialog, question.c_str(), L"DiskControl Admin", MB_YESNO | MB_ICONWARNING) != IDYES) {
                 return TRUE;
             }
@@ -415,8 +587,10 @@ INT_PTR CALLBACK vpnAdminDialogProc(HWND dialog, UINT message, WPARAM wParam, LP
         }
     }
     catch (const std::exception& error) {
-        const std::wstring details = L"Не удалось сохранить VPN-настройку. Техническая причина: " + widenAscii(error.what());
-        MessageBoxW(dialog, details.c_str(), L"DiskControl Admin", MB_OK | MB_ICONERROR);
+        const std::wstring errorMessage = L"Не удалось сохранить сетевую настройку. " +
+            userFriendlyErrorMessage(error.what());
+        logUiError(L"UI VPN ADMIN SAVE ERROR", error.what(), errorMessage);
+        MessageBoxW(dialog, errorMessage.c_str(), L"DiskControl Admin", MB_OK | MB_ICONERROR);
         return TRUE;
     }
 
@@ -677,6 +851,57 @@ std::wstring policyPathForComputer(const std::wstring& computerName) {
         return L"C:\\ProgramData\\DiskControl\\allow.json";
     }
     return L"\\\\" + trimmed + L"\\c$\\ProgramData\\DiskControl\\allow.json";
+}
+
+std::wstring profileFolderName(const std::wstring& userName) {
+    const size_t slash = userName.find_last_of(L"\\/");
+    return slash == std::wstring::npos ? userName : userName.substr(slash + 1);
+}
+
+std::wstring userPhonebookPathForComputer(
+    const std::wstring& computerName,
+    const std::wstring& userName) {
+    const std::wstring folder = profileFolderName(userName);
+    if (folder.empty()) {
+        return {};
+    }
+    return profilesRootForComputer(computerName) + L"\\" + folder +
+        L"\\AppData\\Roaming\\Microsoft\\Network\\Connections\\Pbk\\rasphone.pbk";
+}
+
+std::wstring allUsersPhonebookPathForComputer(const std::wstring& computerName) {
+    if (isLocalComputerName(computerName)) {
+        return VpnManager::allUsersPhonebook();
+    }
+    return L"\\\\" + trim(computerName) +
+        L"\\c$\\ProgramData\\Microsoft\\Network\\Connections\\Pbk\\rasphone.pbk";
+}
+
+std::wstring networkStatePathForComputer(
+    const std::wstring& computerName,
+    const std::wstring& userName) {
+    const std::wstring folder = profileFolderName(userName);
+    if (folder.empty()) {
+        return {};
+    }
+    return profilesRootForComputer(computerName) + L"\\" + folder +
+        L"\\AppData\\Local\\DiskControl\\network-state.json";
+}
+
+std::uint64_t currentFileTimeTicks() {
+    FILETIME fileTime{};
+    GetSystemTimeAsFileTime(&fileTime);
+    ULARGE_INTEGER value{};
+    value.LowPart = fileTime.dwLowDateTime;
+    value.HighPart = fileTime.dwHighDateTime;
+    return value.QuadPart;
+}
+
+bool isFreshNetworkState(const NetworkStateSnapshot& state) {
+    constexpr std::uint64_t maximumAge = 2ULL * 60ULL * 10000000ULL;
+    const std::uint64_t now = currentFileTimeTicks();
+    return state.updatedAtFileTime != 0 && now >= state.updatedAtFileTime &&
+        now - state.updatedAtFileTime <= maximumAge && !state.publicIp.empty();
 }
 
 std::wstring win32ErrorText(DWORD error) {
@@ -1009,7 +1234,10 @@ std::wstring usageSuffix(const DeviceViewModel& device) {
 std::wstring treeDeviceText(const DeviceViewModel& device) {
     std::wstring text = displayDeviceName(device);
     if (!device.vpnProfileId.empty()) {
-        text += L" [VPN: " + device.vpnProfileId + L"]";
+        text += L" [VPN/IP: " + device.vpnProfileId + L"]";
+    }
+    else {
+        text += L" [сеть не настроена]";
     }
     return text + usageSuffix(device);
 }
@@ -1160,6 +1388,9 @@ LRESULT MainWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     case WM_VPN_WATCHDOG_COMPLETE:
         finishVpnHealthCheck();
         return 0;
+    case WM_NETWORK_STATE_COMPLETE:
+        finishNetworkStatePublish();
+        return 0;
     case WM_SIZE:
         if (wParam == SIZE_MINIMIZED) {
             return 0;
@@ -1175,6 +1406,7 @@ LRESULT MainWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         if (wParam == IDT_USAGE_WATCHDOG) {
             checkActiveDeviceTimeouts();
             checkActiveVpnHealth();
+            publishNetworkState();
             if (kAdminBuild) {
                 updateAdminListTimers(listView_, allowedDevices_);
                 updateAdminListTimers(availableListView_, availableDevices_);
@@ -1344,6 +1576,9 @@ LRESULT MainWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         }
         if (vpnWatchdogThread_.joinable()) {
             vpnWatchdogThread_.join();
+        }
+        if (networkStateThread_.joinable()) {
+            networkStateThread_.join();
         }
         PostQuitMessage(0);
         return 0;
@@ -1599,7 +1834,8 @@ void MainWindow::setMainControlsEnabled(bool enabled) {
 
 bool MainWindow::ensureVpnCredentials(const DeviceViewModel& device, bool forcePrompt) {
     if (device.vpnProfileId.empty()) {
-        return true;
+        updateStatus(L"Для токена не настроен VPN или разрешённый внешний IP. Обратитесь к администратору.");
+        return false;
     }
 
     try {
@@ -1618,11 +1854,14 @@ bool MainWindow::ensureVpnCredentials(const DeviceViewModel& device, bool forceP
             updateStatus(L"VPN-профиль для этого токена отключён администратором.");
             return false;
         }
-        if (!VpnManager::profileExists(found->name)) {
-            updateStatus(L"Нужный профиль VPN Windows не установлен. Запустите установщик DiskControl или обратитесь к администратору.");
+        if (found->mode == VpnProfileMode::Direct) {
+            return true;
+        }
+        if (!VpnManager::profileExists(*found)) {
+            updateStatus(L"Нужный профиль VPN Windows не найден. Создайте его в параметрах Windows или обратитесь к администратору.");
             return false;
         }
-        if (!forcePrompt && VpnManager::hasStoredCredentials(found->name)) {
+        if (!forcePrompt && VpnManager::hasStoredCredentials(*found)) {
             return true;
         }
 
@@ -1638,7 +1877,7 @@ bool MainWindow::ensureVpnCredentials(const DeviceViewModel& device, bool forceP
             return false;
         }
 
-        VpnManager::saveCredentials(found->name, data.userName, data.password);
+        VpnManager::saveCredentials(*found, data.userName, data.password);
         if (!data.password.empty()) {
             SecureZeroMemory(data.password.data(), data.password.size() * sizeof(wchar_t));
             data.password.clear();
@@ -1671,7 +1910,7 @@ void MainWindow::configureVpnForSelectedDevice() {
         return;
     }
     if (device->vpnProfileId.empty()) {
-        updateStatus(L"Для выбранного токена VPN-профиль не назначен.");
+        updateStatus(L"Для выбранного токена не назначен VPN или разрешённый внешний IP.");
         return;
     }
     ensureVpnCredentials(*device, true);
@@ -1702,16 +1941,34 @@ void MainWindow::manageVpnForSelectedDevice() {
         data.device = *device;
         data.userName = userName;
         data.profiles = service_.vpnProfiles();
-        data.installWindowsProfile = isLocalComputerName(getControlText(computerEdit_));
+        const std::wstring computerName = getControlText(computerEdit_);
+        if (isLocalComputerName(computerName) &&
+            lowerCopy(userName) == lowerCopy(PolicyManager::currentUserName())) {
+            data.windowsProfiles = VpnManager::installedProfiles();
+        }
+        else {
+            data.windowsProfiles = VpnManager::installedProfiles(
+                userPhonebookPathForComputer(computerName, userName),
+                allUsersPhonebookPathForComputer(computerName));
+        }
+        const std::wstring statePath = networkStatePathForComputer(computerName, userName);
+        std::wstring stateError;
+        if (!statePath.empty() && PolicyManager::tryReadNetworkState(
+            statePath, data.networkState, &stateError)) {
+            const bool matchingUser = lowerCopy(profileFolderName(data.networkState.userName)) ==
+                lowerCopy(profileFolderName(userName));
+            const bool matchingComputer = isLocalComputerName(computerName) ||
+                lowerCopy(data.networkState.computerName) == lowerCopy(trim(computerName));
+            data.networkStateFresh = isFreshNetworkState(data.networkState) &&
+                matchingUser && matchingComputer;
+        }
         DialogBoxParamW(instance_, MAKEINTRESOURCEW(IDD_VPN_ADMIN), hwnd_, vpnAdminDialogProc,
             reinterpret_cast<LPARAM>(&data));
         if (data.changed) {
             service_.updateAccessForUser(allDevices_, userName);
             applyDeviceFilter();
             updateHeaderText();
-            updateStatus(data.windowsProfileInstalled
-                ? L"VPN-профиль Windows создан или обновлён и назначен токену."
-                : L"VPN-настройка токена сохранена в allow.json выбранного компьютера.");
+            updateStatus(L"Настройка VPN/IP токена сохранена в allow.json выбранного компьютера.");
         }
     }
     catch (const std::exception& error) {
@@ -1863,6 +2120,7 @@ void MainWindow::finishTokenAction() {
 
     updateStatus(status.c_str());
     updateTreeTimerText();
+    lastNetworkStateTick_ = 0;
     AuditLogger::trace(operationId,
         L"Интерфейс применил успешный результат и запланировал контрольное обновление списка через 1,2 секунды.");
     scheduleDelayedRefresh();
@@ -1925,6 +2183,76 @@ void MainWindow::refreshDevices() {
             PostMessageW(hwnd_, WM_REFRESH_COMPLETE, 0, 0);
         }
     });
+}
+
+void MainWindow::publishNetworkState() {
+#ifdef DISKCONTROL_ADMIN
+    return;
+#else
+    if (closing_ || tokenActionRunning_ || vpnWatchdogRunning_) {
+        return;
+    }
+    const ULONGLONG now = GetTickCount64();
+    if (lastNetworkStateTick_ != 0 && now - lastNetworkStateTick_ < kVpnWatchdogIntervalMs) {
+        return;
+    }
+    bool expected = false;
+    if (!networkStateRunning_.compare_exchange_strong(expected, true)) {
+        return;
+    }
+    if (networkStateThread_.joinable()) {
+        networkStateThread_.join();
+    }
+    lastNetworkStateTick_ = now;
+    networkStateThread_ = std::thread([this]() {
+        std::wstring errorText;
+        try {
+            NetworkStateSnapshot state;
+            state.computerName = currentComputerName();
+            state.userName = PolicyManager::currentUserName();
+            state.publicIp = VpnManager::currentPublicIp();
+            for (const ActiveVpnConnectionInfo& connection : VpnManager::activeConnections()) {
+                state.activeVpnNames.push_back(connection.name);
+            }
+            state.updatedAtFileTime = currentFileTimeTicks();
+            PolicyManager::writeNetworkState(state);
+        }
+        catch (const std::exception& error) {
+            errorText = widenAscii(error.what());
+        }
+        {
+            std::lock_guard<std::mutex> lock(networkStateMutex_);
+            pendingNetworkStateError_ = std::move(errorText);
+        }
+        if (!closing_) {
+            PostMessageW(hwnd_, WM_NETWORK_STATE_COMPLETE, 0, 0);
+        }
+    });
+#endif
+}
+
+void MainWindow::finishNetworkStatePublish() {
+#ifdef DISKCONTROL_ADMIN
+    return;
+#else
+    if (networkStateThread_.joinable()) {
+        networkStateThread_.join();
+    }
+    std::wstring errorText;
+    {
+        std::lock_guard<std::mutex> lock(networkStateMutex_);
+        errorText = std::move(pendingNetworkStateError_);
+        pendingNetworkStateError_.clear();
+    }
+    networkStateRunning_ = false;
+    if (!errorText.empty()) {
+        AuditEvent event;
+        event.action = L"NETWORK STATE";
+        event.result = L"WARNING";
+        event.details = L"Не удалось обновить отчёт о внешнем IP и VPN. technical=" + errorText;
+        AuditLogger::log(event);
+    }
+#endif
 }
 
 void MainWindow::scheduleDelayedRefresh() {

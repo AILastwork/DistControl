@@ -2,6 +2,7 @@
 
 #include "DeviceParser.h"
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -12,6 +13,16 @@ struct DeviceRule {
     std::wstring vpnProfileId;
 };
 
+enum class VpnProfileMode {
+    WindowsVpn,
+    Direct
+};
+
+enum class VpnPhonebookScope {
+    CurrentUser,
+    AllUsers
+};
+
 struct VpnProfile {
     std::wstring id;
     std::wstring name;
@@ -19,7 +30,17 @@ struct VpnProfile {
     std::wstring tunnelType = L"L2TP";
     std::vector<std::wstring> expectedPublicIps;
     std::wstring ipCheckUrl = L"https://api.ipify.org";
+    VpnProfileMode mode = VpnProfileMode::WindowsVpn;
+    VpnPhonebookScope phonebookScope = VpnPhonebookScope::CurrentUser;
     bool enabled = true;
+};
+
+struct NetworkStateSnapshot {
+    std::wstring computerName;
+    std::wstring userName;
+    std::wstring publicIp;
+    std::vector<std::wstring> activeVpnNames;
+    std::uint64_t updatedAtFileTime = 0;
 };
 
 class PolicyManager {
@@ -44,6 +65,12 @@ public:
     static bool ensureEditableConfig(std::wstring configPath);
     static std::wstring currentUserName();
     static std::wstring currentUserSid();
+    static std::wstring currentNetworkStatePath();
+    static void writeNetworkState(const NetworkStateSnapshot& state);
+    static bool tryReadNetworkState(
+        const std::wstring& path,
+        NetworkStateSnapshot& state,
+        std::wstring* errorMessage = nullptr);
     std::vector<DeviceRule> rulesForUser(const std::wstring& userName) const;
     bool tryGetVpnProfileForDevice(const ParsedDevice& device, VpnProfile& profile) const;
     const std::vector<DeviceRule>& effectiveRules() const;

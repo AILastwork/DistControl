@@ -31,7 +31,7 @@ try {
 catch {
 }
 $ProductName = "DiskControl"
-$ProductVersion = "0.3.2"
+$ProductVersion = "0.4.0"
 $Publisher = "DiskControl"
 $SourceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $ReleaseDir = Join-Path $SourceRoot "build\x64\Release"
@@ -675,39 +675,7 @@ function Assert-VpnInstallProfile([object]$Profile) {
 }
 
 function Install-VpnProfiles([object[]]$Profiles) {
-    if ($Profiles.Count -eq 0) {
-        Write-Step "Skip VPN profile configuration"
-        return
-    }
-    if (-not $DryRun) {
-        Import-Module VpnClient -ErrorAction Stop
-    }
-    $index = 0
-    foreach ($profile in $Profiles) {
-        $index++
-        Assert-VpnInstallProfile $profile
-        $expectedIps = Get-VpnExpectedIps $profile
-        Write-Step "Configure Windows VPN profile $index/$($Profiles.Count) '$($profile.Name)': server=$($profile.Server); expectedPublicIps=$($expectedIps -join ','); psk=<not logged>"
-        if ($DryRun) {
-            continue
-        }
-        try {
-            $existing = Get-VpnConnection -Name $profile.Name -AllUserConnection -ErrorAction SilentlyContinue
-            if ($existing) {
-                Set-VpnConnection -Name $profile.Name -ServerAddress $profile.Server -TunnelType L2tp `
-                    -EncryptionLevel Required -AuthenticationMethod MSChapv2 -SplitTunneling $false `
-                    -AllUserConnection -L2tpPsk $profile.Psk -RememberCredential $true -Force | Out-Null
-            }
-            else {
-                Add-VpnConnection -Name $profile.Name -ServerAddress $profile.Server -TunnelType L2tp `
-                    -EncryptionLevel Required -AuthenticationMethod MSChapv2 -SplitTunneling:$false `
-                    -AllUserConnection -L2tpPsk $profile.Psk -RememberCredential -Force | Out-Null
-            }
-        }
-        catch {
-            throw "Cannot create or update Windows VPN profile '$($profile.Name)': $($_.Exception.Message)"
-        }
-    }
+    throw "DiskControl installer does not create or update Windows VPN profiles. Configure them in Windows and assign them in DiskControl Admin."
 }
 
 function Set-PolicyVpnConfigurations([object[]]$InstallProfiles) {
@@ -1212,9 +1180,7 @@ foreach ($installerFile in @(
 Remove-LegacyDiagnostics
 Initialize-Policy
 Set-PolicyUsageStatePath
-$script:VpnInstallProfiles = @(Get-VpnInstallProfiles)
-Install-VpnProfiles $script:VpnInstallProfiles
-Set-PolicyVpnConfigurations $script:VpnInstallProfiles
+Write-Step "VPN profiles are managed in Windows and assigned to tokens in DiskControl Admin; installer does not create or update VPN connections"
 Initialize-UsageState
 Set-DirectoryAcl
 Test-UsageStateAccess

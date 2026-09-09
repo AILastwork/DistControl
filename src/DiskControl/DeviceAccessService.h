@@ -47,9 +47,6 @@ public:
         const std::wstring& vpnProfileId) const;
     std::vector<VpnProfile> vpnProfiles() const;
     void upsertVpnProfile(const VpnProfile& profile) const;
-    void installOrUpdateWindowsVpnProfile(
-        const VpnProfile& profile,
-        const std::wstring& preSharedKey) const;
     void removeVpnProfile(const std::wstring& profileId) const;
     void updateAccessForUser(std::vector<DeviceViewModel>& devices, const std::wstring& userName) const;
     std::wstring currentUserSummary() const;

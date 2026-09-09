@@ -17,8 +17,8 @@ using System.Windows.Forms;
 [assembly: AssemblyCompany("DiskControl")]
 [assembly: AssemblyProduct("DiskControl")]
 [assembly: AssemblyCopyright("Copyright 2026")]
-[assembly: AssemblyVersion("0.3.2.0")]
-[assembly: AssemblyFileVersion("0.3.2.0")]
+[assembly: AssemblyVersion("0.4.0.0")]
+[assembly: AssemblyFileVersion("0.4.0.0")]
 [assembly: ComVisible(false)]
 
 internal static class SetupBootstrapper
@@ -218,17 +218,8 @@ internal static class SetupBootstrapper
             {
                 return 1;
             }
-            if (!PromptVpnConfiguration(credentials))
-            {
-                return 1;
-            }
-
             PowerShellResult result = ShowInstallProgress(launcher, tempRoot, credentials);
             credentials.Password = string.Empty;
-            foreach (VpnInstallProfile profile in credentials.VpnProfiles)
-            {
-                profile.Psk = string.Empty;
-            }
             if (result.ExitCode != 0)
             {
                 MessageBox.Show(
@@ -918,7 +909,9 @@ internal static class SetupBootstrapper
     private static PowerShellResult RunPowerShell(string launcher, string workingDirectory, ServiceCredentials credentials, Action<string> onOutputLine)
     {
         var output = new StringBuilder();
-        string vpnProfilesFile = WriteVpnProfilesFile(workingDirectory, credentials);
+        // VPN profiles are intentionally managed by Windows and DiskControl Admin.
+        // The installer never forwards legacy VPN-creation input to PowerShell.
+        string vpnProfilesFile = string.Empty;
         var startInfo = new ProcessStartInfo
         {
             FileName = "powershell.exe",
@@ -938,8 +931,6 @@ internal static class SetupBootstrapper
             startInfo.EnvironmentVariables["DISKCONTROL_SERVICE_ACCOUNT"] = credentials.Account ?? string.Empty;
             startInfo.EnvironmentVariables["DISKCONTROL_SERVICE_PASSWORD"] = credentials.Password ?? string.Empty;
             startInfo.EnvironmentVariables["DISKCONTROL_USAGE_STATE_DIR"] = credentials.UsageStateDirectory ?? string.Empty;
-            startInfo.EnvironmentVariables["DISKCONTROL_VPN_CONFIGURE"] = credentials.ConfigureVpn ? "1" : "0";
-            startInfo.EnvironmentVariables["DISKCONTROL_VPN_PROFILES_FILE"] = vpnProfilesFile;
         }
 
         try
