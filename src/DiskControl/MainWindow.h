@@ -38,6 +38,7 @@ private:
     void configureVpnForSelectedDevice();
     void manageVpnForSelectedDevice();
     void finishTokenAction();
+    void updateTokenActionProgress();
     void setMainControlsEnabled(bool enabled);
     void scheduleDelayedRefresh();
     void applyDeviceFilter();
@@ -122,6 +123,9 @@ private:
     std::wstring pendingTokenActionError_;
     std::wstring pendingTokenActionEndpoint_;
     std::wstring pendingTokenActionOperationId_;
+    std::wstring pendingTokenActionProgressText_;
+    size_t pendingTokenActionProgressStep_ = 0;
+    size_t pendingTokenActionProgressTotal_ = 0;
     bool pendingComputerPolicyRepaired_ = false;
     bool pendingTokenActionConnect_ = false;
     bool pendingTokenActionVpnError_ = false;

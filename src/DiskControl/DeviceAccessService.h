@@ -7,6 +7,8 @@
 #include <vector>
 
 using DeviceListProgressCallback = std::function<void(size_t processed, size_t total)>;
+using TokenActionProgressCallback =
+    std::function<void(size_t step, size_t total, const std::wstring& message)>;
 
 struct DeviceViewModel {
     std::wstring endpoint;
@@ -31,11 +33,13 @@ public:
         const DeviceListProgressCallback& progress = {}) const;
     std::wstring useDevice(
         const DeviceViewModel& device,
-        const std::wstring& operationId = {}) const;
+        const std::wstring& operationId = {},
+        const TokenActionProgressCallback& progress = {}) const;
     std::wstring stopUsingDevice(const DeviceViewModel& device) const;
     std::wstring stopUsingOwnedDevice(
         const DeviceViewModel& device,
-        const std::wstring& operationId = {}) const;
+        const std::wstring& operationId = {},
+        const TokenActionProgressCallback& progress = {}) const;
     void refreshUsageTimer(const DeviceViewModel& device) const;
     std::wstring verifyVpnForDevice(const DeviceViewModel& device) const;
     std::wstring assignDeviceToCurrentUser(const DeviceViewModel& device) const;

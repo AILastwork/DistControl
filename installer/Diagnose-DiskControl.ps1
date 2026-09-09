@@ -11,6 +11,7 @@ $Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $ReleaseDir = Join-Path $Root "build\x64\Release"
 $PolicyPath = Join-Path $ProgramDataDir "allow.json"
 $LogsDir = Join-Path $ProgramDataDir "logs"
+$ManagedHubRoutesPath = Join-Path $ProgramDataDir "managed-hub-routes.json"
 $ClientStartupShortcut = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\Startup\DiskControl dkclient.lnk"
 
 function Write-Section([string]$Title) {
@@ -101,6 +102,24 @@ Write-Check "unexpected user startup shortcut" (-not $startupExists) $ClientStar
 Get-CimInstance Win32_Process -Filter "Name = 'dkcl64.exe'" -ErrorAction SilentlyContinue |
     Select-Object ProcessId, ExecutablePath, CommandLine |
     Format-List
+
+Write-Section "VPN and routes"
+Get-VpnConnection -ErrorAction SilentlyContinue |
+    Select-Object Name, ConnectionStatus, ServerAddress, TunnelType, SplitTunneling |
+    Format-Table -AutoSize
+Get-VpnConnection -AllUserConnection -ErrorAction SilentlyContinue |
+    Select-Object Name, ConnectionStatus, ServerAddress, TunnelType, SplitTunneling, AllUserConnection |
+    Format-Table -AutoSize
+
+if (Test-Path -LiteralPath $ManagedHubRoutesPath) {
+    Write-Check "managed hub routes" $true $ManagedHubRoutesPath
+    Get-Content -LiteralPath $ManagedHubRoutesPath -Raw -Encoding UTF8
+}
+else {
+    Write-Check "managed hub routes" $false "manifest not found: $ManagedHubRoutesPath"
+}
+
+route.exe print -4
 
 Write-Section "Logs"
 if (Test-Path -LiteralPath $LogsDir) {

@@ -19,6 +19,7 @@ catch {
 $UninstallRegistryPath = "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\DiskControl"
 $ClientStartupShortcut = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\Startup\DiskControl dkclient.lnk"
 $LogsDir = Join-Path $ProgramDataDir "logs"
+$ManagedHubRoutesPath = Join-Path $ProgramDataDir "managed-hub-routes.json"
 $script:UninstallLogPath = $null
 
 function Write-UninstallLogLine([string]$Message) {
@@ -207,6 +208,45 @@ function Remove-UninstallEntry {
     }
 }
 
+function Remove-ManagedHubRoutes {
+    if (-not (Test-Path -LiteralPath $ManagedHubRoutesPath)) {
+        return
+    }
+
+    Write-Step "Remove routes managed for DistKontrolUSB hubs"
+    try {
+        $manifest = Get-Content -LiteralPath $ManagedHubRoutesPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        foreach ($route in @($manifest.routes)) {
+            $destination = [string]$route.destination
+            $gateway = [string]$route.gateway
+            $interfaceIndex = [int]$route.interfaceIndex
+            if ([string]::IsNullOrWhiteSpace($destination) -or
+                [string]::IsNullOrWhiteSpace($gateway) -or
+                $interfaceIndex -le 0) {
+                continue
+            }
+
+            Write-Step "Remove managed route: $destination/32 via $gateway if $interfaceIndex"
+            if (-not $DryRun) {
+                $existing = @(Get-NetRoute -AddressFamily IPv4 -DestinationPrefix "$destination/32" -ErrorAction SilentlyContinue |
+                    Where-Object { $_.NextHop -eq $gateway -and $_.ifIndex -eq $interfaceIndex })
+                if ($existing.Count -gt 0) {
+                    Invoke-ExternalOptional "route.exe" @(
+                        "delete", $destination, "mask", "255.255.255.255", $gateway, "if", "$interfaceIndex"
+                    ) "Cannot remove the managed route to DistKontrolUSB hub $destination"
+                }
+            }
+        }
+    }
+    catch {
+        Write-Step "WARNING: Cannot read or remove managed hub routes: $($_.Exception.Message)"
+    }
+
+    if (-not $DryRun) {
+        Remove-Item -LiteralPath $ManagedHubRoutesPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Stop-InstalledDkClientProcess {
     $exePath = Join-Path $InstallDir "dkcl64.exe"
     if ($DryRun) {
@@ -265,6 +305,8 @@ if ($service) {
 }
 
 Stop-InstalledDkClientProcess
+
+Remove-ManagedHubRoutes
 
 Remove-PathSafe $ClientStartupShortcut
 

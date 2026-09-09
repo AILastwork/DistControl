@@ -5,17 +5,112 @@
 #include <windows.h>
 
 #include <atomic>
+#include <algorithm>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <map>
 #include <mutex>
 #include <sstream>
+#include <vector>
 
 namespace {
 namespace fs = std::filesystem;
 
 std::atomic<unsigned long long> gOperationSequence{0};
 std::mutex gLogMutex;
+std::map<std::wstring, ULONGLONG> gLastLogCleanupTicks;
+
+constexpr std::uintmax_t kMaximumLogDirectoryBytes = 100ULL * 1024ULL * 1024ULL;
+constexpr std::uintmax_t kMaximumSingleLogBytes = 20ULL * 1024ULL * 1024ULL;
+constexpr auto kLogRetention = std::chrono::hours(24 * 30);
+constexpr ULONGLONG kLogCleanupIntervalMs = 5ULL * 60ULL * 1000ULL;
+
+bool isManagedLogFile(const fs::path& path) {
+    const std::wstring extension = path.extension().wstring();
+    return extension == L".log" || extension == L".csv";
+}
+
+void pruneLogDirectoryIfDue(const fs::path& directory) {
+    const std::wstring key = directory.wstring();
+    const ULONGLONG nowTick = GetTickCount64();
+    const auto previous = gLastLogCleanupTicks.find(key);
+    if (previous != gLastLogCleanupTicks.end() &&
+        nowTick - previous->second < kLogCleanupIntervalMs) {
+        return;
+    }
+    gLastLogCleanupTicks[key] = nowTick;
+
+    std::error_code error;
+    const auto now = fs::file_time_type::clock::now();
+    for (fs::directory_iterator it(directory, error), end; !error && it != end; it.increment(error)) {
+        if (!it->is_regular_file(error) || !isManagedLogFile(it->path())) {
+            continue;
+        }
+        const auto modified = it->last_write_time(error);
+        if (!error && now - modified > kLogRetention) {
+            fs::remove(it->path(), error);
+            error.clear();
+        }
+    }
+
+    struct LogFileInfo {
+        fs::path path;
+        fs::file_time_type modified;
+        std::uintmax_t size = 0;
+    };
+    std::vector<LogFileInfo> files;
+    std::uintmax_t totalSize = 0;
+    error.clear();
+    for (fs::directory_iterator it(directory, error), end; !error && it != end; it.increment(error)) {
+        if (!it->is_regular_file(error) || !isManagedLogFile(it->path())) {
+            continue;
+        }
+        LogFileInfo info{it->path(), it->last_write_time(error), it->file_size(error)};
+        if (!error) {
+            totalSize += info.size;
+            files.push_back(std::move(info));
+        }
+        error.clear();
+    }
+    std::sort(files.begin(), files.end(), [](const LogFileInfo& left, const LogFileInfo& right) {
+        return left.modified < right.modified;
+    });
+    size_t remainingFiles = files.size();
+    for (const LogFileInfo& file : files) {
+        if (totalSize <= kMaximumLogDirectoryBytes || remainingFiles <= 2) {
+            break;
+        }
+        error.clear();
+        if (fs::remove(file.path, error)) {
+            totalSize = file.size > totalSize ? 0 : totalSize - file.size;
+            --remainingFiles;
+        }
+    }
+}
+
+void rotateOversizedLog(const fs::path& filePath) {
+    std::error_code error;
+    if (!fs::exists(filePath, error) || error) {
+        return;
+    }
+    const std::uintmax_t size = fs::file_size(filePath, error);
+    if (error || size < kMaximumSingleLogBytes) {
+        return;
+    }
+
+    SYSTEMTIME time{};
+    GetLocalTime(&time);
+    std::wostringstream suffix;
+    suffix << L"-" << std::setfill(L'0')
+        << std::setw(2) << time.wHour
+        << std::setw(2) << time.wMinute
+        << std::setw(2) << time.wSecond;
+    const fs::path rotated = filePath.parent_path() /
+        (filePath.stem().wstring() + suffix.str() + filePath.extension().wstring());
+    fs::rename(filePath, rotated, error);
+}
 
 std::string wideToUtf8(const std::wstring& value) {
     if (value.empty()) {
@@ -198,7 +293,9 @@ std::wstring AuditLogger::fallbackLogDirectory() {
 bool AuditLogger::tryWrite(const std::wstring& directory, const AuditEvent& event) {
     try {
         fs::create_directories(directory);
+        pruneLogDirectoryIfDue(directory);
         const fs::path filePath = fs::path(directory) / logFileName();
+        rotateOversizedLog(filePath);
         const bool newFile = !fs::exists(filePath) || fs::file_size(filePath) == 0;
 
         std::ofstream stream(filePath, std::ios::binary | std::ios::app);
@@ -236,7 +333,9 @@ bool AuditLogger::tryWriteTrace(
     const std::wstring& message) {
     try {
         fs::create_directories(directory);
+        pruneLogDirectoryIfDue(directory);
         const fs::path filePath = fs::path(directory) / traceFileName();
+        rotateOversizedLog(filePath);
         const bool newFile = !fs::exists(filePath) || fs::file_size(filePath) == 0;
 
         std::ofstream stream(filePath, std::ios::binary | std::ios::app);

@@ -31,7 +31,7 @@ try {
 catch {
 }
 $ProductName = "DiskControl"
-$ProductVersion = "0.4.1"
+$ProductVersion = "0.4.5"
 $Publisher = "DiskControl"
 $SourceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $ReleaseDir = Join-Path $SourceRoot "build\x64\Release"
@@ -40,6 +40,7 @@ $UsageStateRoot = if ([string]::IsNullOrWhiteSpace($UsageStateDir)) { $ProgramDa
 $UsageStatePath = Join-Path $UsageStateRoot "usage.json"
 $LogsDir = Join-Path $ProgramDataDir "logs"
 $InstallerDir = Join-Path $InstallDir "installer"
+$ManagedHubRoutesPath = Join-Path $ProgramDataDir "managed-hub-routes.json"
 $ClientStartupShortcut = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\Startup\DiskControl dkclient.lnk"
 $UninstallRegistryPath = "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\DiskControl"
 $script:InstallLogPath = $null
@@ -159,6 +160,11 @@ function Convert-InstallErrorToHuman([string]$Message) {
     if ($lower.Contains("required file") -or
         $lower.Contains("installer input")) {
         return "В установочном пакете не найден обязательный файл. Используйте свежий DiskControl-Setup.exe."
+    }
+    if ($lower.Contains("route.exe") -or
+        $lower.Contains("physical ipv4 default gateway") -or
+        $lower.Contains("distkontrolusb hub route")) {
+        return "Не удалось закрепить локальный маршрут к USB-хабам. Проверьте подключение к рабочей сети и повторите установку от имени администратора."
     }
     return "Установка остановилась из-за технической ошибки. Подробности ниже в этом журнале."
 }
@@ -678,6 +684,165 @@ function Install-VpnProfiles([object[]]$Profiles) {
     throw "DiskControl installer does not create or update Windows VPN profiles. Configure them in Windows and assign them in DiskControl Admin."
 }
 
+function Get-DistKontrolManualHubAddresses([string]$IniPath) {
+    if (-not (Test-Path -LiteralPath $IniPath)) {
+        return @()
+    }
+
+    $settingsSection = $false
+    $rawValue = $null
+    foreach ($line in [System.IO.File]::ReadAllLines($IniPath)) {
+        $trimmed = $line.Trim()
+        if ($trimmed.StartsWith("[") -and $trimmed.EndsWith("]")) {
+            $settingsSection = [string]::Equals(
+                $trimmed.Trim('[', ']'),
+                "Settings",
+                [StringComparison]::OrdinalIgnoreCase)
+            continue
+        }
+        if ($settingsSection -and $trimmed -match '^ManualHubs\s*=\s*(.*)$') {
+            $rawValue = $Matches[1]
+            break
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($rawValue)) {
+        return @()
+    }
+
+    $addresses = New-Object System.Collections.Generic.List[string]
+    foreach ($endpoint in @($rawValue -split ',')) {
+        $value = $endpoint.Trim()
+        if ($value -notmatch '^([^:]+)(?::\d+)?$') {
+            Write-InstallWarning "Cannot create a local route for invalid ManualHubs entry: $value"
+            continue
+        }
+
+        $addressText = $Matches[1].Trim()
+        $address = $null
+        if (-not [System.Net.IPAddress]::TryParse($addressText, [ref]$address) -or
+            $address.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork) {
+            Write-InstallWarning "Cannot create a local route for non-IPv4 ManualHubs entry: $value"
+            continue
+        }
+        if (-not $addresses.Contains($addressText)) {
+            $addresses.Add($addressText)
+        }
+    }
+    return @($addresses)
+}
+
+function Get-PhysicalDefaultRoute {
+    $routes = @(Get-NetRoute -AddressFamily IPv4 -DestinationPrefix "0.0.0.0/0" -ErrorAction Stop |
+        Where-Object { $_.NextHop -and $_.NextHop -ne "0.0.0.0" } |
+        Sort-Object RouteMetric)
+    foreach ($route in $routes) {
+        $adapter = Get-NetAdapter -InterfaceIndex $route.ifIndex -ErrorAction SilentlyContinue
+        if ($adapter -and $adapter.Status -eq "Up" -and $adapter.HardwareInterface) {
+            return $route
+        }
+    }
+    return $null
+}
+
+function Remove-PreviouslyManagedHubRoutes {
+    if (-not (Test-Path -LiteralPath $ManagedHubRoutesPath)) {
+        return
+    }
+
+    try {
+        $manifest = Get-Content -LiteralPath $ManagedHubRoutesPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        foreach ($route in @($manifest.routes)) {
+            $destination = [string]$route.destination
+            $gateway = [string]$route.gateway
+            $interfaceIndex = [int]$route.interfaceIndex
+            if ([string]::IsNullOrWhiteSpace($destination) -or
+                [string]::IsNullOrWhiteSpace($gateway) -or
+                $interfaceIndex -le 0) {
+                continue
+            }
+
+            Write-Step "Remove previously managed hub route: $destination/32 via $gateway if $interfaceIndex"
+            if (-not $DryRun) {
+                $existing = @(Get-NetRoute -AddressFamily IPv4 -DestinationPrefix "$destination/32" -ErrorAction SilentlyContinue |
+                    Where-Object { $_.NextHop -eq $gateway -and $_.ifIndex -eq $interfaceIndex })
+                if ($existing.Count -gt 0) {
+                    Invoke-ExternalOptional "route.exe" @(
+                        "delete", $destination, "mask", "255.255.255.255", $gateway, "if", "$interfaceIndex"
+                    ) "Cannot remove the previous managed route to DistKontrolUSB hub $destination"
+                }
+            }
+        }
+    }
+    catch {
+        Write-InstallWarning "Cannot read or remove the previous managed hub routes: $($_.Exception.Message)"
+    }
+
+    if (-not $DryRun) {
+        Remove-Item -LiteralPath $ManagedHubRoutesPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Write-ManagedHubRouteManifest([System.Collections.IEnumerable]$Routes) {
+    if ($DryRun) {
+        return
+    }
+    $manifest = [ordered]@{
+        version = 1
+        createdAt = (Get-Date).ToString("o")
+        routes = @($Routes)
+    }
+    [System.IO.File]::WriteAllText(
+        $ManagedHubRoutesPath,
+        ($manifest | ConvertTo-Json -Depth 4),
+        $script:Utf8NoBomEncoding)
+}
+
+function Set-DistKontrolHubRoutes([string]$IniPath) {
+    $hubAddresses = @(Get-DistKontrolManualHubAddresses $IniPath)
+    if ($hubAddresses.Count -eq 0) {
+        Write-InstallWarning "No IPv4 addresses were found in dkcl.ini ManualHubs. Full-tunnel VPN may block access to DistKontrolUSB hubs."
+        return
+    }
+
+    $physicalRoute = Get-PhysicalDefaultRoute
+    if (-not $physicalRoute) {
+        Write-InstallWarning "A physical IPv4 default gateway was not found. Routes to DistKontrolUSB hubs were not created."
+        return
+    }
+
+    $gateway = [string]$physicalRoute.NextHop
+    $interfaceIndex = [int]$physicalRoute.ifIndex
+    Write-Step "Configure local routes to DistKontrolUSB hubs: gateway=$gateway; interface=$($physicalRoute.InterfaceAlias); ifIndex=$interfaceIndex; hubs=$($hubAddresses.Count)"
+
+    Remove-PreviouslyManagedHubRoutes
+    $managedRoutes = New-Object System.Collections.Generic.List[object]
+    foreach ($address in $hubAddresses) {
+        $existing = @(Get-NetRoute -AddressFamily IPv4 -DestinationPrefix "$address/32" -ErrorAction SilentlyContinue |
+            Where-Object { $_.NextHop -eq $gateway -and $_.ifIndex -eq $interfaceIndex })
+        if ($existing.Count -gt 0) {
+            Write-Step "Keep existing route to DistKontrolUSB hub: $address/32 via $gateway if $interfaceIndex"
+            continue
+        }
+
+        Write-Step "Add persistent route to DistKontrolUSB hub: $address/32 via $gateway if $interfaceIndex"
+        if (-not $DryRun) {
+            Invoke-External "route.exe" @(
+                "-p", "add", $address, "mask", "255.255.255.255", $gateway,
+                "metric", "1", "if", "$interfaceIndex"
+            )
+        }
+        $managedRoutes.Add([ordered]@{
+            destination = $address
+            gateway = $gateway
+            interfaceIndex = $interfaceIndex
+        })
+        Write-ManagedHubRouteManifest $managedRoutes
+    }
+
+    Write-ManagedHubRouteManifest $managedRoutes
+}
+
 function Set-PolicyVpnConfigurations([object[]]$InstallProfiles) {
     if ($InstallProfiles.Count -eq 0) {
         return
@@ -1147,6 +1312,7 @@ Copy-RequiredFile (Join-Path $ReleaseDir "DiskControl.exe") (Join-Path $InstallD
 Copy-RequiredFile (Join-Path $ReleaseDir "DiskControl.Admin.exe") (Join-Path $InstallDir "DiskControl.Admin.exe")
 Copy-RequiredFile (Join-Path $SourceRoot "dkcl64.exe") (Join-Path $InstallDir "dkcl64.exe")
 Copy-RequiredFile (Join-Path $SourceRoot "dkcl.ini") (Join-Path $InstallDir "dkcl.ini")
+Set-DistKontrolHubRoutes (Join-Path $SourceRoot "dkcl.ini")
 
 foreach ($uninstallCandidate in @(
     (Join-Path $SourceRoot "Uninstall-DiskControl.exe"),

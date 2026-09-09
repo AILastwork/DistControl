@@ -49,6 +49,7 @@ constexpr UINT WM_TOKEN_ACTION_COMPLETE = WM_APP + 3;
 constexpr UINT WM_VPN_WATCHDOG_COMPLETE = WM_APP + 4;
 constexpr UINT WM_REFRESH_PROGRESS = WM_APP + 5;
 constexpr UINT WM_NETWORK_STATE_COMPLETE = WM_APP + 6;
+constexpr UINT WM_TOKEN_ACTION_PROGRESS = WM_APP + 7;
 constexpr LPARAM kTreeGroupParam = -1;
 constexpr ULONGLONG kTokenSessionLimitMs = 20ULL * 60ULL * 1000ULL;
 constexpr ULONGLONG kAutoReleaseRetryMs = 15ULL * 1000ULL;
@@ -202,6 +203,12 @@ void logUiError(const std::wstring& action, const char* technicalError, const st
 }
 
 std::wstring tokenActionErrorMessage(const char* error, bool connect) {
+    if (containsAscii(error, "Cannot verify the previously connected token before switching VPN")) {
+        return L"Не удалось проверить состояние предыдущего токена. Смена VPN и подключение нового токена остановлены; нажмите «Обновить» и повторите попытку.";
+    }
+    if (containsAscii(error, "Cannot verify the token catalog before switching VPN")) {
+        return L"Не удалось полностью проверить активные токены. Чтобы не подключить два токена одновременно, смена VPN остановлена; нажмите «Обновить» и повторите попытку.";
+    }
     if (containsAscii(error, "DistKontrol returned FAILED") || containsAscii(error, "DistKontrol returned ERROR")) {
         return connect
             ? L"DistKontrolUSB отказал в подключении токена. Проверьте, не занят ли токен, доступность USB-концентратора и права службы dkclient."
@@ -1325,6 +1332,9 @@ LRESULT MainWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     case WM_TOKEN_ACTION_COMPLETE:
         finishTokenAction();
         return 0;
+    case WM_TOKEN_ACTION_PROGRESS:
+        updateTokenActionProgress();
+        return 0;
     case WM_VPN_WATCHDOG_COMPLETE:
         finishVpnHealthCheck();
         return 0;
@@ -1970,6 +1980,12 @@ void MainWindow::startTokenAction(DeviceViewModel device, bool connect) {
     KillTimer(hwnd_, IDT_DELAYED_REFRESH);
     setMainControlsEnabled(false);
     updateStatus(connect ? L"Подключение токена..." : L"Отключение токена...");
+    SetWindowTextW(refreshProgressLabel_, L"0%");
+    SendMessageW(refreshProgressBar_, PBM_SETMARQUEE, FALSE, 0);
+    SendMessageW(refreshProgressBar_, PBM_SETPOS, 0, 0);
+    ShowWindow(refreshProgressLabel_, SW_SHOW);
+    ShowWindow(refreshProgressBar_, SW_SHOW);
+    layoutControls();
     AuditLogger::trace(operationId, L"Кнопки временно заблокированы, операция передана в фоновый поток.");
 
     if (tokenActionThread_.joinable()) {
@@ -1980,10 +1996,19 @@ void MainWindow::startTokenAction(DeviceViewModel device, bool connect) {
         std::wstring status;
         std::wstring errorText;
         bool vpnError = false;
+        const TokenActionProgressCallback progress = [this](size_t step, size_t total, const std::wstring& message) {
+            {
+                std::lock_guard<std::mutex> lock(tokenActionMutex_);
+                pendingTokenActionProgressStep_ = step;
+                pendingTokenActionProgressTotal_ = total;
+                pendingTokenActionProgressText_ = message;
+            }
+            if (!closing_) PostMessageW(hwnd_, WM_TOKEN_ACTION_PROGRESS, 0, 0);
+        };
         try {
             status = connect
-                ? service_.useDevice(device, operationId)
-                : service_.stopUsingOwnedDevice(device, operationId);
+                ? service_.useDevice(device, operationId, progress)
+                : service_.stopUsingOwnedDevice(device, operationId, progress);
         }
         catch (const std::exception& error) {
             vpnError = containsAscii(error.what(), "VPN ");
@@ -2035,6 +2060,7 @@ void MainWindow::finishTokenAction() {
     }
 
     tokenActionRunning_ = false;
+    hideRefreshProgress();
     setMainControlsEnabled(true);
 
     if (!errorText.empty()) {
@@ -2123,6 +2149,28 @@ void MainWindow::refreshDevices() {
             PostMessageW(hwnd_, WM_REFRESH_COMPLETE, 0, 0);
         }
     });
+}
+
+void MainWindow::updateTokenActionProgress() {
+    if (!tokenActionRunning_) return;
+    size_t step = 0;
+    size_t total = 0;
+    std::wstring message;
+    {
+        std::lock_guard<std::mutex> lock(tokenActionMutex_);
+        step = pendingTokenActionProgressStep_;
+        total = pendingTokenActionProgressTotal_;
+        message = pendingTokenActionProgressText_;
+    }
+    if (total == 0) return;
+    const int percent = static_cast<int>((std::min)(step * 100 / total, static_cast<size_t>(100)));
+    SendMessageW(refreshProgressBar_, PBM_SETMARQUEE, FALSE, 0);
+    SendMessageW(refreshProgressBar_, PBM_SETPOS, percent, 0);
+    const std::wstring percentText = std::to_wstring(percent) + L"%";
+    SetWindowTextW(refreshProgressLabel_, percentText.c_str());
+    const std::wstring status = message + L". Шаг " + std::to_wstring(step) + L" из " +
+        std::to_wstring(total) + L" (" + percentText + L").";
+    updateStatus(status.c_str());
 }
 
 void MainWindow::publishNetworkState() {
