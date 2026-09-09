@@ -31,7 +31,6 @@ namespace {
 constexpr DWORD kHttpConnectTimeoutMs = 5000;
 constexpr DWORD kHttpOperationTimeoutMs = 8000;
 constexpr size_t kMaximumPublicIpResponseBytes = 256;
-constexpr int kPublicIpAttempts = 3;
 
 std::mutex gLocalRouteMutex;
 std::map<std::wstring, std::set<std::wstring>> gLocalRouteBaselines;
@@ -240,15 +239,6 @@ bool isValidIpAddressValue(const std::wstring& value) {
     return InetPtonW(AF_INET6, value.c_str(), &ipv6) == 1;
 }
 
-bool isExpectedPublicIp(const std::wstring& actual, const std::vector<std::wstring>& expected) {
-    for (const std::wstring& candidate : expected) {
-        if (equalsIgnoreCase(trim(candidate), actual)) {
-            return true;
-        }
-    }
-    return false;
-}
-
 bool isLocalIpv4Address(const IN_ADDR& address) {
     const ULONG value = ntohl(address.S_un.S_addr);
     return (value & 0xFF000000UL) == 0x0A000000UL ||
@@ -353,17 +343,6 @@ size_t verifyLocalRoutePreservation(const std::wstring& profileName) {
             "VPN local network routes were replaced. Missing=" + narrowAscii(details) + ".");
     }
     return baseline.size();
-}
-
-std::wstring expectedIpsText(const std::vector<std::wstring>& values) {
-    std::wstring result;
-    for (const std::wstring& value : values) {
-        if (!result.empty()) {
-            result += L", ";
-        }
-        result += value;
-    }
-    return result;
 }
 
 class InternetHandle {
@@ -592,13 +571,13 @@ VpnVerificationResult VpnManager::connectAndVerify(
     const VpnProgressCallback& progress) {
 #ifdef DISKCONTROL_TESTING
     if (gNetworkOperationsStubbedForTests) {
-        if (!profile.enabled || profile.expectedPublicIps.empty()) {
+        if (!profile.enabled) {
             throw std::runtime_error("Test network profile is incomplete.");
         }
         reportProgress(progress, L"Тестовый режим: сетевой профиль проверен.");
         return {
             profile.mode == VpnProfileMode::Direct ? L"Без VPN" : profile.name,
-            profile.expectedPublicIps.front(),
+            L"",
             false,
             0
         };
@@ -613,9 +592,6 @@ VpnVerificationResult VpnManager::connectAndVerify(
     }
     if (profile.name.empty()) {
         throw std::runtime_error("VPN profile name is not configured.");
-    }
-    if (profile.expectedPublicIps.empty()) {
-        throw std::runtime_error("VPN expected public IP is not configured.");
     }
     if (!profileExists(profile)) {
         throw std::runtime_error("VPN Windows profile is not installed: " + narrowAscii(profile.name));
@@ -701,9 +677,6 @@ VpnVerificationResult VpnManager::verifyConnected(
     if (profile.name.empty()) {
         throw std::runtime_error("VPN profile name is not configured.");
     }
-    if (profile.expectedPublicIps.empty()) {
-        throw std::runtime_error("VPN expected public IP is not configured.");
-    }
     if (!profileExists(profile)) {
         throw std::runtime_error("VPN Windows profile is not installed: " + narrowAscii(profile.name));
     }
@@ -723,30 +696,16 @@ VpnVerificationResult VpnManager::verifyConnected(
     result.preservedLocalRouteCount = verifyLocalRoutePreservation(profile.name);
     reportProgress(progress, L"Локальная сеть доступна. Проверено маршрутов: " +
         std::to_wstring(result.preservedLocalRouteCount) + L".");
-    std::runtime_error lastError("VPN public IP check failed.");
-    for (int attempt = 0; attempt < kPublicIpAttempts; ++attempt) {
-        try {
-            reportProgress(progress, L"Запрашиваем фактический внешний IP. Попытка " +
-                std::to_wstring(attempt + 1) + L" из " + std::to_wstring(kPublicIpAttempts) + L".");
-            result.publicIp = queryPublicIp(profile.ipCheckUrl);
-            if (!isExpectedPublicIp(result.publicIp, profile.expectedPublicIps)) {
-                throw std::runtime_error(
-                    "VPN public IP mismatch. Actual=" + narrowAscii(result.publicIp) +
-                    "; expected=" + narrowAscii(expectedIpsText(profile.expectedPublicIps)) + ".");
-            }
-            reportProgress(progress, L"Внешний IP подтверждён: " + result.publicIp + L".");
-            return result;
-        }
-        catch (const std::runtime_error& error) {
-            lastError = error;
-            reportProgress(progress, L"Проверка внешнего IP не удалась. Техническая причина: " +
-                widenError(error.what()));
-            if (attempt + 1 < kPublicIpAttempts) {
-                Sleep(1200);
-            }
-        }
+    try {
+        result.publicIp = queryPublicIp(profile.ipCheckUrl);
+        reportProgress(progress, L"Текущий внешний IP после подключения: " + result.publicIp + L".");
     }
-    throw lastError;
+    catch (const std::runtime_error& error) {
+        reportProgress(progress,
+            L"Внешний IP не удалось записать в журнал, но VPN подключён. Техническая причина: " +
+            widenError(error.what()));
+    }
+    return result;
 }
 
 VpnVerificationResult VpnManager::verifyDirect(
@@ -755,37 +714,21 @@ VpnVerificationResult VpnManager::verifyDirect(
     if (!profile.enabled) {
         throw std::runtime_error("VPN profile is disabled by policy.");
     }
-    if (profile.expectedPublicIps.empty()) {
-        throw std::runtime_error("VPN expected public IP is not configured.");
-    }
     if (!rasActiveConnections().empty()) {
         throw std::runtime_error("Direct network mode requires all Windows VPN connections to be disconnected.");
     }
 
     VpnVerificationResult result;
     result.profileName = profile.name.empty() ? L"Без VPN" : profile.name;
-    std::runtime_error lastError("VPN public IP check failed.");
-    for (int attempt = 0; attempt < kPublicIpAttempts; ++attempt) {
-        try {
-            reportProgress(progress, L"Проверяем внешний IP без VPN. Попытка " +
-                std::to_wstring(attempt + 1) + L" из " + std::to_wstring(kPublicIpAttempts) + L".");
-            result.publicIp = queryPublicIp(profile.ipCheckUrl);
-            if (!isExpectedPublicIp(result.publicIp, profile.expectedPublicIps)) {
-                throw std::runtime_error(
-                    "VPN public IP mismatch. Actual=" + narrowAscii(result.publicIp) +
-                    "; expected=" + narrowAscii(expectedIpsText(profile.expectedPublicIps)) + ".");
-            }
-            reportProgress(progress, L"Внешний IP без VPN подтверждён: " + result.publicIp + L".");
-            return result;
-        }
-        catch (const std::runtime_error& error) {
-            lastError = error;
-            if (attempt + 1 < kPublicIpAttempts) {
-                Sleep(1200);
-            }
-        }
+    try {
+        result.publicIp = queryPublicIp(profile.ipCheckUrl);
+        reportProgress(progress, L"Текущий внешний IP без VPN: " + result.publicIp + L".");
     }
-    throw lastError;
+    catch (const std::runtime_error& error) {
+        reportProgress(progress, L"Внешний IP не удалось записать в журнал. Техническая причина: " +
+            widenError(error.what()));
+    }
+    return result;
 }
 
 std::wstring VpnManager::currentPublicIp(const std::wstring& url) {

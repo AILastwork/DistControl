@@ -852,7 +852,6 @@ VpnProfile vpnProfileFromJson(const JsonValue& value) {
     if (profile.tunnelType.empty()) {
         profile.tunnelType = L"L2TP";
     }
-    profile.expectedPublicIps = stringArray(value.find(L"expectedPublicIps"));
     const std::wstring mode = stringValue(value.find(L"mode"));
     profile.mode = equalsIgnoreCase(mode, L"direct")
         ? VpnProfileMode::Direct
@@ -886,12 +885,6 @@ std::vector<VpnProfile> vpnProfilesFromJson(const JsonValue* value) {
 }
 
 JsonValue makeVpnProfile(const VpnProfile& profile) {
-    JsonValue expectedIps = makeArray();
-    for (const std::wstring& ip : profile.expectedPublicIps) {
-        if (!ip.empty()) {
-            expectedIps.arrayValue.push_back(makeString(ip));
-        }
-    }
     return makeObject({
         { L"id", makeString(profile.id) },
         { L"name", makeString(profile.name) },
@@ -901,7 +894,6 @@ JsonValue makeVpnProfile(const VpnProfile& profile) {
         { L"phonebookScope", makeString(profile.phonebookScope == VpnPhonebookScope::AllUsers
             ? L"allUsers" : L"currentUser") },
         { L"enabled", makeBool(profile.enabled) },
-        { L"expectedPublicIps", std::move(expectedIps) },
         { L"ipCheckUrl", makeString(profile.ipCheckUrl.empty() ? L"https://api.ipify.org" : profile.ipCheckUrl) }
     });
 }
@@ -1142,9 +1134,8 @@ void PolicyManager::setVpnProfileForDevice(
 
 void PolicyManager::upsertVpnProfile(const VpnProfile& profile) const {
     if (profile.id.empty() ||
-        (profile.mode == VpnProfileMode::WindowsVpn && profile.name.empty()) ||
-        profile.expectedPublicIps.empty()) {
-        throw std::runtime_error("Network profile id, Windows profile and expected public IP are required.");
+        (profile.mode == VpnProfileMode::WindowsVpn && profile.name.empty())) {
+        throw std::runtime_error("Network profile id and Windows profile are required.");
     }
 
     JsonValue root = readPolicyRoot(configPath_);

@@ -28,7 +28,6 @@ struct VpnProfile {
     std::wstring name;
     std::wstring serverAddress;
     std::wstring tunnelType = L"L2TP";
-    std::vector<std::wstring> expectedPublicIps;
     std::wstring ipCheckUrl = L"https://api.ipify.org";
     VpnProfileMode mode = VpnProfileMode::WindowsVpn;
     VpnPhonebookScope phonebookScope = VpnPhonebookScope::CurrentUser;

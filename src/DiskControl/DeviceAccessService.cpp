@@ -55,7 +55,7 @@ std::wstring humanErrorDescription(const char* error) {
         explanation = L"Служба DistKontrolUSB временно вернула пустой список устройств";
     }
     else if (containsTechnicalText(error, "Network profile is not assigned to the token")) {
-        explanation = L"Для токена не назначен разрешённый VPN или внешний IP";
+        explanation = L"Для токена не выбран VPN Windows или режим «Без VPN»";
     }
     else if (containsTechnicalText(error, "device catalog did not recover after VPN connection")) {
         explanation = L"После подключения VPN служба DistKontrolUSB не успела восстановить список устройств";
@@ -74,13 +74,6 @@ std::wstring humanErrorDescription(const char* error) {
     else if (containsTechnicalText(error, "pipe is not available") ||
              containsTechnicalText(error, "Cannot open DistKontrol pipe")) {
         explanation = L"Приложение не смогло связаться со службой dkclient";
-    }
-    else if (containsTechnicalText(error, "VPN public IP mismatch")) {
-        explanation = L"VPN подключён, но фактический внешний IP не совпал с разрешённым";
-    }
-    else if (containsTechnicalText(error, "VPN public IP") ||
-             containsTechnicalText(error, "verification service")) {
-        explanation = L"Не удалось проверить внешний IP VPN";
     }
     else if (containsTechnicalText(error, "VPN local network routes were replaced")) {
         explanation = L"VPN изменил маршруты локальной сети, поэтому подключение токена остановлено";
@@ -250,6 +243,7 @@ DeviceViewModel toViewModel(const ParsedDevice& device, bool allowed, std::wstri
         usage.locationText,
         std::move(usageStartedAt),
         L"",
+        L"",
         allowed
     };
 }
@@ -275,6 +269,7 @@ DeviceViewModel loadCurrentDevice(
     DeviceParser::applyDeviceInfo(current, response);
     DeviceViewModel result = toViewModel(current, device.allowed, device.usageStartedAt);
     result.vpnProfileId = device.vpnProfileId;
+    result.vpnProfileDisplay = device.vpnProfileDisplay;
     return result;
 }
 
@@ -407,6 +402,23 @@ std::wstring vpnProfileIdForDevice(const ParsedDevice& device, const std::vector
         return rule.vpnProfileId;
     }
     return {};
+}
+
+std::wstring vpnProfileDisplayName(
+    const std::wstring& profileId,
+    const std::vector<VpnProfile>& profiles) {
+    if (profileId.empty()) {
+        return {};
+    }
+    const auto found = std::find_if(profiles.begin(), profiles.end(), [&profileId](const VpnProfile& profile) {
+        return equalsIgnoreCase(profile.id, profileId);
+    });
+    if (found == profiles.end()) {
+        return profileId;
+    }
+    return found->mode == VpnProfileMode::Direct
+        ? L"Без VPN"
+        : found->name;
 }
 
 DeviceViewModel confirmDeviceStateAfterCommand(
@@ -805,6 +817,7 @@ std::wstring DeviceAccessService::stopUsingOwnedDevice(
         const DeviceUsageInfo usage = DeviceParser::parseUsage(current.inUseBy, PolicyManager::currentUserName());
         DeviceViewModel currentView = toViewModel(current, device.allowed);
         currentView.vpnProfileId = device.vpnProfileId;
+        currentView.vpnProfileDisplay = device.vpnProfileDisplay;
         trace.step(L"Владелец токена проверен за " +
             std::to_wstring(GetTickCount64() - verifyStartedAt) + L" мс. Текущее состояние: " +
             currentView.statusText + L".");
@@ -1021,6 +1034,7 @@ void DeviceAccessService::updateAccessForUser(std::vector<DeviceViewModel>& devi
         const ParsedDevice parsed = toParsedDevice(device);
         device.allowed = PolicyManager::isAllowedByRules(parsed, rules);
         device.vpnProfileId = vpnProfileIdForDevice(parsed, rules);
+        device.vpnProfileDisplay = vpnProfileDisplayName(device.vpnProfileId, policy.vpnProfiles());
     }
 }
 
@@ -1129,6 +1143,7 @@ std::vector<DeviceViewModel> DeviceAccessService::listDevices(
             if (allowed || includeDenied || connectedByCurrentUser) {
                 DeviceViewModel view = toViewModel(device, allowed, usageStartedAt);
                 view.vpnProfileId = vpnProfileIdForDevice(device, activeRules);
+                view.vpnProfileDisplay = vpnProfileDisplayName(view.vpnProfileId, policy.vpnProfiles());
                 result.push_back(std::move(view));
             }
             ++processed;
@@ -1177,5 +1192,6 @@ DeviceViewModel DeviceAccessService::enrichAndVerify(const DeviceViewModel& devi
 
     DeviceViewModel verified = toViewModel(current, true);
     verified.vpnProfileId = vpnProfileIdForDevice(current, policy.effectiveRules());
+    verified.vpnProfileDisplay = vpnProfileDisplayName(verified.vpnProfileId, policy.vpnProfiles());
     return verified;
 }

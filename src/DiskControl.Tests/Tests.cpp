@@ -320,8 +320,7 @@ void testUseDeviceAllowsSlowUseResponse() {
         stream << "{\n"
             << "  \"pipeName\": \"" << narrowAscii(pipeName) << "\",\n"
             << "  \"usageStatePath\": \"" << usageFile << "\",\n"
-            << "  \"vpnProfiles\": [{\"id\": \"test-direct\", \"mode\": \"direct\", "
-            << "\"expectedPublicIps\": [\"203.0.113.10\"], \"enabled\": true}],\n"
+            << "  \"vpnProfiles\": [{\"id\": \"test-direct\", \"mode\": \"direct\", \"enabled\": true}],\n"
             << "  \"userAssignments\": [\n"
             << "    {\n"
             << "      \"users\": [\"" << narrowAscii(PolicyManager::currentUserSid()) << "\"],\n"
@@ -443,8 +442,7 @@ void testUseDeviceFailedResponseIsError() {
         stream << "{\n"
             << "  \"pipeName\": \"" << narrowAscii(pipeName) << "\",\n"
             << "  \"usageStatePath\": \"" << usageFile << "\",\n"
-            << "  \"vpnProfiles\": [{\"id\": \"test-direct\", \"mode\": \"direct\", "
-            << "\"expectedPublicIps\": [\"203.0.113.10\"], \"enabled\": true}],\n"
+            << "  \"vpnProfiles\": [{\"id\": \"test-direct\", \"mode\": \"direct\", \"enabled\": true}],\n"
             << "  \"userAssignments\": [\n"
             << "    {\n"
             << "      \"users\": [\"" << narrowAscii(PolicyManager::currentUserSid()) << "\"],\n"
@@ -1005,11 +1003,10 @@ void testVpnPolicyRoundTrip() {
             << "  \"pipeName\": \"dkclient\",\n"
             << "  \"vpnProfiles\": [\n"
             << "    {\"id\": \"salut\", \"name\": \"Salut\", \"serverAddress\": \"89.108.64.96\", "
-            << "\"tunnelType\": \"L2TP\", \"expectedPublicIps\": [\"89.108.64.96\"], "
+            << "\"tunnelType\": \"L2TP\", "
             << "\"ipCheckUrl\": \"https://api.ipify.org\", \"mode\": \"windowsVpn\", "
             << "\"phonebookScope\": \"allUsers\", \"fullTunnel\": false, \"enabled\": true},\n"
             << "    {\"id\": \"backup\", \"name\": \"Direct network\", \"mode\": \"direct\", "
-            << "\"expectedPublicIps\": [\"203.0.113.21\"], "
             << "\"ipCheckUrl\": \"https://api.ipify.org\", \"enabled\": true}\n"
             << "  ],\n"
             << "  \"userAssignments\": [\n"
@@ -1034,8 +1031,6 @@ void testVpnPolicyRoundTrip() {
             "Windows VPN mode and phonebook scope should be parsed.");
         require(profile.serverAddress == L"89.108.64.96", "VPN server should be parsed.");
         require(profile.enabled, "VPN enabled setting should be parsed.");
-        require(profile.expectedPublicIps.size() == 1 &&
-            profile.expectedPublicIps[0] == L"89.108.64.96", "Expected public IP should be parsed.");
 
         VpnProfile matched;
         require(policy.tryGetVpnProfileForDevice(device, matched), "Token should resolve its VPN profile.");
@@ -1055,20 +1050,22 @@ void testVpnPolicyRoundTrip() {
             "Saving the user token list must preserve its VPN mapping.");
 
         VpnProfile updated = policy.vpnProfiles()[0];
-        updated.expectedPublicIps = { L"203.0.113.10", L"203.0.113.11" };
+        updated.enabled = false;
         policy.upsertVpnProfile(updated);
     }
 
     {
         PolicyManager policy(L"policy-vpn-test.json");
         require(policy.vpnProfiles().size() == 2 &&
-            policy.vpnProfiles()[0].expectedPublicIps.size() == 2,
-            "Updated VPN profile should be written.");
+            !policy.vpnProfiles()[0].enabled,
+            "A VPN profile without an allowed IP list should be written and updated.");
         {
             std::ifstream stream(fileName, std::ios::binary);
             const std::string saved((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
             require(saved.find("fullTunnel") == std::string::npos,
                 "Legacy fullTunnel setting should be removed when VPN policy is saved.");
+            require(saved.find("expectedPublicIps") == std::string::npos,
+                "The removed allowed IP setting should not be written.");
             require(saved.find("\"mode\": \"windowsVpn\"") != std::string::npos &&
                 saved.find("\"mode\": \"direct\"") != std::string::npos &&
                 saved.find("\"phonebookScope\": \"allUsers\"") != std::string::npos,

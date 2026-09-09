@@ -7,9 +7,6 @@
       "id": "direct-office",
       "name": "Без VPN",
       "mode": "direct",
-      "expectedPublicIps": [
-        "203.0.113.10"
-      ],
       "enabled": true
     }
   ],

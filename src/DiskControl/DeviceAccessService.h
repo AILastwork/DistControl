@@ -18,6 +18,7 @@ struct DeviceViewModel {
     std::wstring usedAt;
     std::wstring usageStartedAt;
     std::wstring vpnProfileId;
+    std::wstring vpnProfileDisplay;
     bool allowed = false;
 };
 

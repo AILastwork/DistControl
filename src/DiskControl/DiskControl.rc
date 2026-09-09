@@ -21,27 +21,22 @@ BEGIN
     PUSHBUTTON      "Отмена", IDCANCEL, 212, 116, 58, 16
 END
 
-IDD_VPN_ADMIN DIALOGEX 0, 0, 400, 264
+IDD_VPN_ADMIN DIALOGEX 0, 0, 400, 214
 STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
-CAPTION "DiskControl Admin - VPN/IP для токена"
+CAPTION "DiskControl Admin - VPN для токена"
 FONT 9, "Segoe UI"
 BEGIN
-    LTEXT           "ID настройки:", -1, 10, 13, 105, 10
-    COMBOBOX        IDC_VPN_PROFILE_ID, 122, 9, 266, 90, CBS_DROPDOWN | CBS_AUTOHSCROLL | WS_VSCROLL | WS_TABSTOP
-    AUTORADIOBUTTON "Windows VPN", IDC_VPN_ADMIN_MODE_VPN, 122, 38, 95, 12, WS_GROUP
-    AUTORADIOBUTTON "Без VPN", IDC_VPN_ADMIN_MODE_DIRECT, 224, 38, 82, 12
-    LTEXT           "Профиль Windows:", -1, 10, 65, 105, 10
-    COMBOBOX        IDC_VPN_ADMIN_WINDOWS_PROFILE, 122, 61, 266, 130, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
-    LTEXT           "Сервер / тип:", -1, 10, 91, 105, 10
-    LTEXT           "", IDC_VPN_ADMIN_SERVER, 122, 89, 266, 24
-    LTEXT           "Разрешённые IP:", -1, 10, 123, 105, 10
-    EDITTEXT        IDC_VPN_ADMIN_IPS, 122, 119, 176, 14, ES_AUTOHSCROLL
-    PUSHBUTTON      "Добавить текущий", IDC_VPN_ADMIN_USE_CURRENT_IP, 304, 118, 84, 16
-    AUTOCHECKBOX    "Настройка включена", IDC_VPN_ADMIN_ENABLED, 122, 145, 130, 12
-    LTEXT           "", IDC_VPN_ADMIN_STATE, 10, 168, 378, 24
-    LTEXT           "IP проверяется перед подключением токена и затем каждые 30 секунд.", IDC_VPN_ADMIN_NOTE, 10, 194, 378, 18
-    DEFPUSHBUTTON   "Сохранить и назначить", IDC_VPN_ADMIN_SAVE, 10, 232, 118, 18
-    PUSHBUTTON      "Снять с токена", IDC_VPN_ADMIN_UNASSIGN, 134, 232, 78, 18
-    PUSHBUTTON      "Удалить настройку", IDC_VPN_ADMIN_DELETE, 218, 232, 88, 18
-    PUSHBUTTON      "Закрыть", IDCANCEL, 332, 232, 56, 18
+    AUTORADIOBUTTON "Windows VPN", IDC_VPN_ADMIN_MODE_VPN, 122, 14, 95, 12, WS_GROUP
+    AUTORADIOBUTTON "Без VPN", IDC_VPN_ADMIN_MODE_DIRECT, 224, 14, 82, 12
+    LTEXT           "Профиль Windows:", -1, 10, 41, 105, 10
+    COMBOBOX        IDC_VPN_ADMIN_WINDOWS_PROFILE, 122, 37, 266, 130, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "Сервер / тип:", -1, 10, 67, 105, 10
+    LTEXT           "", IDC_VPN_ADMIN_SERVER, 122, 65, 266, 24
+    AUTOCHECKBOX    "Настройка включена", IDC_VPN_ADMIN_ENABLED, 122, 94, 130, 12
+    LTEXT           "", IDC_VPN_ADMIN_STATE, 10, 117, 378, 24
+    LTEXT           "Перед подключением токена приложение отключит другие VPN Windows и включит выбранный профиль.", IDC_VPN_ADMIN_NOTE, 10, 147, 378, 22
+    DEFPUSHBUTTON   "Сохранить и назначить", IDC_VPN_ADMIN_SAVE, 10, 184, 118, 18
+    PUSHBUTTON      "Снять с токена", IDC_VPN_ADMIN_UNASSIGN, 134, 184, 78, 18
+    PUSHBUTTON      "Удалить настройку", IDC_VPN_ADMIN_DELETE, 218, 184, 88, 18
+    PUSHBUTTON      "Закрыть", IDCANCEL, 332, 184, 56, 18
 END
