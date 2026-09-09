@@ -12,8 +12,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("DiskControl")]
 [assembly: AssemblyProduct("DiskControl")]
 [assembly: AssemblyCopyright("Copyright 2026")]
-[assembly: AssemblyVersion("0.4.5.0")]
-[assembly: AssemblyFileVersion("0.4.5.0")]
+[assembly: AssemblyVersion("0.4.6.0")]
+[assembly: AssemblyFileVersion("0.4.6.0")]
 [assembly: ComVisible(false)]
 
 internal static class UninstallBootstrapper

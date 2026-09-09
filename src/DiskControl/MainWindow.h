@@ -30,6 +30,12 @@ private:
     void openPolicyFile();
     void saveCheckedDevicesForUser();
     void refreshAccessForEditedUser();
+    bool confirmDiscardAdminChanges();
+    void captureAdminAccessState(const std::wstring& userName, const std::wstring& revision);
+    void invalidateAdminAccessState();
+    void markAdminAccessDirty();
+    void updateAdminSaveState();
+    bool wasDeviceAllowedAtLoad(const DeviceViewModel& device) const;
     void loadProfilesAndPolicyFromComputer();
     void loadProfilesForComputer(const std::wstring& computerName);
     void finishComputerLoad();
@@ -110,11 +116,16 @@ private:
     std::vector<DeviceViewModel> allowedDevices_;
     std::vector<DeviceViewModel> availableDevices_;
     std::vector<DeviceViewModel> pendingDevices_;
+    std::vector<DeviceViewModel> baselineAllowedDevices_;
     std::vector<std::wstring> profileUsers_;
     std::map<std::wstring, ULONGLONG> activeDeviceStartTicks_;
     std::map<std::wstring, ULONGLONG> autoReleaseRequestTicks_;
     std::map<std::wstring, ULONGLONG> tokenActionFailureTicks_;
     std::wstring pendingError_;
+    std::wstring pendingPolicyRevision_;
+    std::wstring pendingPolicyUser_;
+    std::wstring loadedPolicyRevision_;
+    std::wstring loadedPolicyUser_;
     std::vector<std::wstring> pendingProfileUsers_;
     std::wstring pendingComputerName_;
     std::wstring pendingComputerPolicyPath_;
@@ -155,6 +166,9 @@ private:
     std::atomic_bool closing_ = false;
     bool populatingList_ = false;
     bool timeoutPromptActive_ = false;
+    bool adminAccessLoaded_ = false;
+    bool adminAccessDirty_ = false;
+    bool suppressAdminUserChange_ = false;
     int sortColumn_ = 0;
     bool sortAscending_ = true;
 #ifdef DISKCONTROL_ADMIN

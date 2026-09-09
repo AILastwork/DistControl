@@ -264,6 +264,22 @@ ParsedDevice toParsedDevice(const DeviceViewModel& device) {
     };
 }
 
+std::wstring endpointListForAudit(const std::vector<DeviceViewModel>& devices) {
+    constexpr size_t maxLoggedEndpoints = 20;
+    std::wstring result;
+    const size_t count = (std::min)(devices.size(), maxLoggedEndpoints);
+    for (size_t index = 0; index < count; ++index) {
+        if (!result.empty()) {
+            result += L"|";
+        }
+        result += devices[index].endpoint;
+    }
+    if (devices.size() > count) {
+        result += L"|... ещё " + std::to_wstring(devices.size() - count);
+    }
+    return result;
+}
+
 bool equalsIgnoreCase(const std::wstring& left, const std::wstring& right);
 
 DeviceViewModel loadCurrentDevice(
@@ -702,18 +718,19 @@ std::wstring disconnectReleasedTokenVpnBestEffort(
 
 std::vector<DeviceViewModel> DeviceAccessService::listVisibleDevices(
     const DeviceListProgressCallback& progress) const {
-    return listDevices(false, L"", progress);
+    return listDevices(false, L"", progress, nullptr);
 }
 
 std::vector<DeviceViewModel> DeviceAccessService::listAllDevices(
     const DeviceListProgressCallback& progress) const {
-    return listDevices(true, L"", progress);
+    return listDevices(true, L"", progress, nullptr);
 }
 
 std::vector<DeviceViewModel> DeviceAccessService::listAllDevicesForUser(
     const std::wstring& userName,
-    const DeviceListProgressCallback& progress) const {
-    return listDevices(true, userName, progress);
+    const DeviceListProgressCallback& progress,
+    std::wstring* policyRevision) const {
+    return listDevices(true, userName, progress, policyRevision);
 }
 
 std::wstring DeviceAccessService::useDevice(
@@ -1102,6 +1119,48 @@ std::wstring DeviceAccessService::setDevicesForUser(const std::vector<DeviceView
     }
 }
 
+std::wstring DeviceAccessService::applyDeviceAccessChanges(
+    const std::vector<DeviceViewModel>& addedDevices,
+    const std::vector<DeviceViewModel>& removedDevices,
+    const std::wstring& userName,
+    const std::wstring& expectedRevision) const {
+    try {
+        std::vector<ParsedDevice> added;
+        std::vector<ParsedDevice> removed;
+        added.reserve(addedDevices.size());
+        removed.reserve(removedDevices.size());
+        for (const DeviceViewModel& device : addedDevices) {
+            added.push_back(toParsedDevice(device));
+        }
+        for (const DeviceViewModel& device : removedDevices) {
+            removed.push_back(toParsedDevice(device));
+        }
+
+        PolicyManager policy;
+        const std::wstring revision = policy.applyDeviceAccessChanges(
+            added, removed, userName, expectedRevision);
+        AuditEvent event;
+        event.action = L"PATCH USER POLICY";
+        event.result = L"OK";
+        event.details = L"user=" + userName + L"; config=" + policy.configPath() +
+            L"; added=" + std::to_wstring(added.size()) +
+            L"; removed=" + std::to_wstring(removed.size()) +
+            L"; addedEndpoints=" + endpointListForAudit(addedDevices) +
+            L"; removedEndpoints=" + endpointListForAudit(removedDevices) +
+            L"; oldRevision=" + expectedRevision + L"; newRevision=" + revision;
+        AuditLogger::log(event);
+        return revision;
+    }
+    catch (const std::exception& error) {
+        AuditEvent event;
+        event.action = L"PATCH USER POLICY";
+        event.result = L"ERROR";
+        event.details = L"user=" + userName + L"; technical=" + widenAscii(error.what());
+        AuditLogger::log(event);
+        throw;
+    }
+}
+
 std::wstring DeviceAccessService::verifyVpnForDevice(const DeviceViewModel& device) const {
     try {
         PolicyManager policy;
@@ -1148,6 +1207,56 @@ std::vector<VpnProfile> DeviceAccessService::vpnProfiles() const {
     return policy.vpnProfiles();
 }
 
+std::wstring DeviceAccessService::saveVpnProfileForDevices(
+    const VpnProfile& profile,
+    const std::vector<DeviceViewModel>& devices,
+    const std::wstring& userName,
+    const std::wstring& expectedRevision) const {
+    std::vector<ParsedDevice> parsed;
+    parsed.reserve(devices.size());
+    for (const DeviceViewModel& device : devices) {
+        parsed.push_back(toParsedDevice(device));
+    }
+
+    PolicyManager policy;
+    const std::wstring revision = policy.saveVpnProfileForDevices(
+        profile, parsed, userName, expectedRevision);
+    AuditEvent event;
+    event.action = L"SAVE AND ASSIGN VPN PROFILE";
+    event.result = L"OK";
+    event.details = L"user=" + userName + L"; config=" + policy.configPath() +
+        L"; id=" + profile.id + L"; name=" + profile.name +
+        L"; tokens=" + std::to_wstring(devices.size()) +
+        L"; endpoints=" + endpointListForAudit(devices) +
+        L"; oldRevision=" + expectedRevision + L"; newRevision=" + revision;
+    AuditLogger::log(event);
+    return revision;
+}
+
+std::wstring DeviceAccessService::clearVpnProfileForDevices(
+    const std::vector<DeviceViewModel>& devices,
+    const std::wstring& userName,
+    const std::wstring& expectedRevision) const {
+    std::vector<ParsedDevice> parsed;
+    parsed.reserve(devices.size());
+    for (const DeviceViewModel& device : devices) {
+        parsed.push_back(toParsedDevice(device));
+    }
+
+    PolicyManager policy;
+    const std::wstring revision = policy.clearVpnProfileForDevices(
+        parsed, userName, expectedRevision);
+    AuditEvent event;
+    event.action = L"CLEAR VPN PROFILE";
+    event.result = L"OK";
+    event.details = L"user=" + userName + L"; config=" + policy.configPath() +
+        L"; tokens=" + std::to_wstring(devices.size()) +
+        L"; endpoints=" + endpointListForAudit(devices) +
+        L"; oldRevision=" + expectedRevision + L"; newRevision=" + revision;
+    AuditLogger::log(event);
+    return revision;
+}
+
 void DeviceAccessService::upsertVpnProfile(const VpnProfile& profile) const {
     PolicyManager policy;
     policy.upsertVpnProfile(profile);
@@ -1168,7 +1277,23 @@ void DeviceAccessService::removeVpnProfile(const std::wstring& profileId) const 
     AuditLogger::log(event);
 }
 
-void DeviceAccessService::updateAccessForUser(std::vector<DeviceViewModel>& devices, const std::wstring& userName) const {
+std::wstring DeviceAccessService::removeVpnProfileChecked(
+    const std::wstring& profileId,
+    const std::wstring& expectedRevision) const {
+    PolicyManager policy;
+    const std::wstring revision = policy.removeVpnProfileChecked(profileId, expectedRevision);
+    AuditEvent event;
+    event.action = L"REMOVE VPN PROFILE";
+    event.result = L"OK";
+    event.details = L"config=" + policy.configPath() + L"; id=" + profileId +
+        L"; oldRevision=" + expectedRevision + L"; newRevision=" + revision;
+    AuditLogger::log(event);
+    return revision;
+}
+
+std::wstring DeviceAccessService::updateAccessForUser(
+    std::vector<DeviceViewModel>& devices,
+    const std::wstring& userName) const {
     PolicyManager policy;
     const std::vector<DeviceRule> rules = policy.rulesForUser(userName);
     for (DeviceViewModel& device : devices) {
@@ -1177,6 +1302,7 @@ void DeviceAccessService::updateAccessForUser(std::vector<DeviceViewModel>& devi
         device.vpnProfileId = vpnProfileIdForDevice(parsed, rules);
         device.vpnProfileDisplay = vpnProfileDisplayName(device.vpnProfileId, policy.vpnProfiles());
     }
+    return policy.revision();
 }
 
 std::wstring DeviceAccessService::currentUserSummary() const {
@@ -1191,13 +1317,17 @@ std::wstring DeviceAccessService::currentPolicyPath() const {
 std::vector<DeviceViewModel> DeviceAccessService::listDevices(
     bool includeDenied,
     const std::wstring& policyUser,
-    const DeviceListProgressCallback& progress) const {
+    const DeviceListProgressCallback& progress,
+    std::wstring* policyRevision) const {
     HumanOperationTrace trace(L"REFRESH");
     trace.step(includeDenied
         ? L"Начато обновление полного списка токенов для админской утилиты."
         : L"Начато обновление разрешённого списка токенов пользователя.");
     try {
         PolicyManager policy;
+        if (policyRevision) {
+            *policyRevision = policy.revision();
+        }
         IpcClient ipc(policy.pipeName());
         UsageStateStore usageState(policy.usageStatePath());
         trace.step(L"Конфигурация прочитана. Pipe=" + policy.pipeName() +

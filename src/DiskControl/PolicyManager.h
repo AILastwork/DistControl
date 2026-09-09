@@ -53,12 +53,29 @@ public:
     void assignDeviceToUser(const ParsedDevice& device, const std::wstring& userName) const;
     void removeDeviceFromUser(const ParsedDevice& device, const std::wstring& userName) const;
     void setDevicesForUser(const std::vector<ParsedDevice>& devices, const std::wstring& userName) const;
+    std::wstring applyDeviceAccessChanges(
+        const std::vector<ParsedDevice>& addedDevices,
+        const std::vector<ParsedDevice>& removedDevices,
+        const std::wstring& userName,
+        const std::wstring& expectedRevision) const;
     void setVpnProfileForDevice(
         const ParsedDevice& device,
         const std::wstring& userName,
         const std::wstring& vpnProfileId) const;
+    std::wstring saveVpnProfileForDevices(
+        const VpnProfile& profile,
+        const std::vector<ParsedDevice>& devices,
+        const std::wstring& userName,
+        const std::wstring& expectedRevision) const;
+    std::wstring clearVpnProfileForDevices(
+        const std::vector<ParsedDevice>& devices,
+        const std::wstring& userName,
+        const std::wstring& expectedRevision) const;
     void upsertVpnProfile(const VpnProfile& profile) const;
     void removeVpnProfile(const std::wstring& profileId) const;
+    std::wstring removeVpnProfileChecked(
+        const std::wstring& profileId,
+        const std::wstring& expectedRevision) const;
     static bool isAllowedByRules(const ParsedDevice& device, const std::vector<DeviceRule>& rules);
     static void setConfigPathOverride(std::wstring configPath);
     static bool ensureEditableConfig(std::wstring configPath);
@@ -77,6 +94,7 @@ public:
     const std::wstring& pipeName() const;
     const std::wstring& usageStatePath() const;
     const std::wstring& configPath() const;
+    const std::wstring& revision() const;
 
 private:
     void load();
@@ -84,6 +102,7 @@ private:
     std::wstring configPath_;
     std::wstring pipeName_ = L"dkclient";
     std::wstring usageStatePath_;
+    std::wstring revision_;
     std::vector<DeviceRule> effectiveRules_;
     std::vector<VpnProfile> vpnProfiles_;
 };

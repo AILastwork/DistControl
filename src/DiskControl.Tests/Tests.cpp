@@ -913,6 +913,51 @@ void testSetDevicesForUser() {
     std::remove(fileName);
 }
 
+void testPolicyPatchPreservesUnseenDevicesAndRejectsStaleRevision() {
+    const char* fileName = "policy-patch-test.json";
+    std::remove(fileName);
+    {
+        std::ofstream stream(fileName, std::ios::binary);
+        stream << "{\n"
+            << "  \"pipeName\": \"dkclient\",\n"
+            << "  \"vpnProfiles\": [],\n"
+            << "  \"userAssignments\": [{\n"
+            << "    \"users\": [\"DOMAIN\\\\petrov\"],\n"
+            << "    \"groups\": [],\n"
+            << "    \"allowedDevices\": [\n"
+            << "      {\"endpoint\": \"HUB-Gr-1.1\", \"nickname\": \"VISIBLE\", \"product\": \"Rutoken\"},\n"
+            << "      {\"endpoint\": \"HUB-Gr-9.9\", \"nickname\": \"OFFLINE\", \"product\": \"Rutoken\", \"vpnProfile\": \"legacy\"}\n"
+            << "    ]\n"
+            << "  }]\n"
+            << "}\n";
+    }
+
+    ParsedDevice visible{ L"HUB-Gr-1.1", L"VISIBLE", L"Rutoken", L"NO ONE" };
+    ParsedDevice offline{ L"HUB-Gr-9.9", L"OFFLINE", L"Rutoken", L"NO ONE" };
+    ParsedDevice added{ L"HUB-Gr-2.2", L"ADDED", L"Rutoken", L"NO ONE" };
+    PolicyManager policy(L"policy-patch-test.json");
+    const std::wstring originalRevision = policy.revision();
+    const std::wstring updatedRevision = policy.applyDeviceAccessChanges(
+        { added }, { visible }, L"petrov", originalRevision);
+
+    require(updatedRevision != originalRevision, "Policy patch should change the revision.");
+    PolicyManager updated(L"policy-patch-test.json");
+    require(!updated.isAllowedForUser(visible, L"petrov"), "Explicitly removed device should be revoked.");
+    require(updated.isAllowedForUser(added, L"petrov"), "Explicitly added device should be allowed.");
+    require(updated.isAllowedForUser(offline, L"petrov"),
+        "A policy-only device missing from the live catalog must be preserved.");
+
+    bool conflictDetected = false;
+    try {
+        policy.applyDeviceAccessChanges({ visible }, {}, L"petrov", originalRevision);
+    }
+    catch (const std::exception& error) {
+        conflictDetected = std::string(error.what()).find("Policy changed since it was loaded") != std::string::npos;
+    }
+    require(conflictDetected, "A stale policy revision must be rejected.");
+    std::remove(fileName);
+}
+
 void testPolicyWriteReportsAccessDenied() {
     const char* fileName = "policy-readonly-test.json";
     std::remove(fileName);
@@ -948,7 +993,7 @@ void testPolicyWriteReportsAccessDenied() {
     require(caught, "Read-only policy write should fail.");
 }
 
-void testRepairInvalidPolicyFile() {
+void testInvalidPolicyFileIsNotOverwritten() {
     const char* fileName = "policy-invalid-test.json";
     std::remove(fileName);
     removeFirstMatch("policy-invalid-test.json.invalid-*.bak");
@@ -958,18 +1003,23 @@ void testRepairInvalidPolicyFile() {
         stream << "{ broken json";
     }
 
-    const bool repaired = PolicyManager::ensureEditableConfig(L"policy-invalid-test.json");
-    require(repaired, "Invalid policy file should be repaired.");
+    bool rejected = false;
+    try {
+        PolicyManager::ensureEditableConfig(L"policy-invalid-test.json");
+    }
+    catch (const std::exception&) {
+        rejected = true;
+    }
+    require(rejected, "Invalid policy file should be rejected.");
 
     {
         std::ifstream stream(fileName, std::ios::binary);
         const std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
-        require(text.find("\"pipeName\"") != std::string::npos, "Repaired policy should contain pipeName.");
-        require(text.find("\"userAssignments\"") != std::string::npos, "Repaired policy should contain userAssignments.");
-        require(text.find("[]") != std::string::npos, "Repaired policy should contain empty assignments.");
+        require(text == "{ broken json", "Invalid policy file must remain unchanged.");
     }
 
-    require(removeFirstMatch("policy-invalid-test.json.invalid-*.bak"), "Invalid policy backup should be created.");
+    require(!removeFirstMatch("policy-invalid-test.json.invalid-*.bak"),
+        "Reading an invalid policy should not create a replacement backup.");
     std::remove(fileName);
 }
 
@@ -1085,6 +1135,54 @@ void testVpnPolicyRoundTrip() {
             "Removing one VPN profile must preserve other token mappings.");
     }
 
+    std::remove(fileName);
+}
+
+void testAtomicVpnAssignmentForMultipleDevices() {
+    const char* fileName = "policy-vpn-atomic-test.json";
+    const std::wstring currentUser = PolicyManager::currentUserSid();
+    std::remove(fileName);
+    {
+        std::ofstream stream(fileName, std::ios::binary);
+        stream << "{\n"
+            << "  \"pipeName\": \"dkclient\",\n"
+            << "  \"vpnProfiles\": [],\n"
+            << "  \"userAssignments\": [{\n"
+            << "    \"users\": [\"" << narrowAscii(currentUser) << "\"],\n"
+            << "    \"groups\": [],\n"
+            << "    \"allowedDevices\": [\n"
+            << "      {\"endpoint\": \"HUB-Gr-1.1\", \"nickname\": \"ONE\", \"product\": \"Rutoken\"},\n"
+            << "      {\"endpoint\": \"HUB-Gr-1.2\", \"nickname\": \"TWO\", \"product\": \"Rutoken\"}\n"
+            << "    ]\n"
+            << "  }]\n"
+            << "}\n";
+    }
+
+    ParsedDevice first{ L"HUB-Gr-1.1", L"ONE", L"Rutoken", L"NO ONE" };
+    ParsedDevice second{ L"HUB-Gr-1.2", L"TWO", L"Rutoken", L"NO ONE" };
+    VpnProfile profile;
+    profile.id = L"windows-user:VPN Test";
+    profile.name = L"VPN Test";
+    profile.serverAddress = L"192.0.2.10";
+
+    PolicyManager policy(L"policy-vpn-atomic-test.json");
+    const std::wstring revision = policy.saveVpnProfileForDevices(
+        profile, { first, second }, currentUser, policy.revision());
+    require(!revision.empty(), "Atomic VPN assignment should return the new revision.");
+
+    PolicyManager updated(L"policy-vpn-atomic-test.json");
+    VpnProfile resolved;
+    require(updated.tryGetVpnProfileForDevice(first, resolved) && resolved.id == profile.id,
+        "The first token should receive the VPN profile.");
+    require(updated.tryGetVpnProfileForDevice(second, resolved) && resolved.id == profile.id,
+        "The second token should receive the VPN profile in the same write.");
+
+    const std::wstring clearedRevision = updated.clearVpnProfileForDevices(
+        { first, second }, currentUser, updated.revision());
+    PolicyManager cleared(L"policy-vpn-atomic-test.json");
+    require(!clearedRevision.empty() && !cleared.tryGetVpnProfileForDevice(first, resolved) &&
+        !cleared.tryGetVpnProfileForDevice(second, resolved),
+        "Bulk VPN unassignment should clear both token mappings.");
     std::remove(fileName);
 }
 
@@ -1211,10 +1309,12 @@ int main() {
         testAssignDeviceToUser();
         testRemoveDeviceFromUser();
         testSetDevicesForUser();
+        testPolicyPatchPreservesUnseenDevicesAndRejectsStaleRevision();
         testPolicyWriteReportsAccessDenied();
-        testRepairInvalidPolicyFile();
+        testInvalidPolicyFileIsNotOverwritten();
         testPolicyUsageStatePath();
         testVpnPolicyRoundTrip();
+        testAtomicVpnAssignmentForMultipleDevices();
         testUnknownVpnMappingFailsClosed();
         testVpnWatchdogRejectsUnmappedToken();
         testNetworkStateReportParsing();

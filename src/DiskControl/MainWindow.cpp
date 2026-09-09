@@ -177,7 +177,7 @@ std::wstring userFriendlyErrorMessage(const char* error) {
         containsAscii(error, "Unexpected JSON") ||
         containsAscii(error, "Config root must be an object") ||
         containsAscii(error, "Config must contain userAssignments array")) {
-        return L"Файл allow.json повреждён или имеет неправильный формат. Откройте админку и сохраните конфиг заново.";
+        return L"Файл allow.json повреждён или имеет неправильный формат. Он не изменялся автоматически; исправьте файл или восстановите его резервную копию.";
     }
     if (containsAscii(error, "Timed out waiting for usage state lock")) {
         return L"Файл таймеров usage.json занят другим компьютером слишком долго. Повторите действие через несколько секунд.";
@@ -187,6 +187,12 @@ std::wstring userFriendlyErrorMessage(const char* error) {
     }
     if (containsAscii(error, "User name is required")) {
         return L"Не указан пользователь. Выберите пользователя и повторите действие.";
+    }
+    if (containsAscii(error, "Policy changed since it was loaded")) {
+        return L"Конфигурация уже изменена другим администратором. Нажмите «Обновить», проверьте изменения и повторите сохранение.";
+    }
+    if (containsAscii(error, "Timed out waiting for policy write lock")) {
+        return L"Другой администратор сейчас сохраняет конфигурацию. Подождите несколько секунд, обновите список и повторите действие.";
     }
     if (containsAscii(error, "Network profile id and Windows profile are required")) {
         return L"Не выбран профиль VPN Windows.";
@@ -280,7 +286,10 @@ INT_PTR CALLBACK vpnCredentialDialogProc(HWND dialog, UINT message, WPARAM wPara
 struct VpnAdminDialogData {
     DeviceAccessService* service = nullptr;
     DeviceViewModel device;
+    std::vector<DeviceViewModel> devices;
     std::wstring userName;
+    std::wstring expectedRevision;
+    std::wstring savedRevision;
     std::vector<VpnProfile> profiles;
     std::vector<WindowsVpnProfileInfo> windowsProfiles;
     NetworkStateSnapshot networkState;
@@ -350,16 +359,39 @@ std::wstring windowsVpnDisplayName(const WindowsVpnProfileInfo& profile) {
 const WindowsVpnProfileInfo* selectedWindowsVpnProfile(HWND dialog, const VpnAdminDialogData& data) {
     const LRESULT selection = SendDlgItemMessageW(
         dialog, IDC_VPN_ADMIN_WINDOWS_PROFILE, CB_GETCURSEL, 0, 0);
-    if (selection == CB_ERR) {
-        return nullptr;
+    if (selection != CB_ERR) {
+        const LRESULT index = SendDlgItemMessageW(
+            dialog, IDC_VPN_ADMIN_WINDOWS_PROFILE, CB_GETITEMDATA,
+            static_cast<WPARAM>(selection), 0);
+        if (index != CB_ERR && static_cast<size_t>(index) < data.windowsProfiles.size()) {
+            return &data.windowsProfiles[static_cast<size_t>(index)];
+        }
     }
-    const LRESULT index = SendDlgItemMessageW(
-        dialog, IDC_VPN_ADMIN_WINDOWS_PROFILE, CB_GETITEMDATA,
-        static_cast<WPARAM>(selection), 0);
-    if (index == CB_ERR || static_cast<size_t>(index) >= data.windowsProfiles.size()) {
-        return nullptr;
+
+    const std::wstring entered = trim(dialogItemText(dialog, IDC_VPN_ADMIN_WINDOWS_PROFILE));
+    for (const WindowsVpnProfileInfo& profile : data.windowsProfiles) {
+        if (CompareStringOrdinal(
+                windowsVpnDisplayName(profile).c_str(), -1, entered.c_str(), -1, TRUE) == CSTR_EQUAL ||
+            CompareStringOrdinal(profile.name.c_str(), -1, entered.c_str(), -1, TRUE) == CSTR_EQUAL) {
+            return &profile;
+        }
     }
-    return &data.windowsProfiles[static_cast<size_t>(index)];
+    return nullptr;
+}
+
+void autoCompleteVpnProfileCombo(HWND dialog) {
+    HWND combo = GetDlgItem(dialog, IDC_VPN_ADMIN_WINDOWS_PROFILE);
+    const std::wstring entered = dialogItemText(dialog, IDC_VPN_ADMIN_WINDOWS_PROFILE);
+    if (entered.empty()) {
+        return;
+    }
+    const LRESULT match = SendMessageW(
+        combo, CB_FINDSTRING, static_cast<WPARAM>(-1), reinterpret_cast<LPARAM>(entered.c_str()));
+    if (match == CB_ERR) {
+        return;
+    }
+    SendMessageW(combo, CB_SETCURSEL, static_cast<WPARAM>(match), 0);
+    SendMessageW(combo, CB_SETEDITSEL, 0, MAKELPARAM(entered.size(), -1));
 }
 
 void updateVpnAdminMode(HWND dialog, const VpnAdminDialogData& data) {
@@ -437,6 +469,15 @@ INT_PTR CALLBACK vpnAdminDialogProc(HWND dialog, UINT message, WPARAM wParam, LP
                 SendMessageW(windowsCombo, CB_SETITEMDATA, item, static_cast<LPARAM>(index));
             }
         }
+        SendMessageW(windowsCombo, CB_SETMINVISIBLE, 20, 0);
+        const size_t tokenCount = data->devices.empty() ? 1 : data->devices.size();
+        if (tokenCount > 1) {
+            const std::wstring title = L"DiskControl Admin - VPN/IP для токенов (" +
+                std::to_wstring(tokenCount) + L")";
+            const std::wstring saveText = L"Сохранить для " + std::to_wstring(tokenCount);
+            SetWindowTextW(dialog, title.c_str());
+            SetDlgItemTextW(dialog, IDC_VPN_ADMIN_SAVE, saveText.c_str());
+        }
         loadVpnAdminProfile(dialog, *data);
         if (data->networkStateFresh) {
             std::wstring state = L"Текущий внешний IP: " + data->networkState.publicIp + L". VPN Windows: ";
@@ -467,6 +508,11 @@ INT_PTR CALLBACK vpnAdminDialogProc(HWND dialog, UINT message, WPARAM wParam, LP
         updateVpnAdminMode(dialog, *data);
         return TRUE;
     }
+    if (LOWORD(wParam) == IDC_VPN_ADMIN_WINDOWS_PROFILE && HIWORD(wParam) == CBN_EDITUPDATE) {
+        autoCompleteVpnProfileCombo(dialog);
+        updateVpnAdminMode(dialog, *data);
+        return TRUE;
+    }
 
     try {
         if (LOWORD(wParam) == IDC_VPN_ADMIN_SAVE) {
@@ -493,14 +539,23 @@ INT_PTR CALLBACK vpnAdminDialogProc(HWND dialog, UINT message, WPARAM wParam, LP
                 profile.phonebookScope = selected->phonebookScope;
             }
             profile.id = automaticVpnProfileId(*data, profile.mode, selected);
-            data->service->upsertVpnProfile(profile);
-            data->service->setVpnProfileForDevice(data->device, data->userName, profile.id);
+            std::vector<DeviceViewModel> devices = data->devices;
+            if (devices.empty()) {
+                devices.push_back(data->device);
+            }
+            data->savedRevision = data->service->saveVpnProfileForDevices(
+                profile, devices, data->userName, data->expectedRevision);
             data->changed = true;
             EndDialog(dialog, IDOK);
             return TRUE;
         }
         if (LOWORD(wParam) == IDC_VPN_ADMIN_UNASSIGN) {
-            data->service->setVpnProfileForDevice(data->device, data->userName, L"");
+            std::vector<DeviceViewModel> devices = data->devices;
+            if (devices.empty()) {
+                devices.push_back(data->device);
+            }
+            data->savedRevision = data->service->clearVpnProfileForDevices(
+                devices, data->userName, data->expectedRevision);
             data->changed = true;
             EndDialog(dialog, IDOK);
             return TRUE;
@@ -520,7 +575,7 @@ INT_PTR CALLBACK vpnAdminDialogProc(HWND dialog, UINT message, WPARAM wParam, LP
             if (MessageBoxW(dialog, question.c_str(), L"DiskControl Admin", MB_YESNO | MB_ICONWARNING) != IDYES) {
                 return TRUE;
             }
-            data->service->removeVpnProfile(id);
+            data->savedRevision = data->service->removeVpnProfileChecked(id, data->expectedRevision);
             data->changed = true;
             EndDialog(dialog, IDOK);
             return TRUE;
@@ -566,7 +621,12 @@ bool containsIgnoreCase(const std::wstring& text, const std::wstring& query) {
 bool matchesSearch(const DeviceViewModel& device, const std::wstring& query) {
     return containsIgnoreCase(device.endpoint, query) ||
         containsIgnoreCase(device.nickname, query) ||
-        containsIgnoreCase(device.product, query);
+        containsIgnoreCase(device.product, query) ||
+        containsIgnoreCase(device.vpnProfileId, query) ||
+        containsIgnoreCase(device.vpnProfileDisplay, query) ||
+        containsIgnoreCase(device.statusText, query) ||
+        containsIgnoreCase(device.usedBy, query) ||
+        containsIgnoreCase(device.usedAt, query);
 }
 
 std::wstring endpointGroupName(const std::wstring& endpoint);
@@ -1309,6 +1369,9 @@ LRESULT MainWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         refreshDevices();
         return 0;
     case WM_CLOSE:
+        if (kAdminBuild && !confirmDiscardAdminChanges()) {
+            return 0;
+        }
         closing_ = true;
         if (tokenActionRunning_) {
             closing_ = false;
@@ -1416,11 +1479,26 @@ LRESULT MainWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         }
         if (kAdminBuild && reinterpret_cast<HWND>(lParam) == assignUserEdit_ &&
             (HIWORD(wParam) == CBN_EDITCHANGE || HIWORD(wParam) == CBN_SELCHANGE)) {
+            if (suppressAdminUserChange_) {
+                return 0;
+            }
+            const std::wstring requestedUser = getControlText(assignUserEdit_);
+            if (adminAccessDirty_ && lowerCopy(requestedUser) != lowerCopy(loadedPolicyUser_)) {
+                if (!confirmDiscardAdminChanges()) {
+                    suppressAdminUserChange_ = true;
+                    SetWindowTextW(assignUserEdit_, loadedPolicyUser_.c_str());
+                    suppressAdminUserChange_ = false;
+                    return 0;
+                }
+            }
             refreshAccessForEditedUser();
             return 0;
         }
         switch (LOWORD(wParam)) {
         case IDC_REFRESH:
+            if (kAdminBuild && !confirmDiscardAdminChanges()) {
+                return 0;
+            }
             refreshDevices();
             return 0;
         case IDC_DIAGNOSTICS:
@@ -1446,9 +1524,15 @@ LRESULT MainWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             removeSelectedDeviceFromUser();
             return 0;
         case IDC_LOAD_COMPUTER:
+            if (!confirmDiscardAdminChanges()) {
+                return 0;
+            }
             loadProfilesAndPolicyFromComputer();
             return 0;
         case IDC_OPEN_POLICY:
+            if (!confirmDiscardAdminChanges()) {
+                return 0;
+            }
             openPolicyFile();
             return 0;
         case IDC_SAVE_POLICY:
@@ -1754,19 +1838,22 @@ void MainWindow::setMainControlsEnabled(bool enabled) {
         EnableWindow(stopButton_, value);
     }
     if (assignUserButton_) {
-        EnableWindow(assignUserButton_, value);
+        EnableWindow(assignUserButton_, value && (!kAdminBuild || adminAccessLoaded_));
     }
     if (removeUserButton_) {
-        EnableWindow(removeUserButton_, value);
+        EnableWindow(removeUserButton_, value && (!kAdminBuild || adminAccessLoaded_));
     }
     if (openPolicyButton_) {
         EnableWindow(openPolicyButton_, value);
     }
     if (savePolicyButton_) {
-        EnableWindow(savePolicyButton_, value);
+        EnableWindow(savePolicyButton_, value && adminAccessLoaded_ && adminAccessDirty_);
     }
     if (computerEdit_) {
         EnableWindow(computerEdit_, value);
+    }
+    if (assignUserEdit_) {
+        EnableWindow(assignUserEdit_, value);
     }
     if (loadComputerButton_) {
         EnableWindow(loadComputerButton_, value);
@@ -1778,7 +1865,7 @@ void MainWindow::setMainControlsEnabled(bool enabled) {
         EnableWindow(clearSearchButton_, value);
     }
     if (vpnButton_) {
-        EnableWindow(vpnButton_, value);
+        EnableWindow(vpnButton_, value && (!kAdminBuild || adminAccessLoaded_));
     }
 }
 
@@ -1870,13 +1957,13 @@ void MainWindow::manageVpnForSelectedDevice() {
 #ifndef DISKCONTROL_ADMIN
     return;
 #else
-    DeviceViewModel* device = selectedDevice();
-    if (!device) {
-        updateStatus(L"Выберите разрешённый токен для настройки VPN.");
+    const std::vector<DeviceViewModel> selected = selectedDevicesFrom(listView_, allowedDevices_);
+    if (selected.empty()) {
+        updateStatus(L"Выберите один или несколько разрешённых токенов для настройки VPN.");
         return;
     }
-    if (!device->allowed) {
-        updateStatus(L"Сначала добавьте токен пользователю и сохраните доступ, затем назначьте VPN.");
+    if (adminAccessDirty_) {
+        updateStatus(L"Сначала сохраните изменения доступа, затем назначьте VPN.");
         return;
     }
     const std::wstring userName = getControlText(assignUserEdit_);
@@ -1884,12 +1971,18 @@ void MainWindow::manageVpnForSelectedDevice() {
         updateStatus(L"Выберите пользователя для назначения VPN.");
         return;
     }
+    if (!adminAccessLoaded_ || lowerCopy(userName) != lowerCopy(loadedPolicyUser_)) {
+        updateStatus(L"Сначала успешно загрузите доступ выбранного пользователя.");
+        return;
+    }
 
     try {
         VpnAdminDialogData data;
         data.service = &service_;
-        data.device = *device;
+        data.device = selected.front();
+        data.devices = selected;
         data.userName = userName;
+        data.expectedRevision = loadedPolicyRevision_;
         data.profiles = service_.vpnProfiles();
         const std::wstring computerName = getControlText(computerEdit_);
         if (isLocalComputerName(computerName) &&
@@ -1901,6 +1994,17 @@ void MainWindow::manageVpnForSelectedDevice() {
                 userPhonebookPathForComputer(computerName, userName),
                 allUsersPhonebookPathForComputer(computerName));
         }
+        std::stable_sort(
+            data.windowsProfiles.begin(), data.windowsProfiles.end(),
+            [](const WindowsVpnProfileInfo& left, const WindowsVpnProfileInfo& right) {
+                const int byName = CompareStringOrdinal(
+                    left.name.c_str(), -1, right.name.c_str(), -1, TRUE);
+                if (byName != CSTR_EQUAL) {
+                    return byName == CSTR_LESS_THAN;
+                }
+                return left.phonebookScope == VpnPhonebookScope::CurrentUser &&
+                    right.phonebookScope == VpnPhonebookScope::AllUsers;
+            });
         const std::wstring statePath = networkStatePathForComputer(computerName, userName);
         std::wstring stateError;
         if (!statePath.empty() && PolicyManager::tryReadNetworkState(
@@ -1915,10 +2019,14 @@ void MainWindow::manageVpnForSelectedDevice() {
         DialogBoxParamW(instance_, MAKEINTRESOURCEW(IDD_VPN_ADMIN), hwnd_, vpnAdminDialogProc,
             reinterpret_cast<LPARAM>(&data));
         if (data.changed) {
-            service_.updateAccessForUser(allDevices_, userName);
+            const std::wstring revision = service_.updateAccessForUser(allDevices_, userName);
+            captureAdminAccessState(userName, revision);
             applyDeviceFilter();
             updateHeaderText();
-            updateStatus(L"Настройка VPN токена сохранена в allow.json выбранного компьютера.");
+            const std::wstring status = selected.size() == 1
+                ? L"Настройка VPN токена сохранена в allow.json выбранного компьютера."
+                : L"Настройка VPN сохранена для токенов: " + std::to_wstring(selected.size()) + L".";
+            updateStatus(status.c_str());
         }
     }
     catch (const std::exception& error) {
@@ -2122,6 +2230,7 @@ void MainWindow::refreshDevices() {
     refreshThread_ = std::thread([this, includeDenied, policyUser]() {
         std::vector<DeviceViewModel> loadedDevices;
         std::wstring loadedError;
+        std::wstring loadedPolicyRevision;
         const DeviceListProgressCallback progress = [this](size_t processed, size_t total) {
             refreshProcessed_.store(processed, std::memory_order_relaxed);
             refreshTotal_.store(total, std::memory_order_relaxed);
@@ -2131,7 +2240,7 @@ void MainWindow::refreshDevices() {
         };
         try {
             loadedDevices = kAdminBuild
-                ? service_.listAllDevicesForUser(policyUser, progress)
+                ? service_.listAllDevicesForUser(policyUser, progress, &loadedPolicyRevision)
                 : (includeDenied ? service_.listAllDevices(progress) : service_.listVisibleDevices(progress));
         }
         catch (const std::exception& error) {
@@ -2143,6 +2252,8 @@ void MainWindow::refreshDevices() {
             std::lock_guard<std::mutex> lock(refreshMutex_);
             pendingDevices_ = std::move(loadedDevices);
             pendingError_ = std::move(loadedError);
+            pendingPolicyRevision_ = std::move(loadedPolicyRevision);
+            pendingPolicyUser_ = policyUser;
         }
 
         if (!closing_) {
@@ -2254,10 +2365,14 @@ void MainWindow::finishRefresh() {
 
     std::vector<DeviceViewModel> loadedDevices;
     std::wstring loadedError;
+    std::wstring loadedPolicyRevision;
+    std::wstring loadedPolicyUser;
     {
         std::lock_guard<std::mutex> lock(refreshMutex_);
         loadedDevices = std::move(pendingDevices_);
         loadedError = std::move(pendingError_);
+        loadedPolicyRevision = std::move(pendingPolicyRevision_);
+        loadedPolicyUser = std::move(pendingPolicyUser_);
         pendingError_.clear();
     }
 
@@ -2278,6 +2393,10 @@ void MainWindow::finishRefresh() {
 
     consecutiveRefreshFailures_ = 0;
     allDevices_ = std::move(loadedDevices);
+
+    if (kAdminBuild) {
+        captureAdminAccessState(loadedPolicyUser, loadedPolicyRevision);
+    }
 
     try {
         updateHeaderText();
@@ -2554,8 +2673,14 @@ void MainWindow::updateHeaderText() {
     try {
         if (kAdminBuild) {
             const std::wstring userName = getControlText(assignUserEdit_);
-            const std::wstring text = L"Конфиг: " + service_.currentPolicyPath() +
+            std::wstring text = L"Конфиг: " + service_.currentPolicyPath() +
                 L" | Пользователь: " + (userName.empty() ? L"(не указан)" : userName);
+            if (adminAccessDirty_) {
+                text += L" | НЕ СОХРАНЕНО";
+            }
+            else if (!adminAccessLoaded_) {
+                text += L" | данные доступа не загружены";
+            }
             SetWindowTextW(userInfoLabel_, text.c_str());
         }
         else {
@@ -2578,19 +2703,128 @@ void MainWindow::refreshAccessForEditedUser() {
     }
 
     updateHeaderText();
+    const std::wstring userName = getControlText(assignUserEdit_);
+    if (userName.empty()) {
+        invalidateAdminAccessState();
+        applyDeviceFilter();
+        updateStatus(L"Введите или выберите пользователя.");
+        return;
+    }
     if (allDevices_.empty()) {
+        invalidateAdminAccessState();
         return;
     }
 
     try {
-        service_.updateAccessForUser(allDevices_, getControlText(assignUserEdit_));
+        const std::wstring revision = service_.updateAccessForUser(allDevices_, userName);
+        captureAdminAccessState(userName, revision);
         applyDeviceFilter();
     }
     catch (const std::exception& error) {
+        invalidateAdminAccessState();
+        applyDeviceFilter();
         const std::wstring status = L"Не удалось прочитать доступ пользователя. " + userFriendlyErrorMessage(error.what());
         logUiError(L"UI POLICY READ ERROR", error.what(), status);
         updateStatus(status.c_str());
     }
+#endif
+}
+
+bool MainWindow::confirmDiscardAdminChanges() {
+#ifndef DISKCONTROL_ADMIN
+    return true;
+#else
+    if (!adminAccessDirty_) {
+        return true;
+    }
+    const int answer = MessageBoxW(
+        hwnd_,
+        L"Есть несохранённые изменения доступа. Отменить их и продолжить?",
+        L"DiskControl Admin",
+        MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2);
+    if (answer != IDYES) {
+        return false;
+    }
+    for (DeviceViewModel& device : allDevices_) {
+        device.allowed = wasDeviceAllowedAtLoad(device);
+    }
+    adminAccessDirty_ = false;
+    applyDeviceFilter();
+    updateHeaderText();
+    updateAdminSaveState();
+    return true;
+#endif
+}
+
+void MainWindow::captureAdminAccessState(
+    const std::wstring& userName,
+    const std::wstring& revision) {
+#ifdef DISKCONTROL_ADMIN
+    loadedPolicyUser_ = userName;
+    loadedPolicyRevision_ = revision;
+    baselineAllowedDevices_.clear();
+    for (const DeviceViewModel& device : allDevices_) {
+        if (device.allowed) {
+            baselineAllowedDevices_.push_back(device);
+        }
+    }
+    adminAccessLoaded_ = true;
+    adminAccessDirty_ = false;
+    updateHeaderText();
+    updateAdminSaveState();
+#else
+    (void)userName;
+    (void)revision;
+#endif
+}
+
+void MainWindow::invalidateAdminAccessState() {
+#ifdef DISKCONTROL_ADMIN
+    loadedPolicyUser_.clear();
+    loadedPolicyRevision_.clear();
+    baselineAllowedDevices_.clear();
+    adminAccessLoaded_ = false;
+    adminAccessDirty_ = false;
+    for (DeviceViewModel& device : allDevices_) {
+        device.allowed = false;
+        device.vpnProfileId.clear();
+        device.vpnProfileDisplay.clear();
+    }
+    updateHeaderText();
+    updateAdminSaveState();
+#endif
+}
+
+void MainWindow::markAdminAccessDirty() {
+#ifdef DISKCONTROL_ADMIN
+    if (!adminAccessLoaded_) {
+        return;
+    }
+    adminAccessDirty_ = true;
+    updateHeaderText();
+    updateAdminSaveState();
+#endif
+}
+
+void MainWindow::updateAdminSaveState() {
+#ifdef DISKCONTROL_ADMIN
+    if (savePolicyButton_) {
+        EnableWindow(savePolicyButton_, adminAccessLoaded_ && adminAccessDirty_ &&
+            !refreshing_ && !computerLoading_);
+    }
+#endif
+}
+
+bool MainWindow::wasDeviceAllowedAtLoad(const DeviceViewModel& device) const {
+#ifdef DISKCONTROL_ADMIN
+    return std::any_of(
+        baselineAllowedDevices_.begin(), baselineAllowedDevices_.end(),
+        [&device](const DeviceViewModel& baseline) {
+            return sameDeviceIdentity(baseline, device);
+        });
+#else
+    (void)device;
+    return false;
 #endif
 }
 
@@ -2606,6 +2840,7 @@ void MainWindow::loadProfilesForComputer(const std::wstring& computerName) {
     const std::wstring currentUser = PolicyManager::currentUserName();
     profileUsers_ = profileUsersFromRoot(profilesRootForComputer(computerName));
 
+    suppressAdminUserChange_ = true;
     ComboBox_ResetContent(assignUserEdit_);
     bool hasCurrentUser = false;
     if (!currentUser.empty()) {
@@ -2625,6 +2860,7 @@ void MainWindow::loadProfilesForComputer(const std::wstring& computerName) {
     else if (!profileUsers_.empty()) {
         SetWindowTextW(assignUserEdit_, profileUsers_.front().c_str());
     }
+    suppressAdminUserChange_ = false;
 #endif
 }
 
@@ -2647,8 +2883,7 @@ void MainWindow::loadProfilesAndPolicyFromComputer() {
     const std::wstring policyParent = policyPath.substr(0, policyPath.find_last_of(L"\\/"));
 
     computerLoading_ = true;
-    EnableWindow(loadComputerButton_, FALSE);
-    EnableWindow(computerEdit_, FALSE);
+    setMainControlsEnabled(false);
     ShowWindow(computerProgressBar_, SW_SHOW);
     SendMessageW(computerProgressBar_, PBM_SETMARQUEE, TRUE, 30);
     updateStatus(L"Подключение к компьютеру и чтение профилей...");
@@ -2672,8 +2907,9 @@ void MainWindow::loadProfilesAndPolicyFromComputer() {
         }
         catch (const std::exception& error) {
             if (errorText.empty()) {
-                errorText = L"Не удалось открыть или подготовить конфиг " + policyPath +
-                    L". Проверьте имя компьютера, сеть, административную шару C$, права администратора и наличие DiskControl на машине.";
+                errorText = L"Не удалось открыть или подготовить конфиг " + policyPath + L". " +
+                    userFriendlyErrorMessage(error.what()) +
+                    L" Проверьте имя компьютера, сеть, административную шару C$, права администратора и наличие DiskControl на машине.";
             }
             logUiError(L"UI REMOTE COMPUTER ERROR", error.what(), errorText);
         }
@@ -2716,8 +2952,7 @@ void MainWindow::finishComputerLoad() {
     computerLoading_ = false;
     SendMessageW(computerProgressBar_, PBM_SETMARQUEE, FALSE, 0);
     ShowWindow(computerProgressBar_, SW_HIDE);
-    EnableWindow(loadComputerButton_, TRUE);
-    EnableWindow(computerEdit_, TRUE);
+    setMainControlsEnabled(true);
 
     if (!errorText.empty()) {
         updateStatus(errorText.c_str());
@@ -2726,8 +2961,10 @@ void MainWindow::finishComputerLoad() {
     }
 
     PolicyManager::setConfigPathOverride(policyPath);
+    invalidateAdminAccessState();
 
     profileUsers_ = std::move(profiles);
+    suppressAdminUserChange_ = true;
     ComboBox_ResetContent(assignUserEdit_);
     const std::wstring currentUser = PolicyManager::currentUserName();
     if (!currentUser.empty()) {
@@ -2745,13 +2982,14 @@ void MainWindow::finishComputerLoad() {
     else if (!profileUsers_.empty()) {
         SetWindowTextW(assignUserEdit_, profileUsers_.front().c_str());
     }
+    suppressAdminUserChange_ = false;
 
     updateHeaderText();
     refreshDevices();
 
     std::wstring status = L"Загружен конфиг: " + policyPath;
     if (repaired) {
-        status += L" (файл был восстановлен как пустой allow.json)";
+        status += L" (создан новый пустой allow.json)";
     }
     if (profileUsers_.empty()) {
         status += L". Профили пользователей не найдены.";
@@ -2801,13 +3039,13 @@ void MainWindow::openPolicyFile() {
     }
 
     PolicyManager::setConfigPathOverride(path);
+    invalidateAdminAccessState();
     updateHeaderText();
     refreshDevices();
 
     if (repaired) {
         MessageBoxW(hwnd_,
-            L"Файл конфигурации был некорректным и заменён пустым allow.json.\n"
-            L"Старое содержимое сохранено рядом в файле *.invalid-*.bak.",
+            L"Файл конфигурации отсутствовал и был создан как пустой allow.json.",
             L"DiskControl Admin",
             MB_ICONWARNING | MB_OK);
     }
@@ -2823,18 +3061,51 @@ void MainWindow::saveCheckedDevicesForUser() {
         updateStatus(L"Введите пользователя для сохранения доступа.");
         return;
     }
+    if (!adminAccessLoaded_ || lowerCopy(userName) != lowerCopy(loadedPolicyUser_)) {
+        updateStatus(L"Доступ этого пользователя не был успешно загружен. Нажмите «Обновить» и повторите действие.");
+        return;
+    }
 
-    std::vector<DeviceViewModel> checkedDevices;
+    std::vector<DeviceViewModel> addedDevices;
+    std::vector<DeviceViewModel> removedDevices;
     for (const DeviceViewModel& device : allDevices_) {
-        if (device.allowed) {
-            checkedDevices.push_back(device);
+        const bool wasAllowed = wasDeviceAllowedAtLoad(device);
+        if (device.allowed && !wasAllowed) {
+            addedDevices.push_back(device);
+        }
+        else if (!device.allowed && wasAllowed) {
+            removedDevices.push_back(device);
         }
     }
 
+    if (addedDevices.empty() && removedDevices.empty()) {
+        adminAccessDirty_ = false;
+        updateHeaderText();
+        updateAdminSaveState();
+        updateStatus(L"Изменений доступа нет.");
+        return;
+    }
+
+    if (!baselineAllowedDevices_.empty() &&
+        removedDevices.size() == baselineAllowedDevices_.size() &&
+        MessageBoxW(
+            hwnd_,
+            L"Будет снят доступ ко всем отображаемым токенам пользователя. Продолжить?",
+            L"DiskControl Admin",
+            MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) {
+        updateStatus(L"Сохранение отменено.");
+        return;
+    }
+
     try {
-        const std::wstring status = service_.setDevicesForUser(checkedDevices, userName);
-        service_.updateAccessForUser(allDevices_, userName);
+        const std::wstring newRevision = service_.applyDeviceAccessChanges(
+            addedDevices, removedDevices, userName, loadedPolicyRevision_);
+        const std::wstring verifiedRevision = service_.updateAccessForUser(allDevices_, userName);
+        captureAdminAccessState(userName, verifiedRevision.empty() ? newRevision : verifiedRevision);
         applyDeviceFilter();
+        const std::wstring status = L"Доступ сохранён: добавлено " +
+            std::to_wstring(addedDevices.size()) + L", убрано " +
+            std::to_wstring(removedDevices.size()) + L". Остальные записи не изменялись.";
         updateStatus(status.c_str());
     }
     catch (const std::exception& error) {
@@ -2893,6 +3164,10 @@ void MainWindow::assignSelectedDeviceToUser() {
         updateStatus(L"Введите пользователя для файла политики.");
         return;
     }
+    if (kAdminBuild && (!adminAccessLoaded_ || lowerCopy(userName) != lowerCopy(loadedPolicyUser_))) {
+        updateStatus(L"Сначала успешно загрузите доступ выбранного пользователя.");
+        return;
+    }
 
     for (const DeviceViewModel& selectedDevice : selected) {
         for (DeviceViewModel& device : allDevices_) {
@@ -2904,6 +3179,7 @@ void MainWindow::assignSelectedDeviceToUser() {
     }
 
     applyDeviceFilter();
+    markAdminAccessDirty();
     const std::wstring status = L"Добавлено в доступ пользователя " + userName +
         L": " + std::to_wstring(selected.size()) + L". Нажмите «Сохранить доступ».";
     updateStatus(status.c_str());
@@ -2923,6 +3199,10 @@ void MainWindow::removeSelectedDeviceFromUser() {
         updateStatus(L"Введите пользователя для изменения доступа.");
         return;
     }
+    if (kAdminBuild && (!adminAccessLoaded_ || lowerCopy(userName) != lowerCopy(loadedPolicyUser_))) {
+        updateStatus(L"Сначала успешно загрузите доступ выбранного пользователя.");
+        return;
+    }
 
     for (const DeviceViewModel& selectedDevice : selected) {
         for (DeviceViewModel& device : allDevices_) {
@@ -2934,6 +3214,7 @@ void MainWindow::removeSelectedDeviceFromUser() {
     }
 
     applyDeviceFilter();
+    markAdminAccessDirty();
     const std::wstring status = L"Убрано из доступа пользователя " + userName +
         L": " + std::to_wstring(selected.size()) + L". Нажмите «Сохранить доступ».";
     updateStatus(status.c_str());
