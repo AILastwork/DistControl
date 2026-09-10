@@ -1,6 +1,12 @@
 #Requires -Version 5.1
 [CmdletBinding()]
 param(
+    [string]$InstallDir,
+    [Alias("DataDir")]
+    [string]$ProgramDataDir,
+    [string]$TargetUserSid,
+    [string]$UserStartMenuDir,
+    [string]$UserDesktopDir,
     [switch]$RemoveData
 )
 
@@ -23,6 +29,19 @@ if (-not (Test-Path -LiteralPath $UninstallScript)) {
 
 $uninstallParams = @{}
 $uninstallArgs = @()
+foreach ($entry in @(
+    @{ Name = "InstallDir"; Value = $InstallDir },
+    @{ Name = "ProgramDataDir"; Value = $ProgramDataDir },
+    @{ Name = "TargetUserSid"; Value = $TargetUserSid },
+    @{ Name = "UserStartMenuDir"; Value = $UserStartMenuDir },
+    @{ Name = "UserDesktopDir"; Value = $UserDesktopDir }
+)) {
+    if (-not [string]::IsNullOrWhiteSpace($entry.Value)) {
+        $uninstallParams[$entry.Name] = $entry.Value
+        $uninstallArgs += "-$($entry.Name)"
+        $uninstallArgs += (Quote-Argument $entry.Value)
+    }
+}
 if ($RemoveData) {
     $uninstallParams.RemoveData = $true
     $uninstallArgs += "-RemoveData"

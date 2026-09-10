@@ -60,10 +60,10 @@ constexpr int kMessageBoxTimeout = 32000;
 
 #ifdef DISKCONTROL_ADMIN
 constexpr bool kAdminBuild = true;
-constexpr const wchar_t* kWindowTitle = L"DiskControl Admin";
+constexpr const wchar_t* kWindowTitle = L"DistControl Admin";
 #else
 constexpr bool kAdminBuild = false;
-constexpr const wchar_t* kWindowTitle = L"DiskControl";
+constexpr const wchar_t* kWindowTitle = L"DistControl";
 #endif
 
 HMENU controlId(int id) {
@@ -87,7 +87,7 @@ std::wstring userFriendlyErrorMessage(const char* error) {
         return L"VPN-профиль для этого токена отключён администратором. Токен не подключён.";
     }
     if (containsAscii(error, "Network profile is not assigned to the token")) {
-        return L"Для токена не выбран VPN Windows или режим «Без VPN». Обратитесь к администратору DiskControl.";
+        return L"Для токена не выбран VPN Windows или режим «Без VPN». Обратитесь к администратору DistControl.";
     }
     if (containsAscii(error, "VPN profile mapping references an unknown profile")) {
         return L"Токену назначен VPN-профиль, которого нет в конфигурации. Токен не подключён; исправьте назначение в админке.";
@@ -138,10 +138,10 @@ std::wstring userFriendlyErrorMessage(const char* error) {
         return L"Не удалось подключить VPN. Проверьте профиль Windows, логин, пароль и доступность VPN-сервера.";
     }
     if (containsAscii(error, "Device is not allowed by policy")) {
-        return L"Этот токен не разрешён текущему пользователю. Обратитесь к администратору DiskControl.";
+        return L"Этот токен не разрешён текущему пользователю. Обратитесь к администратору DistControl.";
     }
     if (containsAscii(error, "The token is not connected by the current user")) {
-        return L"Токен нельзя отключить из DiskControl: сейчас он не закреплён за вашим пользователем.";
+        return L"Токен нельзя отключить из DistControl: сейчас он не закреплён за вашим пользователем.";
     }
     if (containsAscii(error, "The token is occupied by another user")) {
         return L"Токен уже занят другим пользователем. Обновите список, чтобы увидеть актуального владельца.";
@@ -150,7 +150,7 @@ std::wstring userFriendlyErrorMessage(const char* error) {
         return L"Сначала отключите другой активный токен: он использует иной VPN-профиль.";
     }
     if (containsAscii(error, "Invalid address")) {
-        return L"Служба DistKontrolUSB видит токен в списке, но пока не принимает его адрес после изменения сети. DiskControl уже выполнил повторные попытки; проверьте доступность концентратора и повторите подключение.";
+        return L"Служба DistKontrolUSB видит токен в списке, но пока не принимает его адрес после изменения сети. DistControl уже выполнил повторные попытки; проверьте доступность концентратора и повторите подключение.";
     }
     if (containsAscii(error, "DistKontrol returned FAILED") || containsAscii(error, "DistKontrol returned ERROR")) {
         return L"DistKontrolUSB отказал в операции. Обычно это значит, что токен уже занят, концентратор недоступен или служба dkclient работает с ошибкой.";
@@ -171,7 +171,7 @@ std::wstring userFriendlyErrorMessage(const char* error) {
     }
     if (containsAscii(error, "Config parent path is not a directory") ||
         containsAscii(error, "Cannot create config directory")) {
-        return L"Не удалось подготовить папку с конфигурацией DiskControl. Проверьте права на C:\\ProgramData\\DiskControl.";
+        return L"Не удалось подготовить папку с конфигурацией DistControl. Проверьте права на %LOCALAPPDATA%\\DistControl.";
     }
     if (containsAscii(error, "Invalid JSON") ||
         containsAscii(error, "Unexpected JSON") ||
@@ -197,7 +197,7 @@ std::wstring userFriendlyErrorMessage(const char* error) {
     if (containsAscii(error, "Network profile id and Windows profile are required")) {
         return L"Не выбран профиль VPN Windows.";
     }
-    return L"Произошла ошибка DiskControl. Подробности записаны в журнал C:\\ProgramData\\DiskControl\\logs.";
+    return L"Произошла ошибка DistControl. Подробности записаны в журнал %LOCALAPPDATA%\\DistControl\\logs.";
 }
 
 void logUiError(const std::wstring& action, const char* technicalError, const std::wstring& userMessage) {
@@ -270,7 +270,7 @@ INT_PTR CALLBACK vpnCredentialDialogProc(HWND dialog, UINT message, WPARAM wPara
         data->userName = trim(dialogItemText(dialog, IDC_VPN_USER_NAME));
         data->password = dialogItemText(dialog, IDC_VPN_PASSWORD);
         if (data->userName.empty() || data->password.empty()) {
-            MessageBoxW(dialog, L"Введите логин и пароль VPN.", L"DiskControl", MB_OK | MB_ICONWARNING);
+            MessageBoxW(dialog, L"Введите логин и пароль VPN.", L"DistControl", MB_OK | MB_ICONWARNING);
             return TRUE;
         }
         EndDialog(dialog, IDOK);
@@ -472,7 +472,7 @@ INT_PTR CALLBACK vpnAdminDialogProc(HWND dialog, UINT message, WPARAM wParam, LP
         SendMessageW(windowsCombo, CB_SETMINVISIBLE, 20, 0);
         const size_t tokenCount = data->devices.empty() ? 1 : data->devices.size();
         if (tokenCount > 1) {
-            const std::wstring title = L"DiskControl Admin - VPN/IP для токенов (" +
+            const std::wstring title = L"DistControl Admin - VPN/IP для токенов (" +
                 std::to_wstring(tokenCount) + L")";
             const std::wstring saveText = L"Сохранить для " + std::to_wstring(tokenCount);
             SetWindowTextW(dialog, title.c_str());
@@ -530,7 +530,7 @@ INT_PTR CALLBACK vpnAdminDialogProc(HWND dialog, UINT message, WPARAM wParam, LP
                 selected = selectedWindowsVpnProfile(dialog, *data);
                 if (!selected) {
                     MessageBoxW(dialog, L"Выберите существующий профиль VPN Windows.",
-                        L"DiskControl Admin", MB_OK | MB_ICONWARNING);
+                        L"DistControl Admin", MB_OK | MB_ICONWARNING);
                     return TRUE;
                 }
                 profile.name = selected->name;
@@ -564,7 +564,7 @@ INT_PTR CALLBACK vpnAdminDialogProc(HWND dialog, UINT message, WPARAM wParam, LP
             const std::wstring id = data->device.vpnProfileId;
             if (id.empty()) {
                 MessageBoxW(dialog, L"У токена нет назначенной сетевой настройки.",
-                    L"DiskControl Admin", MB_OK | MB_ICONWARNING);
+                    L"DistControl Admin", MB_OK | MB_ICONWARNING);
                 return TRUE;
             }
             const std::wstring display = data->device.vpnProfileDisplay.empty()
@@ -572,7 +572,7 @@ INT_PTR CALLBACK vpnAdminDialogProc(HWND dialog, UINT message, WPARAM wParam, LP
                 : data->device.vpnProfileDisplay;
             const std::wstring question = L"Удалить сетевую настройку «" + display +
                 L"» и снять её со всех токенов в этом allow.json?";
-            if (MessageBoxW(dialog, question.c_str(), L"DiskControl Admin", MB_YESNO | MB_ICONWARNING) != IDYES) {
+            if (MessageBoxW(dialog, question.c_str(), L"DistControl Admin", MB_YESNO | MB_ICONWARNING) != IDYES) {
                 return TRUE;
             }
             data->savedRevision = data->service->removeVpnProfileChecked(id, data->expectedRevision);
@@ -585,7 +585,7 @@ INT_PTR CALLBACK vpnAdminDialogProc(HWND dialog, UINT message, WPARAM wParam, LP
         const std::wstring errorMessage = L"Не удалось сохранить сетевую настройку. " +
             userFriendlyErrorMessage(error.what());
         logUiError(L"UI VPN ADMIN SAVE ERROR", error.what(), errorMessage);
-        MessageBoxW(dialog, errorMessage.c_str(), L"DiskControl Admin", MB_OK | MB_ICONERROR);
+        MessageBoxW(dialog, errorMessage.c_str(), L"DistControl Admin", MB_OK | MB_ICONERROR);
         return TRUE;
     }
 
@@ -852,12 +852,14 @@ std::wstring profilesRootForComputer(const std::wstring& computerName) {
     return L"\\\\" + trimmed + L"\\c$\\Users";
 }
 
-std::wstring policyPathForComputer(const std::wstring& computerName) {
-    const std::wstring trimmed = trim(computerName);
-    if (isLocalComputerName(trimmed)) {
-        return L"C:\\ProgramData\\DiskControl\\allow.json";
+std::wstring localPolicyPath() {
+    wchar_t buffer[32768]{};
+    const DWORD length = GetEnvironmentVariableW(
+        L"LOCALAPPDATA", buffer, static_cast<DWORD>(std::size(buffer)));
+    if (length == 0 || length >= std::size(buffer)) {
+        return {};
     }
-    return L"\\\\" + trimmed + L"\\c$\\ProgramData\\DiskControl\\allow.json";
+    return std::wstring(buffer) + L"\\DistControl\\allow.json";
 }
 
 std::wstring profileFolderName(const std::wstring& userName) {
@@ -892,7 +894,7 @@ std::wstring networkStatePathForComputer(
         return {};
     }
     return profilesRootForComputer(computerName) + L"\\" + folder +
-        L"\\AppData\\Local\\DiskControl\\network-state.json";
+        L"\\AppData\\Local\\DistControl\\state\\network-state.json";
 }
 
 std::uint64_t currentFileTimeTicks() {
@@ -942,7 +944,7 @@ std::wstring humanPathError(const std::wstring& path, DWORD error) {
         break;
     case ERROR_PATH_NOT_FOUND:
     case ERROR_FILE_NOT_FOUND:
-        reason = L"путь не найден. Возможно, на этом компьютере ещё не установлен DiskControl или нет папки профилей";
+        reason = L"путь не найден. Возможно, на этом компьютере ещё не установлен DistControl или нет папки профилей";
         break;
     case ERROR_LOGON_FAILURE:
         reason = L"Windows не приняла учётные данные для доступа к удалённому компьютеру";
@@ -998,6 +1000,30 @@ std::vector<std::wstring> profileUsersFromRoot(const std::wstring& root) {
             return lowerCopy(left) < lowerCopy(right);
         });
     return users;
+}
+
+std::vector<std::wstring> policyPathsForComputer(
+    const std::wstring& computerName,
+    const std::vector<std::wstring>& profileUsers) {
+    if (isLocalComputerName(computerName)) {
+        const std::wstring path = localPolicyPath();
+        return path.empty() ? std::vector<std::wstring>{} : std::vector<std::wstring>{ path };
+    }
+
+    std::vector<std::wstring> paths;
+    const std::wstring profilesRoot = profilesRootForComputer(computerName);
+    for (const std::wstring& userName : profileUsers) {
+        const std::wstring folder = profileFolderName(userName);
+        if (folder.empty()) {
+            continue;
+        }
+        const std::wstring path = profilesRoot + L"\\" + folder +
+            L"\\AppData\\Local\\DistControl\\allow.json";
+        if (GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            paths.push_back(path);
+        }
+    }
+    return paths;
 }
 
 std::wstring formatDuration(ULONGLONG elapsedMs) {
@@ -1316,7 +1342,7 @@ bool MainWindow::create(HINSTANCE instance, int showCommand) {
     controls.dwICC = ICC_LISTVIEW_CLASSES | ICC_TREEVIEW_CLASSES | ICC_PROGRESS_CLASS;
     InitCommonControlsEx(&controls);
 
-    const wchar_t* className = L"DiskControlMainWindow";
+    const wchar_t* className = L"DistControlMainWindow";
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = MainWindow::windowProc;
@@ -2740,7 +2766,7 @@ bool MainWindow::confirmDiscardAdminChanges() {
     const int answer = MessageBoxW(
         hwnd_,
         L"Есть несохранённые изменения доступа. Отменить их и продолжить?",
-        L"DiskControl Admin",
+        L"DistControl Admin",
         MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2);
     if (answer != IDYES) {
         return false;
@@ -2878,9 +2904,7 @@ void MainWindow::loadProfilesAndPolicyFromComputer() {
     }
 
     const std::wstring computerName = getControlText(computerEdit_);
-    const std::wstring policyPath = policyPathForComputer(computerName);
     const std::wstring profilesRoot = profilesRootForComputer(computerName);
-    const std::wstring policyParent = policyPath.substr(0, policyPath.find_last_of(L"\\/"));
 
     computerLoading_ = true;
     setMainControlsEnabled(false);
@@ -2888,8 +2912,9 @@ void MainWindow::loadProfilesAndPolicyFromComputer() {
     SendMessageW(computerProgressBar_, PBM_SETMARQUEE, TRUE, 30);
     updateStatus(L"Подключение к компьютеру и чтение профилей...");
 
-    computerLoadThread_ = std::thread([this, computerName, policyPath, profilesRoot, policyParent]() {
+    computerLoadThread_ = std::thread([this, computerName, profilesRoot]() {
         std::vector<std::wstring> profiles;
+        std::wstring policyPath;
         std::wstring errorText;
         bool repaired = false;
 
@@ -2897,19 +2922,27 @@ void MainWindow::loadProfilesAndPolicyFromComputer() {
             if (!ensureReadablePath(profilesRoot, errorText)) {
                 throw std::runtime_error("profiles");
             }
-            if (!ensureReadablePath(policyParent, errorText)) {
-                errorText += L"\n\nПроверьте, установлен ли DiskControl на выбранном компьютере.";
-                throw std::runtime_error("policy parent");
-            }
 
             profiles = profileUsersFromRoot(profilesRoot);
+            const std::vector<std::wstring> policyPaths = policyPathsForComputer(computerName, profiles);
+            if (policyPaths.empty()) {
+                errorText = L"Не найден файл %LOCALAPPDATA%\\DistControl\\allow.json "
+                    L"ни в одном пользовательском профиле выбранного компьютера.";
+                throw std::runtime_error("policy parent");
+            }
+            if (policyPaths.size() > 1) {
+                errorText = L"На выбранном компьютере найдено несколько конфигураций DistControl. "
+                    L"Удалите устаревшие копии или откройте нужный allow.json кнопкой «Открыть конфиг».";
+                throw std::runtime_error("multiple policies");
+            }
+            policyPath = policyPaths.front();
             repaired = PolicyManager::ensureEditableConfig(policyPath);
         }
         catch (const std::exception& error) {
             if (errorText.empty()) {
                 errorText = L"Не удалось открыть или подготовить конфиг " + policyPath + L". " +
                     userFriendlyErrorMessage(error.what()) +
-                    L" Проверьте имя компьютера, сеть, административную шару C$, права администратора и наличие DiskControl на машине.";
+                    L" Проверьте имя компьютера, сеть, административную шару C$, права администратора и наличие DistControl на машине.";
             }
             logUiError(L"UI REMOTE COMPUTER ERROR", error.what(), errorText);
         }
@@ -2956,7 +2989,7 @@ void MainWindow::finishComputerLoad() {
 
     if (!errorText.empty()) {
         updateStatus(errorText.c_str());
-        MessageBoxW(hwnd_, errorText.c_str(), L"DiskControl Admin", MB_ICONERROR | MB_OK);
+        MessageBoxW(hwnd_, errorText.c_str(), L"DistControl Admin", MB_ICONERROR | MB_OK);
         return;
     }
 
@@ -3034,7 +3067,7 @@ void MainWindow::openPolicyFile() {
         const std::wstring status = L"Не удалось подготовить конфиг. " + userFriendlyErrorMessage(error.what());
         logUiError(L"UI OPEN POLICY ERROR", error.what(), status);
         updateStatus(status.c_str());
-        MessageBoxW(hwnd_, status.c_str(), L"DiskControl Admin", MB_ICONERROR | MB_OK);
+        MessageBoxW(hwnd_, status.c_str(), L"DistControl Admin", MB_ICONERROR | MB_OK);
         return;
     }
 
@@ -3046,7 +3079,7 @@ void MainWindow::openPolicyFile() {
     if (repaired) {
         MessageBoxW(hwnd_,
             L"Файл конфигурации отсутствовал и был создан как пустой allow.json.",
-            L"DiskControl Admin",
+            L"DistControl Admin",
             MB_ICONWARNING | MB_OK);
     }
 }
@@ -3091,7 +3124,7 @@ void MainWindow::saveCheckedDevicesForUser() {
         MessageBoxW(
             hwnd_,
             L"Будет снят доступ ко всем отображаемым токенам пользователя. Продолжить?",
-            L"DiskControl Admin",
+            L"DistControl Admin",
             MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) {
         updateStatus(L"Сохранение отменено.");
         return;
@@ -3469,7 +3502,7 @@ void MainWindow::checkActiveDeviceTimeouts() {
             L"Продолжить работу с токеном?\n"
             L"Если ответа не будет 1 минуту, токен будет автоматически освобождён.";
         timeoutPromptActive_ = true;
-        const int answer = timedMessageBox(hwnd_, text, L"DiskControl", MB_YESNO | MB_ICONQUESTION | MB_TOPMOST, kTokenPromptTimeoutMs);
+        const int answer = timedMessageBox(hwnd_, text, L"DistControl", MB_YESNO | MB_ICONQUESTION | MB_TOPMOST, kTokenPromptTimeoutMs);
         timeoutPromptActive_ = false;
 
         if (closing_) {

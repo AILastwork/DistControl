@@ -7,24 +7,28 @@ using System.Text;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: AssemblyTitle("DiskControl Uninstall")]
-[assembly: AssemblyDescription("DiskControl Windows uninstaller")]
-[assembly: AssemblyCompany("DiskControl")]
-[assembly: AssemblyProduct("DiskControl")]
+[assembly: AssemblyTitle("DistControl Uninstall")]
+[assembly: AssemblyDescription("DistControl Windows uninstaller")]
+[assembly: AssemblyCompany("DistControl")]
+[assembly: AssemblyProduct("DistControl")]
 [assembly: AssemblyCopyright("Copyright 2026")]
-[assembly: AssemblyVersion("0.4.6.0")]
-[assembly: AssemblyFileVersion("0.4.6.0")]
+[assembly: AssemblyVersion("0.6.0.0")]
+[assembly: AssemblyFileVersion("0.6.0.0")]
 [assembly: ComVisible(false)]
 
 internal static class UninstallBootstrapper
 {
-    private const string ProductName = "DiskControl";
+    private const string ProductName = "DistControl";
 
     private sealed class Options
     {
         public bool FromTemp;
         public bool RemoveData;
         public string InstallDir;
+        public string DataDir;
+        public string UserSid;
+        public string StartMenuDir;
+        public string DesktopDir;
     }
 
     private sealed class PowerShellResult
@@ -43,15 +47,16 @@ internal static class UninstallBootstrapper
             Options options = ParseOptions(args);
             string baseDir = AppDomain.CurrentDomain.BaseDirectory;
             string installDir = ResolveInstallDirectory(baseDir, options.InstallDir);
+            options.InstallDir = installDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
 
             if (!options.FromTemp && IsPathInside(baseDir, installDir))
             {
-                RelaunchFromTemp(installDir, options.RemoveData);
+                RelaunchFromTemp(options);
                 return 0;
             }
 
             string launcher = FindLauncher(baseDir, installDir);
-            PowerShellResult result = RunPowerShell(launcher, SafeWorkingDirectory(), options.RemoveData);
+            PowerShellResult result = RunPowerShell(launcher, SafeWorkingDirectory(), options);
             if (result.ExitCode != 0)
             {
                 MessageBox.Show(
@@ -63,7 +68,7 @@ internal static class UninstallBootstrapper
             }
 
             MessageBox.Show(
-                "DiskControl удалён.",
+                "DistControl удалён.",
                 ProductName + " Uninstall",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
@@ -72,7 +77,7 @@ internal static class UninstallBootstrapper
         catch (Exception ex)
         {
             MessageBox.Show(
-                "Не удалось завершить удаление DiskControl.\r\n\r\n" +
+                "Не удалось завершить удаление DistControl.\r\n\r\n" +
                 "Запустите удаление от имени администратора. Если ошибка повторится, отправьте администратору текст ниже.\r\n\r\n" +
                 "Техническая причина: " + ex.Message,
                 ProductName + " Uninstall",
@@ -104,6 +109,22 @@ internal static class UninstallBootstrapper
             {
                 options.InstallDir = arg.Substring("--install-dir=".Length);
             }
+            else if ((EqualsArg(arg, "--data-dir") || EqualsArg(arg, "-DataDir")) && i + 1 < args.Length)
+            {
+                options.DataDir = args[++i];
+            }
+            else if ((EqualsArg(arg, "--user-sid") || EqualsArg(arg, "-TargetUserSid")) && i + 1 < args.Length)
+            {
+                options.UserSid = args[++i];
+            }
+            else if ((EqualsArg(arg, "--start-menu-dir") || EqualsArg(arg, "-UserStartMenuDir")) && i + 1 < args.Length)
+            {
+                options.StartMenuDir = args[++i];
+            }
+            else if ((EqualsArg(arg, "--desktop-dir") || EqualsArg(arg, "-UserDesktopDir")) && i + 1 < args.Length)
+            {
+                options.DesktopDir = args[++i];
+            }
         }
 
         return options;
@@ -132,13 +153,13 @@ internal static class UninstallBootstrapper
             return FullPathWithSlash(baseDir);
         }
 
-        string programFilesDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "DiskControl");
-        if (Directory.Exists(programFilesDir))
+        string userInstallDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "DistControl");
+        if (Directory.Exists(userInstallDir))
         {
-            return FullPathWithSlash(programFilesDir);
+            return FullPathWithSlash(userInstallDir);
         }
 
-        string programFilesX86Dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "DiskControl");
+        string programFilesX86Dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "DistControl");
         if (Directory.Exists(programFilesX86Dir))
         {
             return FullPathWithSlash(programFilesX86Dir);
@@ -174,19 +195,23 @@ internal static class UninstallBootstrapper
         return fullCandidate.StartsWith(fullParent, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static void RelaunchFromTemp(string installDir, bool removeData)
+    private static void RelaunchFromTemp(Options options)
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "DiskControl-Uninstall-" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Path.GetTempPath(), "DistControl-Uninstall-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
 
         string selfPath = Process.GetCurrentProcess().MainModule.FileName;
-        string tempExe = Path.Combine(tempDir, "Uninstall-DiskControl.exe");
+        string tempExe = Path.Combine(tempDir, "Uninstall-DistControl.exe");
         File.Copy(selfPath, tempExe, true);
 
         StringBuilder arguments = new StringBuilder();
         arguments.Append("--from-temp --install-dir ");
-        arguments.Append(Quote(installDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)));
-        if (removeData)
+        arguments.Append(Quote(options.InstallDir));
+        AppendOption(arguments, "--data-dir", options.DataDir);
+        AppendOption(arguments, "--user-sid", options.UserSid);
+        AppendOption(arguments, "--start-menu-dir", options.StartMenuDir);
+        AppendOption(arguments, "--desktop-dir", options.DesktopDir);
+        if (options.RemoveData)
         {
             arguments.Append(" --remove-data");
         }
@@ -202,16 +227,28 @@ internal static class UninstallBootstrapper
         Process.Start(startInfo);
     }
 
+    private static void AppendOption(StringBuilder arguments, string name, string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return;
+        }
+        arguments.Append(' ');
+        arguments.Append(name);
+        arguments.Append(' ');
+        arguments.Append(Quote(value));
+    }
+
     private static string FindLauncher(string baseDir, string installDir)
     {
         string[] candidates = new string[]
         {
             Path.Combine(installDir ?? string.Empty, "installer", "Launch-Uninstall-DiskControl.ps1"),
             Path.Combine(baseDir, "installer", "Launch-Uninstall-DiskControl.ps1"),
-            Path.Combine(baseDir, "DiskControl-Installer", "installer", "Launch-Uninstall-DiskControl.ps1"),
+            Path.Combine(baseDir, "DistControl-Installer", "installer", "Launch-Uninstall-DiskControl.ps1"),
             Path.Combine(ReadInstallLocationFromRegistry(), "installer", "Launch-Uninstall-DiskControl.ps1"),
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "DiskControl", "installer", "Launch-Uninstall-DiskControl.ps1"),
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "DiskControl", "installer", "Launch-Uninstall-DiskControl.ps1")
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "DistControl", "installer", "Launch-Uninstall-DiskControl.ps1"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "DistControl", "installer", "Launch-Uninstall-DiskControl.ps1")
         };
 
         foreach (string candidate in candidates)
@@ -223,7 +260,7 @@ internal static class UninstallBootstrapper
         }
 
         throw new FileNotFoundException(
-            "Не найден скрипт удаления. Запустите свежий DiskControl-Setup.exe повторно, затем выполните удаление ещё раз, либо используйте отдельный Uninstall-DiskControl.exe из установочного пакета.",
+            "Не найден скрипт удаления. Запустите свежий DistControl-Setup.exe повторно, затем выполните удаление ещё раз, либо используйте отдельный Uninstall-DistControl.exe из установочного пакета.",
             candidates[0]);
     }
 
@@ -231,14 +268,20 @@ internal static class UninstallBootstrapper
     {
         try
         {
-            using (RegistryKey key = Registry.LocalMachine.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Uninstall\DiskControl"))
+            using (RegistryKey key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Uninstall\DistControl"))
             {
-                if (key == null)
+                if (key != null)
                 {
-                    return string.Empty;
+                    object value = key.GetValue("InstallLocation");
+                    if (value != null && !string.IsNullOrWhiteSpace(value.ToString()))
+                    {
+                        return value.ToString();
+                    }
                 }
-
-                object value = key.GetValue("InstallLocation");
+            }
+            using (RegistryKey key = Registry.LocalMachine.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Uninstall\DistControl"))
+            {
+                object value = key == null ? null : key.GetValue("InstallLocation");
                 return value == null ? string.Empty : value.ToString();
             }
         }
@@ -265,19 +308,26 @@ internal static class UninstallBootstrapper
         return Environment.GetFolderPath(Environment.SpecialFolder.Windows);
     }
 
-    private static PowerShellResult RunPowerShell(string launcher, string workingDirectory, bool removeData)
+    private static PowerShellResult RunPowerShell(string launcher, string workingDirectory, Options options)
     {
         var output = new StringBuilder();
-        string arguments = "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File " + Quote(launcher);
-        if (removeData)
+        StringBuilder arguments = new StringBuilder();
+        arguments.Append("-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File ");
+        arguments.Append(Quote(launcher));
+        AppendPowerShellOption(arguments, "-InstallDir", options.InstallDir);
+        AppendPowerShellOption(arguments, "-ProgramDataDir", options.DataDir);
+        AppendPowerShellOption(arguments, "-TargetUserSid", options.UserSid);
+        AppendPowerShellOption(arguments, "-UserStartMenuDir", options.StartMenuDir);
+        AppendPowerShellOption(arguments, "-UserDesktopDir", options.DesktopDir);
+        if (options.RemoveData)
         {
-            arguments += " -RemoveData";
+            arguments.Append(" -RemoveData");
         }
 
         var startInfo = new ProcessStartInfo
         {
             FileName = "powershell.exe",
-            Arguments = arguments,
+            Arguments = arguments.ToString(),
             WorkingDirectory = workingDirectory,
             UseShellExecute = false,
             CreateNoWindow = true,
@@ -316,6 +366,18 @@ internal static class UninstallBootstrapper
         }
     }
 
+    private static void AppendPowerShellOption(StringBuilder arguments, string name, string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return;
+        }
+        arguments.Append(' ');
+        arguments.Append(name);
+        arguments.Append(' ');
+        arguments.Append(Quote(value));
+    }
+
     private static void AppendOutputLine(StringBuilder output, string line)
     {
         if (line == null)
@@ -332,7 +394,7 @@ internal static class UninstallBootstrapper
     private static string BuildUninstallFailureMessage(int exitCode, string output)
     {
         StringBuilder message = new StringBuilder();
-        message.AppendLine("Удаление DiskControl не завершилось.");
+        message.AppendLine("Удаление DistControl не завершилось.");
         message.AppendLine();
         message.AppendLine("Причина: " + GuessUninstallFailureCause(output));
 
@@ -363,7 +425,7 @@ internal static class UninstallBootstrapper
         if (ContainsText(text, "dkcl64.exe is still running") ||
             ContainsText(text, "Stop dkcl64.exe"))
         {
-            return "процесс dkcl64.exe ещё работает и держит файлы. Закройте DiskControl, остановите службу dkclient или перезагрузите компьютер и повторите удаление.";
+            return "процесс dkcl64.exe ещё работает и держит файлы. Закройте DistControl, остановите службу dkclient или перезагрузите компьютер и повторите удаление.";
         }
         if (ContainsText(text, "sc.exe") ||
             ContainsText(text, "Delete service") ||

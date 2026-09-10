@@ -54,7 +54,7 @@ bool removeFirstMatch(const char* pattern) {
 }
 
 std::wstring testPipeName(const wchar_t* suffix) {
-    return L"DiskControl.Tests." + std::to_wstring(GetCurrentProcessId()) + L"." + suffix;
+    return L"DistControl.Tests." + std::to_wstring(GetCurrentProcessId()) + L"." + suffix;
 }
 
 std::string narrowAscii(const std::wstring& value) {
@@ -1319,7 +1319,7 @@ int main() {
         testVpnWatchdogRejectsUnmappedToken();
         testNetworkStateReportParsing();
         testLocalRouteInspection();
-        std::cout << "All DiskControl C++ tests passed.\n";
+        std::cout << "All DistControl C++ tests passed.\n";
         return 0;
     }
     catch (const std::exception& error) {

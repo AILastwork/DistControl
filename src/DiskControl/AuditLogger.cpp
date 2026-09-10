@@ -265,19 +265,19 @@ std::string AuditLogger::csvEscapeForTest(const std::wstring& value) {
 }
 
 std::wstring AuditLogger::defaultLogDirectory() {
-    const DWORD needed = GetEnvironmentVariableW(L"ProgramData", nullptr, 0);
+    const DWORD needed = GetEnvironmentVariableW(L"LOCALAPPDATA", nullptr, 0);
     if (needed == 0) {
         return fallbackLogDirectory();
     }
 
-    std::wstring programData(needed, L'\0');
-    const DWORD written = GetEnvironmentVariableW(L"ProgramData", programData.data(), needed);
+    std::wstring localAppData(needed, L'\0');
+    const DWORD written = GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData.data(), needed);
     if (written == 0 || written >= needed) {
         return fallbackLogDirectory();
     }
 
-    programData.resize(written);
-    return (fs::path(programData) / L"DiskControl" / L"logs").wstring();
+    localAppData.resize(written);
+    return (fs::path(localAppData) / L"DistControl" / L"logs").wstring();
 }
 
 std::wstring AuditLogger::fallbackLogDirectory() {
@@ -345,7 +345,7 @@ bool AuditLogger::tryWriteTrace(
         if (newFile) {
             stream << "\xEF\xBB\xBF";
             stream << wideToUtf8(
-                L"Журнал пошаговой диагностики DiskControl. Пароли и общие ключи VPN не записываются.\r\n");
+                L"Журнал пошаговой диагностики DistControl. Пароли и общие ключи VPN не записываются.\r\n");
         }
 
         const std::wstring line = L"[" + traceTimestamp() + L"] [PID " +

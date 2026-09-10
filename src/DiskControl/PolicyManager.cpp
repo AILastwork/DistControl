@@ -306,7 +306,7 @@ std::string diagnosticPath(const std::wstring& path) {
 std::string win32ErrorDetails(DWORD error) {
     switch (error) {
     case ERROR_ACCESS_DENIED:
-        return "Access denied. Run DiskControl Admin as administrator or check allow.json permissions.";
+        return "Access denied. Run DistControl Admin as administrator or check allow.json permissions.";
     case ERROR_SHARING_VIOLATION:
         return "File is in use by another process.";
     case ERROR_PATH_NOT_FOUND:
@@ -423,21 +423,22 @@ bool fileExists(const std::wstring& path) {
     return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0;
 }
 
-std::wstring programDataDiskControlPath(const wchar_t* fileName) {
-    wchar_t buffer[MAX_PATH]{};
-    const DWORD needed = GetEnvironmentVariableW(L"ProgramData", buffer, MAX_PATH);
-    if (needed == 0 || needed >= MAX_PATH) {
+std::wstring localAppDataDistControlPath(const wchar_t* fileName) {
+    wchar_t buffer[32768]{};
+    const DWORD needed = GetEnvironmentVariableW(
+        L"LOCALAPPDATA", buffer, static_cast<DWORD>(std::size(buffer)));
+    if (needed == 0 || needed >= std::size(buffer)) {
         return {};
     }
-    return std::wstring(buffer) + L"\\DiskControl\\" + fileName;
+    return std::wstring(buffer) + L"\\DistControl\\" + fileName;
 }
 
-std::wstring programDataPolicyPath() {
-    return programDataDiskControlPath(L"allow.json");
+std::wstring localAppDataPolicyPath() {
+    return localAppDataDistControlPath(L"allow.json");
 }
 
-std::wstring programDataUsageStatePath() {
-    return programDataDiskControlPath(L"usage.json");
+std::wstring localAppDataUsageStatePath() {
+    return localAppDataDistControlPath(L"state\\usage.json");
 }
 
 std::wstring policyRevisionForText(const std::wstring& text) {
@@ -464,13 +465,7 @@ std::wstring widenDiagnostic(const char* text) {
 }
 
 std::wstring localAppDataNetworkStatePath() {
-    wchar_t buffer[32768]{};
-    const DWORD needed = GetEnvironmentVariableW(
-        L"LOCALAPPDATA", buffer, static_cast<DWORD>(std::size(buffer)));
-    if (needed == 0 || needed >= std::size(buffer)) {
-        return {};
-    }
-    return std::wstring(buffer) + L"\\DiskControl\\network-state.json";
+    return localAppDataDistControlPath(L"state\\network-state.json");
 }
 
 std::wstring parentOf(const std::wstring& path) {
@@ -571,9 +566,9 @@ std::wstring findConfigPath() {
         return g_configPathOverride;
     }
 
-    const std::wstring programDataPath = programDataPolicyPath();
-    if (!programDataPath.empty()) {
-        return programDataPath;
+    const std::wstring localAppDataPath = localAppDataPolicyPath();
+    if (!localAppDataPath.empty()) {
+        return localAppDataPath;
     }
 
     return L"allow.json";
@@ -966,13 +961,13 @@ JsonValue makeVpnProfile(const VpnProfile& profile) {
 
 PolicyManager::PolicyManager()
     : configPath_(findConfigPath()),
-    usageStatePath_(programDataUsageStatePath()) {
+    usageStatePath_(localAppDataUsageStatePath()) {
     load();
 }
 
 PolicyManager::PolicyManager(std::wstring configPath)
     : configPath_(std::move(configPath)),
-    usageStatePath_(programDataUsageStatePath()) {
+    usageStatePath_(localAppDataUsageStatePath()) {
     load();
 }
 

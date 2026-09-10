@@ -1,7 +1,7 @@
 {
   "pipeName": "dkclient",
   "refreshSeconds": 5,
-  "usageStatePath": "C:\\ProgramData\\DiskControl\\usage.json",
+  "usageStatePath": "C:\\Users\\user\\AppData\\Local\\DistControl\\state\\usage.json",
   "vpnProfiles": [
     {
       "id": "direct-office",

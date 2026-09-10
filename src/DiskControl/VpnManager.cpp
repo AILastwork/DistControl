@@ -773,7 +773,7 @@ std::wstring VpnManager::queryPublicIp(const std::wstring& url) {
     }
 
     InternetHandle session(WinHttpOpen(
-        L"DiskControl/0.2", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+        L"DistControl/0.5", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
         WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0));
     if (!session) {
         throw std::runtime_error("VPN public IP check could not initialize WinHTTP.");

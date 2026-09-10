@@ -1,11 +1,17 @@
 ﻿#Requires -Version 5.1
 [CmdletBinding()]
 param(
-    [string]$InstallDir = (Join-Path $env:ProgramFiles "DiskControl"),
-    [string]$ProgramDataDir = (Join-Path $env:ProgramData "DiskControl"),
+    [string]$InstallDir = $(if ([string]::IsNullOrWhiteSpace($env:DISTCONTROL_INSTALL_DIR)) { Join-Path $env:LOCALAPPDATA "Programs\DistControl" } else { $env:DISTCONTROL_INSTALL_DIR }),
+    [Alias("DataDir")]
+    [string]$ProgramDataDir = $(if ([string]::IsNullOrWhiteSpace($env:DISTCONTROL_DATA_DIR)) { Join-Path $env:LOCALAPPDATA "DistControl" } else { $env:DISTCONTROL_DATA_DIR }),
     [string]$ServiceName = "dkclient",
     [string]$ServiceDisplayName = "DistKontrolUSB Client",
     [string]$ServiceAccount = $env:DISKCONTROL_SERVICE_ACCOUNT,
+    [string]$TargetUserSid = $env:DISTCONTROL_TARGET_USER_SID,
+    [string]$TargetProfileDir = $env:DISTCONTROL_TARGET_PROFILE_DIR,
+    [string]$TargetRoamingAppDataDir = $(if ([string]::IsNullOrWhiteSpace($env:DISTCONTROL_ROAMING_APPDATA_DIR)) { $env:APPDATA } else { $env:DISTCONTROL_ROAMING_APPDATA_DIR }),
+    [string]$UserStartMenuDir = $(if ([string]::IsNullOrWhiteSpace($env:DISTCONTROL_START_MENU_DIR)) { Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\DistControl" } else { $env:DISTCONTROL_START_MENU_DIR }),
+    [string]$UserDesktopDir = $(if ([string]::IsNullOrWhiteSpace($env:DISTCONTROL_DESKTOP_DIR)) { [Environment]::GetFolderPath("DesktopDirectory") } else { $env:DISTCONTROL_DESKTOP_DIR }),
     [string]$UsageStateDir = $env:DISKCONTROL_USAGE_STATE_DIR,
     [string]$ConfigureVpn = $env:DISKCONTROL_VPN_CONFIGURE,
     [string]$VpnProfileIdInput = $env:DISKCONTROL_VPN_ID,
@@ -30,19 +36,29 @@ try {
 }
 catch {
 }
-$ProductName = "DiskControl"
-$ProductVersion = "0.4.6"
-$Publisher = "DiskControl"
+$ProductName = "DistControl"
+$ProductVersion = "0.6.0"
+$Publisher = "DistControl"
 $SourceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $ReleaseDir = Join-Path $SourceRoot "build\x64\Release"
 $PolicyPath = Join-Path $ProgramDataDir "allow.json"
-$UsageStateRoot = if ([string]::IsNullOrWhiteSpace($UsageStateDir)) { $ProgramDataDir } else { $UsageStateDir.TrimEnd('\', '/') }
+$StateDir = Join-Path $ProgramDataDir "state"
+$UsageStateRoot = if ([string]::IsNullOrWhiteSpace($UsageStateDir)) { $StateDir } else { $UsageStateDir.TrimEnd('\', '/') }
 $UsageStatePath = Join-Path $UsageStateRoot "usage.json"
 $LogsDir = Join-Path $ProgramDataDir "logs"
 $InstallerDir = Join-Path $InstallDir "installer"
 $ManagedHubRoutesPath = Join-Path $ProgramDataDir "managed-hub-routes.json"
-$ClientStartupShortcut = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\Startup\DiskControl dkclient.lnk"
-$UninstallRegistryPath = "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\DiskControl"
+$EffectiveTargetUserSid = if ([string]::IsNullOrWhiteSpace($TargetUserSid)) { [Security.Principal.WindowsIdentity]::GetCurrent().User.Value } else { $TargetUserSid.Trim() }
+$TargetUserAcl = "*$EffectiveTargetUserSid"
+$UserProgramsRoot = Split-Path -Parent $UserStartMenuDir
+$ClientStartupShortcut = Join-Path $UserProgramsRoot "Startup\DistControl dkclient.lnk"
+$UninstallRegistryPath = "Registry::HKEY_USERS\$EffectiveTargetUserSid\Software\Microsoft\Windows\CurrentVersion\Uninstall\DistControl"
+$LegacyInstallDir = Join-Path $env:ProgramFiles "DiskControl"
+$LegacyDistControlInstallDir = Join-Path $env:ProgramFiles "DistControl"
+$LegacyProgramDataDir = Join-Path $env:ProgramData "DiskControl"
+$LegacyLocalAppDataDir = if ([string]::IsNullOrWhiteSpace($TargetProfileDir)) { Join-Path $env:LOCALAPPDATA "DiskControl" } else { Join-Path $TargetProfileDir "AppData\Local\DiskControl" }
+$LegacyUninstallRegistryPath = "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\DiskControl"
+$LegacyDistControlUninstallRegistryPath = "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\DistControl"
 $script:InstallLogPath = $null
 $script:InstallWarnings = New-Object System.Collections.Generic.List[string]
 $VpnProfileId = if ([string]::IsNullOrWhiteSpace($VpnProfileIdInput)) { "" } else { $VpnProfileIdInput.Trim() }
@@ -61,8 +77,8 @@ function Write-InstallLogLine([string]$Message) {
 }
 
 function Write-Step([string]$Message) {
-    Write-Host "[DiskControl] $Message"
-    Write-InstallLogLine "[DiskControl] $Message"
+    Write-Host "[DistControl] $Message"
+    Write-InstallLogLine "[DistControl] $Message"
 }
 
 function Assert-AbsoluteDirectoryParameter([string]$Name, [string]$Path) {
@@ -94,7 +110,7 @@ function Normalize-FullPath([string]$Path) {
 }
 
 function Test-LocalProgramDataUsageStatePath {
-    $defaultUsageStatePath = Join-Path $ProgramDataDir "usage.json"
+    $defaultUsageStatePath = Join-Path $StateDir "usage.json"
     return [string]::Equals(
         (Normalize-FullPath $UsageStatePath),
         (Normalize-FullPath $defaultUsageStatePath),
@@ -103,8 +119,8 @@ function Test-LocalProgramDataUsageStatePath {
 
 function Write-InstallWarning([string]$Message) {
     $script:InstallWarnings.Add($Message) | Out-Null
-    Write-Host "[DiskControl] WARNING: $Message"
-    Write-InstallLogLine "[DiskControl] WARNING: $Message"
+    Write-Host "[DistControl] WARNING: $Message"
+    Write-InstallLogLine "[DistControl] WARNING: $Message"
 }
 
 function Start-InstallLog {
@@ -119,7 +135,7 @@ function Start-InstallLog {
         Write-Step "Install log: $script:InstallLogPath"
     }
     catch {
-        Write-Host "[DiskControl] WARNING: Cannot start install log: $($_.Exception.Message)"
+        Write-Host "[DistControl] WARNING: Cannot start install log: $($_.Exception.Message)"
     }
 }
 
@@ -132,7 +148,7 @@ function Convert-InstallErrorToHuman([string]$Message) {
         $lower.Contains("access is denied") -or
         $lower.Contains("отказано в доступе") -or
         $lower.Contains("unauthorizedaccess")) {
-        return "Не хватило прав. Запустите установку от имени администратора и проверьте права на папки Program Files и ProgramData."
+        return "Не хватило прав. Запустите установку от имени администратора и проверьте права на локальные папки DistControl выбранного пользователя."
     }
     if ($lower.Contains("password") -or
         $lower.Contains("log on as a service") -or
@@ -144,13 +160,20 @@ function Convert-InstallErrorToHuman([string]$Message) {
     }
     if ($lower.Contains("dkcl64.exe is still running") -or
         $lower.Contains("conflicting dkcl64.exe")) {
-        return "Старый процесс dkcl64.exe не удалось остановить. Закройте DiskControl, остановите службу dkclient или перезагрузите компьютер."
+        return "Старый процесс dkcl64.exe не удалось остановить. Закройте DistControl, остановите службу dkclient или перезагрузите компьютер."
+    }
+    if ($lower.Contains("close distcontrol before installation")) {
+        return "Перед обновлением закройте окна DistControl и DistControl Admin, затем запустите установщик ещё раз."
     }
     if ($lower.Contains("usage state") -or
         $lower.Contains("usagestatedir") -or
         $lower.Contains("network share") -or
         $lower.Contains("unc")) {
         return "Проблема с общей папкой таймеров usage.json. Проверьте путь и права чтения/записи."
+    }
+    if ($lower.Contains("pipe did not become ready") -or
+        $lower.Contains("dkclient pipe")) {
+        return "Служба dkclient запущена, но штатный клиент не подготовил канал управления. Проверьте доступность хабов из dkcl.ini и файлы профиля пользователя в AppData\Roaming."
     }
     if ($lower.Contains("service") -or
         $lower.Contains("start-service") -or
@@ -159,7 +182,7 @@ function Convert-InstallErrorToHuman([string]$Message) {
     }
     if ($lower.Contains("required file") -or
         $lower.Contains("installer input")) {
-        return "В установочном пакете не найден обязательный файл. Используйте свежий DiskControl-Setup.exe."
+        return "В установочном пакете не найден обязательный файл. Используйте свежий DistControl-Setup.exe."
     }
     if ($lower.Contains("route.exe") -or
         $lower.Contains("physical ipv4 default gateway") -or
@@ -172,20 +195,20 @@ function Convert-InstallErrorToHuman([string]$Message) {
 function Write-InstallErrorDetails([object]$Record) {
     $message = if ($Record -and $Record.Exception) { $Record.Exception.Message } else { "$Record" }
     $human = Convert-InstallErrorToHuman $message
-    Write-Host "[DiskControl] USER-ERROR: $human"
-    Write-Host "[DiskControl] ERROR: $message"
-    Write-InstallLogLine "[DiskControl] USER-ERROR: $human"
-    Write-InstallLogLine "[DiskControl] ERROR: $message"
+    Write-Host "[DistControl] USER-ERROR: $human"
+    Write-Host "[DistControl] ERROR: $message"
+    Write-InstallLogLine "[DistControl] USER-ERROR: $human"
+    Write-InstallLogLine "[DistControl] ERROR: $message"
     if ($Record -and $Record.Exception) {
-        Write-InstallLogLine "[DiskControl] ERROR TYPE: $($Record.Exception.GetType().FullName)"
+        Write-InstallLogLine "[DistControl] ERROR TYPE: $($Record.Exception.GetType().FullName)"
     }
     if ($Record -and $Record.InvocationInfo) {
-        Write-InstallLogLine "[DiskControl] ERROR SCRIPT: $($Record.InvocationInfo.ScriptName)"
-        Write-InstallLogLine "[DiskControl] ERROR LINE: $($Record.InvocationInfo.ScriptLineNumber)"
-        Write-InstallLogLine "[DiskControl] ERROR COMMAND: $($Record.InvocationInfo.Line)"
+        Write-InstallLogLine "[DistControl] ERROR SCRIPT: $($Record.InvocationInfo.ScriptName)"
+        Write-InstallLogLine "[DistControl] ERROR LINE: $($Record.InvocationInfo.ScriptLineNumber)"
+        Write-InstallLogLine "[DistControl] ERROR COMMAND: $($Record.InvocationInfo.Line)"
     }
     if ($Record -and $Record.ScriptStackTrace) {
-        Write-InstallLogLine "[DiskControl] ERROR STACK: $($Record.ScriptStackTrace)"
+        Write-InstallLogLine "[DistControl] ERROR STACK: $($Record.ScriptStackTrace)"
     }
 }
 
@@ -196,7 +219,16 @@ function Write-InstallEnvironmentSummary {
     catch {
         $identity = "<unknown>"
     }
-    Write-Step "Environment: computer=$env:COMPUTERNAME; processUser=$identity; installDir=$InstallDir; programDataDir=$ProgramDataDir; policy=$PolicyPath; usage=$UsageStatePath; service=$ServiceName; serviceAccount=$ServiceAccount; source=$SourceRoot"
+    Write-Step "Environment: computer=$env:COMPUTERNAME; processUser=$identity; targetUserSid=$EffectiveTargetUserSid; targetProfile=$TargetProfileDir; installDir=$InstallDir; dataDir=$ProgramDataDir; policy=$PolicyPath; usage=$UsageStatePath; service=$ServiceName; serviceAccount=$ServiceAccount; source=$SourceRoot"
+}
+
+function Assert-TargetUserContext {
+    if ($EffectiveTargetUserSid -notmatch '^S-1-(\d+-)+\d+$') {
+        throw "TargetUserSid has an invalid value: $EffectiveTargetUserSid"
+    }
+    Assert-AbsoluteDirectoryParameter "TargetRoamingAppDataDir" $TargetRoamingAppDataDir
+    Assert-AbsoluteDirectoryParameter "UserStartMenuDir" $UserStartMenuDir
+    Assert-AbsoluteDirectoryParameter "UserDesktopDir" $UserDesktopDir
 }
 
 trap {
@@ -436,7 +468,7 @@ function Resolve-ServiceCredential {
         }
 
         Write-Host ""
-        Write-Host "DiskControl will run dkclient service as: $account"
+        Write-Host "DistControl will run dkclient service as: $account"
         Write-Host "Enter this Windows account password. It is passed to Windows Service Control Manager."
         $password = Read-Host -Prompt "Password for $account" -AsSecureString
     }
@@ -681,7 +713,175 @@ function Assert-VpnInstallProfile([object]$Profile) {
 }
 
 function Install-VpnProfiles([object[]]$Profiles) {
-    throw "DiskControl installer does not create or update Windows VPN profiles. Configure them in Windows and assign them in DiskControl Admin."
+    throw "DistControl installer does not create or update Windows VPN profiles. Configure them in Windows and assign them in DistControl Admin."
+}
+
+function Assert-DistControlApplicationsClosed {
+    if ($DryRun) {
+        Write-Step "DRY-RUN: check that DistControl and DistControl Admin are closed"
+        return
+    }
+
+    $installRoots = @($InstallDir, $LegacyInstallDir, $LegacyDistControlInstallDir) |
+        ForEach-Object { [System.IO.Path]::GetFullPath($_).TrimEnd('\') }
+    $running = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.Name -in @("DistControl.exe", "DistControl.Admin.exe", "DiskControl.exe", "DiskControl.Admin.exe") -and
+            $_.ExecutablePath -and
+            ($installRoots | Where-Object { $_.ExecutablePath.StartsWith($_ + "\", [StringComparison]::OrdinalIgnoreCase) })
+        })
+    if ($running.Count -gt 0) {
+        $names = ($running | ForEach-Object { "$($_.Name) (PID $($_.ProcessId))" }) -join ", "
+        throw "Close DistControl before installation. Running applications: $names"
+    }
+}
+
+function Copy-MigrationFile([string]$Source, [string]$Destination) {
+    if (-not (Test-Path -LiteralPath $Source) -or (Test-Path -LiteralPath $Destination)) {
+        return
+    }
+
+    Write-Step "Migrate $Source -> $Destination"
+    if ($DryRun) {
+        return
+    }
+
+    $parent = Split-Path -Parent $Destination
+    if ($parent) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+    Copy-Item -LiteralPath $Source -Destination $Destination -Force
+}
+
+function Merge-MigrationLogs([string]$SourceDirectory) {
+    if (-not (Test-Path -LiteralPath $SourceDirectory)) {
+        return
+    }
+
+    foreach ($file in @(Get-ChildItem -LiteralPath $SourceDirectory -File -ErrorAction SilentlyContinue)) {
+        Copy-MigrationFile $file.FullName (Join-Path $LogsDir $file.Name)
+    }
+}
+
+function Test-DkClientPipeReady([string]$Name) {
+    Write-Step "Check that dkclient is ready to return the token list"
+    if ($DryRun) {
+        Write-Step "DRY-RUN: connect to \\.\pipe\$Name and send LIST"
+        return
+    }
+
+    $lastReason = "канал ещё не создан"
+    for ($attempt = 1; $attempt -le 15; $attempt++) {
+        $pipe = $null
+        try {
+            $pipe = New-Object System.IO.Pipes.NamedPipeClientStream(
+                ".", $Name,
+                [System.IO.Pipes.PipeDirection]::InOut,
+                [System.IO.Pipes.PipeOptions]::Asynchronous)
+            $pipe.Connect(1000)
+            try {
+                $pipe.ReadMode = [System.IO.Pipes.PipeTransmissionMode]::Message
+            }
+            catch {
+            }
+
+            $request = [Text.Encoding]::UTF8.GetBytes("LIST")
+            $pipe.Write($request, 0, $request.Length)
+            $pipe.Flush()
+
+            $buffer = New-Object byte[] (1024 * 1024)
+            $readTask = $pipe.ReadAsync($buffer, 0, $buffer.Length)
+            if (-not $readTask.Wait(3000)) {
+                throw "ответ на LIST не получен за 3 секунды"
+            }
+            $read = $readTask.Result
+            if ($read -le 0) {
+                throw "получен пустой ответ на LIST"
+            }
+
+            Write-Step "dkclient is ready: token list received"
+            return
+        }
+        catch {
+            $lastReason = $_.Exception.Message
+            Write-Step "dkclient is not ready yet, attempt $attempt of 15: $lastReason"
+            Start-Sleep -Milliseconds 700
+        }
+        finally {
+            if ($pipe) {
+                $pipe.Dispose()
+            }
+        }
+    }
+
+    $service = Get-Service -Name $Name -ErrorAction SilentlyContinue
+    $serviceStatus = if ($service) { $service.Status } else { "NotFound" }
+    throw "dkclient pipe did not become ready. Service status: $serviceStatus. Last reason: $lastReason"
+}
+
+function Migrate-LegacyData {
+    Write-Step "Check legacy DiskControl data"
+    Copy-MigrationFile (Join-Path $LegacyProgramDataDir "allow.json") $PolicyPath
+    Copy-MigrationFile (Join-Path $LegacyProgramDataDir "usage.json") $UsageStatePath
+    Copy-MigrationFile (Join-Path $LegacyProgramDataDir "managed-hub-routes.json") $ManagedHubRoutesPath
+    Copy-MigrationFile (Join-Path $LegacyLocalAppDataDir "network-state.json") (Join-Path $StateDir "network-state.json")
+    Merge-MigrationLogs (Join-Path $LegacyProgramDataDir "logs")
+    Merge-MigrationLogs (Join-Path $LegacyLocalAppDataDir "logs")
+}
+
+function Initialize-DkClientUserProfile {
+    $sourceConfig = Join-Path $InstallDir "dkcl.ini"
+    $profileConfig = Join-Path $TargetRoamingAppDataDir "dkcl.ini"
+    $profileMarker = Join-Path $TargetRoamingAppDataDir "dkcl64.ini"
+    Write-Step "Prepare DistKontrolUSB settings for the selected Windows user"
+
+    if ($DryRun) {
+        Write-Step "DRY-RUN: copy $sourceConfig -> $profileConfig"
+        Write-Step "DRY-RUN: create $profileMarker"
+    }
+    else {
+        New-Item -ItemType Directory -Path $TargetRoamingAppDataDir -Force | Out-Null
+        if (-not (Test-Path -LiteralPath $profileConfig)) {
+            Copy-Item -LiteralPath $sourceConfig -Destination $profileConfig -Force
+        }
+        if (-not (Test-Path -LiteralPath $profileMarker)) {
+            [System.IO.File]::WriteAllText($profileMarker, "", $script:Utf8NoBomEncoding)
+        }
+    }
+
+    foreach ($path in @($profileConfig, $profileMarker)) {
+        Set-ProtectedAcl $path @(
+            "*S-1-5-18:F",
+            "*S-1-5-32-544:F",
+            "${TargetUserAcl}:M"
+        )
+    }
+}
+
+function Preserve-ConfiguredUsageStatePath {
+    if (-not [string]::IsNullOrWhiteSpace($UsageStateDir) -or -not (Test-ValidPolicy $PolicyPath)) {
+        return
+    }
+
+    try {
+        $policy = Get-Content -LiteralPath $PolicyPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $configuredPath = [string]$policy.usageStatePath
+        $legacyDefaults = @(
+            (Join-Path $LegacyProgramDataDir "usage.json"),
+            (Join-Path $LegacyLocalAppDataDir "usage.json")
+        )
+        if ([string]::IsNullOrWhiteSpace($configuredPath) -or
+            $legacyDefaults -contains $configuredPath) {
+            return
+        }
+
+        $script:UsageStatePath = $configuredPath
+        $script:UsageStateRoot = Split-Path -Parent $configuredPath
+        Write-Step "Keep configured external usage state path: $configuredPath"
+    }
+    catch {
+        Write-InstallWarning "Cannot preserve usageStatePath from migrated policy: $($_.Exception.Message)"
+    }
 }
 
 function Get-DistKontrolManualHubAddresses([string]$IniPath) {
@@ -805,6 +1005,11 @@ function Set-DistKontrolHubRoutes([string]$IniPath) {
         return
     }
 
+    if ($DryRun) {
+        Write-Step "DRY-RUN: inspect the physical gateway and configure routes for $($hubAddresses.Count) DistKontrolUSB hubs"
+        return
+    }
+
     $physicalRoute = Get-PhysicalDefaultRoute
     if (-not $physicalRoute) {
         Write-InstallWarning "A physical IPv4 default gateway was not found. Routes to DistKontrolUSB hubs were not created."
@@ -917,7 +1122,7 @@ function Set-PolicyVpnConfigurations([object[]]$InstallProfiles) {
                     }
                 }
                 if ($mapped -eq 0) {
-                    Write-InstallWarning "VPN profile was created, but token '$($installProfile.TokenIdentity)' was not found in current allow.json. Assign it later in DiskControl Admin."
+                    Write-InstallWarning "VPN profile was created, but token '$($installProfile.TokenIdentity)' was not found in current allow.json. Assign it later in DistControl Admin."
                 }
             }
         }
@@ -1077,32 +1282,38 @@ function Set-DirectoryAcl {
     Set-ProtectedAcl $InstallDir @(
         "*S-1-5-18:(OI)(CI)F",
         "*S-1-5-32-544:(OI)(CI)F",
-        "*S-1-5-32-545:(OI)(CI)RX"
+        "${TargetUserAcl}:(OI)(CI)RX"
     ) -Recursive
 
     Set-ProtectedAcl $ProgramDataDir @(
         "*S-1-5-18:(OI)(CI)F",
         "*S-1-5-32-544:(OI)(CI)M",
-        "*S-1-5-32-545:(OI)(CI)RX"
+        "${TargetUserAcl}:(OI)(CI)RX"
     ) -Recursive
 
     Set-ProtectedAcl $LogsDir @(
         "*S-1-5-18:(OI)(CI)F",
         "*S-1-5-32-544:(OI)(CI)M",
-        "*S-1-5-32-545:(OI)(CI)M"
+        "${TargetUserAcl}:(OI)(CI)M"
+    ) -Recursive
+
+    Set-ProtectedAcl $StateDir @(
+        "*S-1-5-18:(OI)(CI)F",
+        "*S-1-5-32-544:(OI)(CI)M",
+        "${TargetUserAcl}:(OI)(CI)M"
     ) -Recursive
 
     Set-ProtectedAcl $PolicyPath @(
         "*S-1-5-18:F",
         "*S-1-5-32-544:M",
-        "*S-1-5-32-545:R"
+        "${TargetUserAcl}:R"
     )
 
     if (Test-LocalProgramDataUsageStatePath) {
         Set-ProtectedAcl $UsageStatePath @(
             "*S-1-5-18:F",
             "*S-1-5-32-544:M",
-            "*S-1-5-32-545:M"
+            "${TargetUserAcl}:M"
         )
     }
     else {
@@ -1110,14 +1321,20 @@ function Set-DirectoryAcl {
     }
 }
 
-function Set-DkClientExecutableAcl([string]$Account) {
+function Set-DkClientFilesAcl {
     $exePath = Join-Path $InstallDir "dkcl64.exe"
-    $identity = Resolve-PrivilegeIdentity $Account
-    Write-Step "Restrict dkcl64.exe execute ACL to service account"
+    $iniPath = Join-Path $InstallDir "dkcl.ini"
+    $identity = Resolve-PrivilegeIdentity "NT SERVICE\$ServiceName"
+    Write-Step "Restrict dkcl64.exe and dkcl.ini to the dkclient service SID"
     Set-ProtectedAcl $exePath @(
         "*S-1-5-18:F",
         "*S-1-5-32-544:F",
         "${identity}:RX"
+    )
+    Set-ProtectedAcl $iniPath @(
+        "*S-1-5-18:F",
+        "*S-1-5-32-544:F",
+        "${identity}:R"
     )
 }
 
@@ -1145,28 +1362,29 @@ function New-Shortcut([string]$Path, [string]$Target, [string]$Arguments = "", [
 }
 
 function Install-Shortcuts {
-    $startMenu = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\DiskControl"
-    $uninstallExe = Join-Path $InstallDir "Uninstall-DiskControl.exe"
-    New-Shortcut (Join-Path $startMenu "DiskControl.lnk") (Join-Path $InstallDir "DiskControl.exe")
-    New-Shortcut (Join-Path $startMenu "DiskControl Admin.lnk") (Join-Path $InstallDir "DiskControl.Admin.exe")
-    New-Shortcut (Join-Path $startMenu "DiskControl Guide.lnk") (Join-Path $InstallDir "DiskControl-guide.html")
+    $startMenu = $UserStartMenuDir
+    $uninstallExe = Join-Path $InstallDir "Uninstall-DistControl.exe"
+    $uninstallContextArguments = "--install-dir `"$InstallDir`" --data-dir `"$ProgramDataDir`" --user-sid `"$EffectiveTargetUserSid`" --start-menu-dir `"$UserStartMenuDir`" --desktop-dir `"$UserDesktopDir`""
+    New-Shortcut (Join-Path $startMenu "DistControl.lnk") (Join-Path $InstallDir "DistControl.exe")
+    New-Shortcut (Join-Path $startMenu "DistControl Admin.lnk") (Join-Path $InstallDir "DistControl.Admin.exe") "--policy `"$PolicyPath`""
+    New-Shortcut (Join-Path $startMenu "DistControl Guide.lnk") (Join-Path $InstallDir "DistControl-guide.html")
     if (Test-Path -LiteralPath $uninstallExe) {
-        New-Shortcut (Join-Path $startMenu "Uninstall DiskControl.lnk") $uninstallExe
+        New-Shortcut (Join-Path $startMenu "Uninstall DistControl.lnk") $uninstallExe $uninstallContextArguments
     }
     else {
-        New-Shortcut (Join-Path $startMenu "Uninstall DiskControl.lnk") "powershell.exe" "-NoProfile -ExecutionPolicy Bypass -File `"$InstallerDir\Launch-Uninstall-DiskControl.ps1`""
+        $scriptArguments = "-NoProfile -ExecutionPolicy Bypass -File `"$InstallerDir\Launch-Uninstall-DiskControl.ps1`" -InstallDir `"$InstallDir`" -DataDir `"$ProgramDataDir`" -TargetUserSid `"$EffectiveTargetUserSid`" -UserStartMenuDir `"$UserStartMenuDir`" -UserDesktopDir `"$UserDesktopDir`""
+        New-Shortcut (Join-Path $startMenu "Uninstall DistControl.lnk") "powershell.exe" $scriptArguments
     }
 
     if (-not $NoDesktopShortcut) {
-        $publicDesktop = [Environment]::GetFolderPath("CommonDesktopDirectory")
-        New-Shortcut (Join-Path $publicDesktop "DiskControl.lnk") (Join-Path $InstallDir "DiskControl.exe")
+        New-Shortcut (Join-Path $UserDesktopDir "DistControl.lnk") (Join-Path $InstallDir "DistControl.exe")
     }
 }
 
 function Remove-LegacyDiagnostics {
-    $startMenu = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\DiskControl"
+    $startMenu = $UserStartMenuDir
     foreach ($path in @(
-        (Join-Path $startMenu "DiskControl Diagnostics.lnk"),
+        (Join-Path $startMenu "DistControl Diagnostics.lnk"),
         (Join-Path $InstallerDir "Diagnose-DiskControl.ps1"),
         (Join-Path $InstallDir "diagnose.cmd")
     )) {
@@ -1177,6 +1395,67 @@ function Remove-LegacyDiagnostics {
 
         if (Test-Path -LiteralPath $path) {
             Remove-Item -LiteralPath $path -Force -ErrorAction Stop
+        }
+    }
+}
+
+function Remove-LegacyBranding {
+    $commonPrograms = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs"
+    $commonDesktop = [Environment]::GetFolderPath("CommonDesktopDirectory")
+    $userDiskControlStartMenu = Join-Path (Split-Path -Parent $UserStartMenuDir) "DiskControl"
+    foreach ($path in @(
+        (Join-Path $commonPrograms "DiskControl"),
+        (Join-Path $commonPrograms "DistControl"),
+        (Join-Path $commonDesktop "DiskControl.lnk"),
+        (Join-Path $commonDesktop "DistControl.lnk"),
+        (Join-Path $commonPrograms "Startup\DiskControl dkclient.lnk"),
+        (Join-Path $commonPrograms "Startup\DistControl dkclient.lnk"),
+        $userDiskControlStartMenu,
+        (Join-Path $UserDesktopDir "DiskControl.lnk")
+    )) {
+        if ($DryRun) {
+            Write-Step "DRY-RUN: remove legacy branding $path"
+        }
+        elseif (Test-Path -LiteralPath $path) {
+            Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    foreach ($registryPath in @($LegacyUninstallRegistryPath, $LegacyDistControlUninstallRegistryPath)) {
+        if (-not $DryRun -and (Test-Path -LiteralPath $registryPath)) {
+            Remove-Item -LiteralPath $registryPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Remove-LegacyInstallDirectory {
+    $currentPath = [System.IO.Path]::GetFullPath($InstallDir).TrimEnd('\')
+    foreach ($candidate in @(
+        @{ Path = $LegacyInstallDir; Expected = (Join-Path $env:ProgramFiles "DiskControl") },
+        @{ Path = $LegacyDistControlInstallDir; Expected = (Join-Path $env:ProgramFiles "DistControl") }
+    )) {
+        if (-not (Test-Path -LiteralPath $candidate.Path)) {
+            continue
+        }
+
+        $expectedPath = [System.IO.Path]::GetFullPath($candidate.Expected).TrimEnd('\')
+        $legacyPath = [System.IO.Path]::GetFullPath($candidate.Path).TrimEnd('\')
+        if (-not [string]::Equals($legacyPath, $expectedPath, [StringComparison]::OrdinalIgnoreCase) -or
+            [string]::Equals($legacyPath, $currentPath, [StringComparison]::OrdinalIgnoreCase)) {
+            Write-InstallWarning "Старая папка установки не удалена: проверка безопасного пути не пройдена ($legacyPath)."
+            continue
+        }
+
+        Write-Step "Remove legacy application directory $legacyPath"
+        if ($DryRun) {
+            continue
+        }
+
+        try {
+            Remove-Item -LiteralPath $legacyPath -Recurse -Force -ErrorAction Stop
+        }
+        catch {
+            Write-InstallWarning "Не удалось удалить старую папку $legacyPath. Новая версия установлена, папку можно удалить после закрытия старого приложения. Причина: $($_.Exception.Message)"
         }
     }
 }
@@ -1210,21 +1489,22 @@ function Register-UninstallEntry {
     }
 
     $uninstallScript = Join-Path $InstallerDir "Launch-Uninstall-DiskControl.ps1"
-    $uninstallExe = Join-Path $InstallDir "Uninstall-DiskControl.exe"
+    $uninstallExe = Join-Path $InstallDir "Uninstall-DistControl.exe"
+    $contextArguments = "--install-dir `"$InstallDir`" --data-dir `"$ProgramDataDir`" --user-sid `"$EffectiveTargetUserSid`" --start-menu-dir `"$UserStartMenuDir`" --desktop-dir `"$UserDesktopDir`""
     if ((Test-Path -LiteralPath $uninstallExe) -or $DryRun) {
-        $uninstallCommand = "`"$uninstallExe`""
-        $quietUninstallCommand = "`"$uninstallExe`""
+        $uninstallCommand = "`"$uninstallExe`" $contextArguments"
+        $quietUninstallCommand = "`"$uninstallExe`" $contextArguments"
     }
     else {
-        $uninstallCommand = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$uninstallScript`""
-        $quietUninstallCommand = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$uninstallScript`""
+        $uninstallCommand = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$uninstallScript`" -InstallDir `"$InstallDir`" -DataDir `"$ProgramDataDir`" -TargetUserSid `"$EffectiveTargetUserSid`" -UserStartMenuDir `"$UserStartMenuDir`" -UserDesktopDir `"$UserDesktopDir`""
+        $quietUninstallCommand = $uninstallCommand
     }
 
     Set-RegistryValue $UninstallRegistryPath "DisplayName" $ProductName
     Set-RegistryValue $UninstallRegistryPath "DisplayVersion" $ProductVersion
     Set-RegistryValue $UninstallRegistryPath "Publisher" $Publisher
     Set-RegistryValue $UninstallRegistryPath "InstallLocation" $InstallDir
-    Set-RegistryValue $UninstallRegistryPath "DisplayIcon" (Join-Path $InstallDir "DiskControl.exe")
+    Set-RegistryValue $UninstallRegistryPath "DisplayIcon" (Join-Path $InstallDir "DistControl.exe")
     Set-RegistryValue $UninstallRegistryPath "UninstallString" $uninstallCommand
     Set-RegistryValue $UninstallRegistryPath "QuietUninstallString" $quietUninstallCommand
     Set-RegistryValue $UninstallRegistryPath "NoModify" 1 "DWord"
@@ -1242,7 +1522,6 @@ function Register-DkClientService {
     Remove-DkClientStartup
     Remove-ExistingService $ServiceName
     Stop-InstalledDkClientProcess
-    Set-DkClientExecutableAcl $serviceAccountName
     Grant-LogonAsServiceRight $serviceAccountName
     Write-Step "Create service $ServiceName as $serviceAccountName"
     if ($DryRun) {
@@ -1253,11 +1532,14 @@ function Register-DkClientService {
         Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\$ServiceName" -Name ImagePath -Value $binPath
     }
 
-    Invoke-ExternalOptional "sc.exe" @("description", $ServiceName, "DistKontrolUSB client used by DiskControl.") "Cannot set service description"
+    Invoke-External "sc.exe" @("sidtype", $ServiceName, "unrestricted")
+    Set-DkClientFilesAcl
+    Invoke-ExternalOptional "sc.exe" @("description", $ServiceName, "DistKontrolUSB client used by DistControl.") "Cannot set service description"
     Invoke-ExternalOptional "sc.exe" @("failure", $ServiceName, "reset=", "86400", "actions=", "restart/60000/restart/60000") "Cannot set service recovery policy"
 
     if (-not $NoStartService) {
         Try-StartService $ServiceName
+        Test-DkClientPipeReady $ServiceName
     }
 }
 
@@ -1265,6 +1547,7 @@ if (-not $DryRun) {
     Assert-Admin
     Assert-AbsoluteDirectoryParameter "InstallDir" $InstallDir
     Assert-AbsoluteDirectoryParameter "ProgramDataDir" $ProgramDataDir
+    Assert-TargetUserContext
     Assert-UsageStateDirectory
     Start-InstallLog
     Write-InstallEnvironmentSummary
@@ -1272,6 +1555,7 @@ if (-not $DryRun) {
 else {
     Assert-AbsoluteDirectoryParameter "InstallDir" $InstallDir
     Assert-AbsoluteDirectoryParameter "ProgramDataDir" $ProgramDataDir
+    Assert-TargetUserContext
     Assert-UsageStateDirectory
     Write-InstallEnvironmentSummary
 }
@@ -1285,8 +1569,8 @@ if (-not $SkipBuild) {
 }
 
 $required = @(
-    (Join-Path $ReleaseDir "DiskControl.exe"),
-    (Join-Path $ReleaseDir "DiskControl.Admin.exe"),
+    (Join-Path $ReleaseDir "DistControl.exe"),
+    (Join-Path $ReleaseDir "DistControl.Admin.exe"),
     (Join-Path $SourceRoot "dkcl64.exe"),
     (Join-Path $SourceRoot "dkcl.ini")
 )
@@ -1302,29 +1586,36 @@ if (-not $DryRun) {
     New-Item -ItemType Directory -Path $InstallerDir -Force | Out-Null
     New-Item -ItemType Directory -Path $ProgramDataDir -Force | Out-Null
     New-Item -ItemType Directory -Path $LogsDir -Force | Out-Null
+    New-Item -ItemType Directory -Path $StateDir -Force | Out-Null
+}
+
+Migrate-LegacyData
+Preserve-ConfiguredUsageStatePath
+if (-not $DryRun) {
     New-Item -ItemType Directory -Path $UsageStateRoot -Force | Out-Null
 }
 
+Assert-DistControlApplicationsClosed
 Stop-ExistingService $ServiceName
 Stop-InstalledDkClientProcess
 
-Copy-RequiredFile (Join-Path $ReleaseDir "DiskControl.exe") (Join-Path $InstallDir "DiskControl.exe")
-Copy-RequiredFile (Join-Path $ReleaseDir "DiskControl.Admin.exe") (Join-Path $InstallDir "DiskControl.Admin.exe")
+Copy-RequiredFile (Join-Path $ReleaseDir "DistControl.exe") (Join-Path $InstallDir "DistControl.exe")
+Copy-RequiredFile (Join-Path $ReleaseDir "DistControl.Admin.exe") (Join-Path $InstallDir "DistControl.Admin.exe")
 Copy-RequiredFile (Join-Path $SourceRoot "dkcl64.exe") (Join-Path $InstallDir "dkcl64.exe")
 Copy-RequiredFile (Join-Path $SourceRoot "dkcl.ini") (Join-Path $InstallDir "dkcl.ini")
 Set-DistKontrolHubRoutes (Join-Path $SourceRoot "dkcl.ini")
 
 foreach ($uninstallCandidate in @(
-    (Join-Path $SourceRoot "Uninstall-DiskControl.exe"),
-    (Join-Path $SourceRoot "dist\Uninstall-DiskControl.exe")
+    (Join-Path $SourceRoot "Uninstall-DistControl.exe"),
+    (Join-Path $SourceRoot "dist\Uninstall-DistControl.exe")
 )) {
     if (Test-Path -LiteralPath $uninstallCandidate) {
-        Copy-RequiredFile $uninstallCandidate (Join-Path $InstallDir "Uninstall-DiskControl.exe")
+        Copy-RequiredFile $uninstallCandidate (Join-Path $InstallDir "Uninstall-DistControl.exe")
         break
     }
 }
 
-foreach ($optional in @("README.md", "DiskControl-guide.html", "allowlist.example.json")) {
+foreach ($optional in @("README.md", "DistControl-guide.html", "allowlist.example.json")) {
     $source = Join-Path $SourceRoot $optional
     if (Test-Path -LiteralPath $source) {
         Copy-RequiredFile $source (Join-Path $InstallDir $optional)
@@ -1346,11 +1637,14 @@ foreach ($installerFile in @(
 Remove-LegacyDiagnostics
 Initialize-Policy
 Set-PolicyUsageStatePath
-Write-Step "VPN profiles are managed in Windows and assigned to tokens in DiskControl Admin; installer does not create or update VPN connections"
+Write-Step "VPN profiles are managed in Windows and assigned to tokens in DistControl Admin; installer does not create or update VPN connections"
 Initialize-UsageState
 Set-DirectoryAcl
+Initialize-DkClientUserProfile
 Test-UsageStateAccess
 Register-DkClientService
+Remove-LegacyInstallDirectory
+Remove-LegacyBranding
 Install-Shortcuts
 Register-UninstallEntry
 

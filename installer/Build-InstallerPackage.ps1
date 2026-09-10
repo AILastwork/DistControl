@@ -13,13 +13,13 @@ $ErrorActionPreference = "Stop"
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $ReleaseDir = Join-Path $Root "build\x64\Release"
 $DistDir = Join-Path $Root "dist"
-$StageDir = Join-Path $DistDir "DiskControl-Installer"
-$ZipPath = Join-Path $DistDir "DiskControl-Installer.zip"
-$SetupExePath = Join-Path $DistDir "DiskControl-Setup.exe"
-$SetupStubPath = Join-Path $DistDir "DiskControl-Setup.stub.exe"
+$StageDir = Join-Path $DistDir "DistControl-Installer"
+$ZipPath = Join-Path $DistDir "DistControl-Installer.zip"
+$SetupExePath = Join-Path $DistDir "DistControl-Setup.exe"
+$SetupStubPath = Join-Path $DistDir "DistControl-Setup.stub.exe"
 $SetupSourcePath = Join-Path $PSScriptRoot "SetupBootstrapper.cs"
 $SetupManifestPath = Join-Path $PSScriptRoot "SetupBootstrapper.manifest"
-$UninstallExePath = Join-Path $DistDir "Uninstall-DiskControl.exe"
+$UninstallExePath = Join-Path $DistDir "Uninstall-DistControl.exe"
 $UninstallSourcePath = Join-Path $PSScriptRoot "UninstallBootstrapper.cs"
 $UninstallManifestPath = Join-Path $PSScriptRoot "UninstallBootstrapper.manifest"
 $SignScriptPath = Join-Path $PSScriptRoot "Sign-DiskControl.ps1"
@@ -62,7 +62,7 @@ function Get-CSharpCompiler {
         }
     }
 
-    throw "C# compiler was not found. Cannot build DiskControl-Setup.exe."
+    throw "C# compiler was not found. Cannot build DistControl-Setup.exe."
 }
 
 function Add-FileToStream([System.IO.Stream]$Output, [string]$Path) {
@@ -97,7 +97,7 @@ function Build-SetupExe {
             Remove-Item -LiteralPath $SetupExePath -Force
         }
         catch {
-            $setupOutputPath = Join-Path $DistDir ("DiskControl-Setup-{0}.exe" -f (Get-Date -Format "yyyyMMdd-HHmmss"))
+            $setupOutputPath = Join-Path $DistDir ("DistControl-Setup-{0}.exe" -f (Get-Date -Format "yyyyMMdd-HHmmss"))
             Write-Warning "Cannot replace $SetupExePath. It may still be running. Building $setupOutputPath instead."
         }
     }
@@ -204,8 +204,8 @@ if (-not $SkipBuild) {
 }
 
 Invoke-CodeSigning -Files @(
-    (Join-Path $ReleaseDir "DiskControl.exe"),
-    (Join-Path $ReleaseDir "DiskControl.Admin.exe")
+    (Join-Path $ReleaseDir "DistControl.exe"),
+    (Join-Path $ReleaseDir "DistControl.Admin.exe")
 )
 
 Build-UninstallExe
@@ -226,7 +226,7 @@ foreach ($relative in @(
     "installer\Launch-Uninstall-DiskControl.ps1",
     "installer\Sign-DiskControl.ps1",
     "README.md",
-    "DiskControl-guide.html",
+    "DistControl-guide.html",
     "dkcl64.exe",
     "dkcl.ini",
     "allowlist.example.json"
@@ -234,11 +234,11 @@ foreach ($relative in @(
     Copy-IntoStage $relative
 }
 
-Copy-IntoStageAs $UninstallExePath "Uninstall-DiskControl.exe"
+Copy-IntoStageAs $UninstallExePath "Uninstall-DistControl.exe"
 
 foreach ($relative in @(
-    "build\x64\Release\DiskControl.exe",
-    "build\x64\Release\DiskControl.Admin.exe"
+    "build\x64\Release\DistControl.exe",
+    "build\x64\Release\DistControl.Admin.exe"
 )) {
     Copy-IntoStage $relative
 }

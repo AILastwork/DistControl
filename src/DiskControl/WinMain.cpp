@@ -14,9 +14,9 @@
 
 namespace {
 #ifdef DISKCONTROL_ADMIN
-constexpr const wchar_t* kAppTitle = L"DiskControl Admin";
+constexpr const wchar_t* kAppTitle = L"DistControl Admin";
 #else
-constexpr const wchar_t* kAppTitle = L"DiskControl";
+constexpr const wchar_t* kAppTitle = L"DistControl";
 #endif
 
 struct CommandLineOptions {
@@ -87,20 +87,20 @@ std::wstring moduleDirectory() {
     return std::filesystem::current_path().wstring();
 }
 
-std::wstring programDataLogDirectory() {
-    const DWORD needed = GetEnvironmentVariableW(L"ProgramData", nullptr, 0);
+std::wstring localAppDataLogDirectory() {
+    const DWORD needed = GetEnvironmentVariableW(L"LOCALAPPDATA", nullptr, 0);
     if (needed == 0) {
         return {};
     }
 
-    std::wstring programData(needed, L'\0');
-    const DWORD written = GetEnvironmentVariableW(L"ProgramData", programData.data(), needed);
+    std::wstring localAppData(needed, L'\0');
+    const DWORD written = GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData.data(), needed);
     if (written == 0 || written >= needed) {
         return {};
     }
 
-    programData.resize(written);
-    return (std::filesystem::path(programData) / L"DiskControl" / L"logs").wstring();
+    localAppData.resize(written);
+    return (std::filesystem::path(localAppData) / L"DistControl" / L"logs").wstring();
 }
 
 bool tryAppendStartupLog(const std::wstring& directory, const std::wstring& message, std::wstring* writtenPath) {
@@ -135,7 +135,7 @@ bool tryAppendStartupLog(const std::wstring& directory, const std::wstring& mess
 
 std::wstring appendStartupLog(const std::wstring& message) {
     std::wstring path;
-    if (tryAppendStartupLog(programDataLogDirectory(), message, &path)) {
+    if (tryAppendStartupLog(localAppDataLogDirectory(), message, &path)) {
         return path;
     }
     tryAppendStartupLog((std::filesystem::path(moduleDirectory()) / L"logs").wstring(), message, &path);
@@ -203,7 +203,7 @@ int runApplication(HINSTANCE instance, int showCommand) {
     }
     else {
         AuditLogger::trace(startupOperation,
-            L"Используется основной файл конфигурации из C:\\ProgramData\\DiskControl\\allow.json.");
+            L"Используется основной файл конфигурации из %LOCALAPPDATA%\\DistControl\\allow.json.");
     }
 
     appendStartupLog(std::wstring(kAppTitle) + L" start. CommandLine=" + GetCommandLineW());
@@ -213,7 +213,7 @@ int runApplication(HINSTANCE instance, int showCommand) {
         AuditLogger::trace(startupOperation,
             L"Главное окно создать не удалось. GetLastError=" + std::to_wstring(GetLastError()) + L".");
         const std::wstring logPath = appendStartupLog(std::wstring(kAppTitle) + L" failed to create main window. GetLastError=" + std::to_wstring(GetLastError()));
-        showFatalError(L"Не удалось открыть окно DiskControl. Перезапустите приложение, а если ошибка повторится, отправьте администратору файл журнала.", logPath);
+        showFatalError(L"Не удалось открыть окно DistControl. Перезапустите приложение, а если ошибка повторится, отправьте администратору файл журнала.", logPath);
         return 1;
     }
     AuditLogger::trace(startupOperation,
@@ -245,13 +245,13 @@ int APIENTRY wWinMain(
     catch (const std::exception& error) {
         const std::wstring message = std::wstring(kAppTitle) + L" fatal error: " + widenAscii(error.what());
         const std::wstring logPath = appendStartupLog(message);
-        showFatalError(L"DiskControl не смог запуститься. Попробуйте запустить приложение ещё раз или переустановить DiskControl.\n\nТехническая причина: " + widenAscii(error.what()), logPath);
+        showFatalError(L"DistControl не смог запуститься. Попробуйте запустить приложение ещё раз или переустановить DistControl.\n\nТехническая причина: " + widenAscii(error.what()), logPath);
         return 1;
     }
     catch (...) {
         const std::wstring message = std::wstring(kAppTitle) + L" fatal error: unknown exception";
         const std::wstring logPath = appendStartupLog(message);
-        showFatalError(L"DiskControl не смог запуститься из-за неизвестной ошибки. Отправьте администратору файл журнала.", logPath);
+        showFatalError(L"DistControl не смог запуститься из-за неизвестной ошибки. Отправьте администратору файл журнала.", logPath);
         return 1;
     }
 }

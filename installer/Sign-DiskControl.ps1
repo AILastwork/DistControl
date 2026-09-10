@@ -33,9 +33,9 @@ function Get-SignTool {
 
 function Resolve-DefaultFiles {
     @(
-        (Join-Path $Root "build\x64\Release\DiskControl.exe"),
-        (Join-Path $Root "build\x64\Release\DiskControl.Admin.exe"),
-        (Join-Path $Root "dist\DiskControl-Setup.exe")
+        (Join-Path $Root "build\x64\Release\DistControl.exe"),
+        (Join-Path $Root "build\x64\Release\DistControl.Admin.exe"),
+        (Join-Path $Root "dist\DistControl-Setup.exe")
     ) | Where-Object { Test-Path -LiteralPath $_ }
 }
 
@@ -68,11 +68,11 @@ foreach ($file in $Files) {
     }
 
     $args += $resolved
-    Write-Host "[DiskControl] Signing $resolved"
+    Write-Host "[DistControl] Signing $resolved"
     & $signTool @args
     if ($LASTEXITCODE -ne 0) {
         throw "signtool failed with exit code $LASTEXITCODE"
     }
 }
 
-Write-Host "[DiskControl] Signing completed"
+Write-Host "[DistControl] Signing completed"

@@ -1,8 +1,8 @@
 #Requires -Version 5.1
 [CmdletBinding()]
 param(
-    [string]$InstallDir = (Join-Path $env:ProgramFiles "DiskControl"),
-    [string]$ProgramDataDir = (Join-Path $env:ProgramData "DiskControl"),
+    [string]$InstallDir = (Join-Path $env:ProgramFiles "DistControl"),
+    [string]$ProgramDataDir = (Join-Path $env:LOCALAPPDATA "DistControl"),
     [string]$ServiceName = "dkclient"
 )
 
@@ -12,7 +12,7 @@ $ReleaseDir = Join-Path $Root "build\x64\Release"
 $PolicyPath = Join-Path $ProgramDataDir "allow.json"
 $LogsDir = Join-Path $ProgramDataDir "logs"
 $ManagedHubRoutesPath = Join-Path $ProgramDataDir "managed-hub-routes.json"
-$ClientStartupShortcut = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\Startup\DiskControl dkclient.lnk"
+$ClientStartupShortcut = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\Startup\DistControl dkclient.lnk"
 
 function Write-Section([string]$Title) {
     Write-Host ""
@@ -29,7 +29,7 @@ function Write-Check([string]$Name, [bool]$Ok, [string]$Details = "") {
     }
 }
 
-Write-Host "DiskControl diagnostics"
+Write-Host "DistControl diagnostics"
 Write-Host ("Time: {0}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"))
 Write-Host ("User: {0}\{1}" -f $env:USERDOMAIN, $env:USERNAME)
 Write-Host ("Computer: {0}" -f $env:COMPUTERNAME)
@@ -46,7 +46,7 @@ foreach ($dir in $candidateDirs) {
     }
 
     Write-Check "Directory" $true $dir
-    foreach ($name in @("DiskControl.exe", "DiskControl.Admin.exe", "dkcl64.exe", "dkcl.ini")) {
+    foreach ($name in @("DistControl.exe", "DistControl.Admin.exe", "dkcl64.exe", "dkcl.ini")) {
         $path = Join-Path $dir $name
         if (Test-Path -LiteralPath $path) {
             $item = Get-Item -LiteralPath $path
@@ -134,5 +134,5 @@ else {
 }
 
 Write-Section "Notes"
-Write-Host "If DiskControl.Admin.exe closes immediately, send the newest startup-YYYYMMDD.log from the logs directory."
+Write-Host "If DistControl.Admin.exe closes immediately, send the newest startup-YYYYMMDD.log from the logs directory."
 Write-Host "If there is no startup log at all, the app may be blocked by antivirus/AppLocker or launched from an old package."

@@ -11,19 +11,20 @@ using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text;
 using System.Windows.Forms;
+using Microsoft.Win32;
 
-[assembly: AssemblyTitle("DiskControl Setup")]
-[assembly: AssemblyDescription("DiskControl Windows installer")]
-[assembly: AssemblyCompany("DiskControl")]
-[assembly: AssemblyProduct("DiskControl")]
+[assembly: AssemblyTitle("DistControl Setup")]
+[assembly: AssemblyDescription("DistControl Windows installer")]
+[assembly: AssemblyCompany("DistControl")]
+[assembly: AssemblyProduct("DistControl")]
 [assembly: AssemblyCopyright("Copyright 2026")]
-[assembly: AssemblyVersion("0.4.6.0")]
-[assembly: AssemblyFileVersion("0.4.6.0")]
+[assembly: AssemblyVersion("0.6.0.0")]
+[assembly: AssemblyFileVersion("0.6.0.0")]
 [assembly: ComVisible(false)]
 
 internal static class SetupBootstrapper
 {
-    private const string ProductName = "DiskControl";
+    private const string ProductName = "DistControl";
     private const string DefaultUsageStateDirectory = @"\\dfs\fs\IT\soft\DistKontrol\time";
     private static readonly byte[] Marker = Encoding.ASCII.GetBytes("DKSETUP1");
 
@@ -55,8 +56,26 @@ internal static class SetupBootstrapper
         public string Account;
         public string Password;
         public string UsageStateDirectory;
+        public string TargetUserSid;
+        public string TargetProfileDirectory;
+        public string InstallDirectory;
+        public string DataDirectory;
+        public string RoamingAppDataDirectory;
+        public string StartMenuDirectory;
+        public string DesktopDirectory;
         public bool ConfigureVpn;
         public List<VpnInstallProfile> VpnProfiles = new List<VpnInstallProfile>();
+    }
+
+    private sealed class UserInstallContext
+    {
+        public string Sid;
+        public string ProfileDirectory;
+        public string InstallDirectory;
+        public string DataDirectory;
+        public string RoamingAppDataDirectory;
+        public string StartMenuDirectory;
+        public string DesktopDirectory;
     }
 
     private sealed class VpnInstallProfile
@@ -106,7 +125,7 @@ internal static class SetupBootstrapper
             titleLabel.Top = 18;
             titleLabel.Width = 535;
             titleLabel.Height = 24;
-            titleLabel.Text = "Установка DiskControl";
+            titleLabel.Text = "Установка DistControl";
             titleLabel.Font = new System.Drawing.Font(titleLabel.Font, System.Drawing.FontStyle.Bold);
             Controls.Add(titleLabel);
 
@@ -200,7 +219,7 @@ internal static class SetupBootstrapper
         string tempRoot = null;
         try
         {
-            tempRoot = Path.Combine(Path.GetTempPath(), "DiskControl-Setup-" + Guid.NewGuid().ToString("N"));
+            tempRoot = Path.Combine(Path.GetTempPath(), "DistControl-Setup-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(tempRoot);
 
             string payloadZip = Path.Combine(tempRoot, "payload.zip");
@@ -231,7 +250,7 @@ internal static class SetupBootstrapper
             }
 
             MessageBox.Show(
-                "Установка DiskControl завершена.",
+                "Установка DistControl завершена.",
                 ProductName + " Setup",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
@@ -240,7 +259,7 @@ internal static class SetupBootstrapper
         catch (Exception ex)
         {
             MessageBox.Show(
-                "Не удалось завершить установку DiskControl.\r\n\r\n" +
+                "Не удалось завершить установку DistControl.\r\n\r\n" +
                 "Попробуйте запустить установщик от имени администратора. Если ошибка повторится, отправьте администратору текст ошибки ниже.\r\n\r\n" +
                 "Техническая причина: " + ex.Message,
                 ProductName + " Setup",
@@ -283,7 +302,7 @@ internal static class SetupBootstrapper
             info.Top = 14;
             info.Width = 525;
             info.Height = 58;
-            info.Text = "Укажите учетную запись Windows, под которой будет работать служба dkclient. DistKontrolUSB будет показывать этого пользователя у занятых USB-токенов вместо SYSTEM.";
+            info.Text = "Укажите текущую учетную запись Windows. DistControl установится только в ее профиль, а служба dkclient будет показывать этого пользователя у занятых USB-токенов.";
             form.Controls.Add(info);
 
             Label accountLabel = new Label();
@@ -336,7 +355,7 @@ internal static class SetupBootstrapper
             usageHint.Top = 182;
             usageHint.Width = 395;
             usageHint.Height = 34;
-            usageHint.Text = "Общая папка таймеров для всех компьютеров. Путь можно изменить; если оставить пустым, будет использован локальный ProgramData.";
+            usageHint.Text = "Общая папка таймеров для всех компьютеров. Если оставить путь пустым, состояние будет сохранено в локальном профиле пользователя.";
             form.Controls.Add(usageHint);
 
             Label note = new Label();
@@ -391,17 +410,37 @@ internal static class SetupBootstrapper
                     }
                     if (!Path.IsPathRooted(usageStateDirectory))
                     {
-                        MessageBox.Show("Папка таймеров должна быть полным путем, например C:\\ProgramData\\DiskControl или \\\\SERVER\\Share\\DiskControl.", ProductName + " Setup", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        MessageBox.Show("Папка таймеров должна быть полным путем, например C:\\Users\\user\\AppData\\Local\\DistControl или \\\\SERVER\\Share\\DistControl.", ProductName + " Setup", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                         usageBox.Focus();
                         return;
                     }
+                }
+
+                UserInstallContext installContext;
+                try
+                {
+                    installContext = ResolveUserInstallContext(account);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show("Не удалось определить профиль указанного пользователя.\r\n\r\n" + ex.Message,
+                        ProductName + " Setup", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    accountBox.Focus();
+                    return;
                 }
 
                 credentials = new ServiceCredentials
                 {
                     Account = account,
                     Password = password,
-                    UsageStateDirectory = usageStateDirectory
+                    UsageStateDirectory = usageStateDirectory,
+                    TargetUserSid = installContext.Sid,
+                    TargetProfileDirectory = installContext.ProfileDirectory,
+                    InstallDirectory = installContext.InstallDirectory,
+                    DataDirectory = installContext.DataDirectory,
+                    RoamingAppDataDirectory = installContext.RoamingAppDataDirectory,
+                    StartMenuDirectory = installContext.StartMenuDirectory,
+                    DesktopDirectory = installContext.DesktopDirectory
                 };
                 form.DialogResult = DialogResult.OK;
                 form.Close();
@@ -772,6 +811,54 @@ internal static class SetupBootstrapper
         return Environment.UserName ?? string.Empty;
     }
 
+    private static UserInstallContext ResolveUserInstallContext(string account)
+    {
+        if (string.IsNullOrWhiteSpace(account))
+        {
+            throw new InvalidOperationException("Учетная запись не указана.");
+        }
+
+        SecurityIdentifier sid;
+        try
+        {
+            sid = (SecurityIdentifier)new NTAccount(account.Trim()).Translate(typeof(SecurityIdentifier));
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException("Windows не нашла учетную запись " + account.Trim() + ".", ex);
+        }
+
+        string profileDirectory = string.Empty;
+        using (RegistryKey profileKey = Registry.LocalMachine.OpenSubKey(
+            @"SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\" + sid.Value))
+        {
+            if (profileKey != null)
+            {
+                object rawPath = profileKey.GetValue("ProfileImagePath", string.Empty, RegistryValueOptions.DoNotExpandEnvironmentNames);
+                profileDirectory = Environment.ExpandEnvironmentVariables(rawPath == null ? string.Empty : rawPath.ToString());
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(profileDirectory) || !Directory.Exists(profileDirectory))
+        {
+            throw new DirectoryNotFoundException("Профиль " + account.Trim() + " ещё не создан на этом компьютере. Пользователь должен хотя бы один раз войти в Windows.");
+        }
+
+        profileDirectory = Path.GetFullPath(profileDirectory.Trim());
+        string localAppData = Path.Combine(profileDirectory, "AppData", "Local");
+        string roamingAppData = Path.Combine(profileDirectory, "AppData", "Roaming");
+        return new UserInstallContext
+        {
+            Sid = sid.Value,
+            ProfileDirectory = profileDirectory,
+            InstallDirectory = Path.Combine(localAppData, "Programs", "DistControl"),
+            DataDirectory = Path.Combine(localAppData, "DistControl"),
+            RoamingAppDataDirectory = roamingAppData,
+            StartMenuDirectory = Path.Combine(roamingAppData, "Microsoft", "Windows", "Start Menu", "Programs", "DistControl"),
+            DesktopDirectory = Path.Combine(profileDirectory, "Desktop")
+        };
+    }
+
     private static string DefaultUsageStateDirectoryValue()
     {
         string configuredDirectory = Environment.GetEnvironmentVariable("DISKCONTROL_USAGE_STATE_DIR");
@@ -909,7 +996,7 @@ internal static class SetupBootstrapper
     private static PowerShellResult RunPowerShell(string launcher, string workingDirectory, ServiceCredentials credentials, Action<string> onOutputLine)
     {
         var output = new StringBuilder();
-        // VPN profiles are intentionally managed by Windows and DiskControl Admin.
+        // VPN profiles are intentionally managed by Windows and DistControl Admin.
         // The installer never forwards legacy VPN-creation input to PowerShell.
         string vpnProfilesFile = string.Empty;
         var startInfo = new ProcessStartInfo
@@ -931,6 +1018,13 @@ internal static class SetupBootstrapper
             startInfo.EnvironmentVariables["DISKCONTROL_SERVICE_ACCOUNT"] = credentials.Account ?? string.Empty;
             startInfo.EnvironmentVariables["DISKCONTROL_SERVICE_PASSWORD"] = credentials.Password ?? string.Empty;
             startInfo.EnvironmentVariables["DISKCONTROL_USAGE_STATE_DIR"] = credentials.UsageStateDirectory ?? string.Empty;
+            startInfo.EnvironmentVariables["DISTCONTROL_TARGET_USER_SID"] = credentials.TargetUserSid ?? string.Empty;
+            startInfo.EnvironmentVariables["DISTCONTROL_TARGET_PROFILE_DIR"] = credentials.TargetProfileDirectory ?? string.Empty;
+            startInfo.EnvironmentVariables["DISTCONTROL_INSTALL_DIR"] = credentials.InstallDirectory ?? string.Empty;
+            startInfo.EnvironmentVariables["DISTCONTROL_DATA_DIR"] = credentials.DataDirectory ?? string.Empty;
+            startInfo.EnvironmentVariables["DISTCONTROL_ROAMING_APPDATA_DIR"] = credentials.RoamingAppDataDirectory ?? string.Empty;
+            startInfo.EnvironmentVariables["DISTCONTROL_START_MENU_DIR"] = credentials.StartMenuDirectory ?? string.Empty;
+            startInfo.EnvironmentVariables["DISTCONTROL_DESKTOP_DIR"] = credentials.DesktopDirectory ?? string.Empty;
         }
 
         try
@@ -1007,7 +1101,7 @@ internal static class SetupBootstrapper
         }
         if (lower.Contains("copy "))
         {
-            return "Копирование файлов DiskControl...";
+            return "Копирование файлов DistControl...";
         }
         if (lower.Contains("policy"))
         {
@@ -1016,6 +1110,18 @@ internal static class SetupBootstrapper
         if (lower.Contains("configure acl") || lower.Contains("execute acl") || lower.Contains("log on as a service"))
         {
             return "Настройка прав доступа...";
+        }
+        if (lower.Contains("prepare distkontrolusb settings"))
+        {
+            return "Подготовка штатного клиента для выбранного пользователя...";
+        }
+        if (lower.Contains("check that dkclient is ready") || lower.Contains("dkclient is not ready yet"))
+        {
+            return "Ожидание списка USB-токенов от службы...";
+        }
+        if (lower.Contains("dkclient is ready"))
+        {
+            return "Служба отвечает, список USB-токенов получен...";
         }
         if (lower.Contains("configure windows vpn profile"))
         {
@@ -1055,7 +1161,7 @@ internal static class SetupBootstrapper
     private static string BuildInstallFailureMessage(int exitCode, string output)
     {
         StringBuilder message = new StringBuilder();
-        message.AppendLine("Установка DiskControl не завершилась.");
+        message.AppendLine("Установка DistControl не завершилась.");
         message.AppendLine();
         message.AppendLine("Причина: " + GuessInstallFailureCause(output));
 
@@ -1081,7 +1187,7 @@ internal static class SetupBootstrapper
             ContainsText(text, "Отказано в доступе") ||
             ContainsText(text, "UnauthorizedAccessException"))
         {
-            return "не хватило прав. Запустите установщик от имени администратора и проверьте права на C:\\Program Files\\DiskControl и C:\\ProgramData\\DiskControl.";
+            return "не хватило прав. Подтвердите UAC администратором и проверьте права на пользовательские папки %LOCALAPPDATA%\\Programs\\DistControl и %LOCALAPPDATA%\\DistControl.";
         }
         if (ContainsText(text, "password") ||
             ContainsText(text, "Log on as a service") ||
@@ -1095,7 +1201,15 @@ internal static class SetupBootstrapper
         if (ContainsText(text, "dkcl64.exe is still running") ||
             ContainsText(text, "Cannot stop a conflicting dkcl64.exe"))
         {
-            return "старый процесс dkcl64.exe не удалось остановить. Закройте DiskControl, остановите службу dkclient или перезагрузите компьютер и повторите установку.";
+            return "старый процесс dkcl64.exe не удалось остановить. Закройте DistControl, остановите службу dkclient или перезагрузите компьютер и повторите установку.";
+        }
+        if (ContainsText(text, "Close DistControl before installation"))
+        {
+            return "во время обновления открыта программа DistControl или админская утилита. Закройте указанные в журнале окна и повторите установку.";
+        }
+        if (ContainsText(text, "dkclient pipe did not become ready"))
+        {
+            return "служба dkclient запустилась, но не смогла вернуть список USB-токенов. Проверьте учетную запись службы, файл dkcl.ini и доступность серверов из ManualHubs.";
         }
         if (ContainsText(text, "usage state") ||
             ContainsText(text, "UsageStateDir") ||
@@ -1113,7 +1227,7 @@ internal static class SetupBootstrapper
         if (ContainsText(text, "Required installer input is missing") ||
             ContainsText(text, "Required file not found"))
         {
-            return "в установочном пакете не найден обязательный файл. Используйте свежий DiskControl-Setup.exe из папки dist.";
+            return "в установочном пакете не найден обязательный файл. Используйте свежий DistControl-Setup.exe из папки dist.";
         }
         return "точная причина не определена автоматически. Откройте подробный журнал ниже и пришлите его для разбора.";
     }
