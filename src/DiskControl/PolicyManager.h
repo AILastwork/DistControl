@@ -71,6 +71,11 @@ public:
         const std::vector<ParsedDevice>& devices,
         const std::wstring& userName,
         const std::wstring& expectedRevision) const;
+    std::wstring saveVpnAssignmentsForDevices(
+        const std::vector<VpnProfile>& profiles,
+        const std::vector<DeviceRule>& assignments,
+        const std::wstring& userName,
+        const std::wstring& expectedRevision) const;
     void upsertVpnProfile(const VpnProfile& profile) const;
     void removeVpnProfile(const std::wstring& profileId) const;
     std::wstring removeVpnProfileChecked(

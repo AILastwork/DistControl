@@ -21,22 +21,20 @@ BEGIN
     PUSHBUTTON      "Отмена", IDCANCEL, 212, 116, 58, 16
 END
 
-IDD_VPN_ADMIN DIALOGEX 0, 0, 400, 214
+IDD_VPN_BULK DIALOGEX 0, 0, 620, 372
 STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
-CAPTION "DistControl Admin - VPN для токена"
+CAPTION "DistControl Admin - сопоставление токенов и VPN"
 FONT 9, "Segoe UI"
 BEGIN
-    AUTORADIOBUTTON "Windows VPN", IDC_VPN_ADMIN_MODE_VPN, 122, 14, 95, 12, WS_GROUP
-    AUTORADIOBUTTON "Без VPN", IDC_VPN_ADMIN_MODE_DIRECT, 224, 14, 82, 12
-    LTEXT           "Профиль Windows:", -1, 10, 41, 105, 10
-    COMBOBOX        IDC_VPN_ADMIN_WINDOWS_PROFILE, 122, 37, 266, 130, CBS_DROPDOWN | CBS_AUTOHSCROLL | WS_VSCROLL | WS_TABSTOP
-    LTEXT           "Сервер / тип:", -1, 10, 67, 105, 10
-    LTEXT           "", IDC_VPN_ADMIN_SERVER, 122, 65, 266, 24
-    AUTOCHECKBOX    "Настройка включена", IDC_VPN_ADMIN_ENABLED, 122, 94, 130, 12
-    LTEXT           "", IDC_VPN_ADMIN_STATE, 10, 117, 378, 24
-    LTEXT           "Перед подключением токена приложение отключит другие VPN Windows и включит выбранный профиль.", IDC_VPN_ADMIN_NOTE, 10, 147, 378, 22
-    DEFPUSHBUTTON   "Сохранить и назначить", IDC_VPN_ADMIN_SAVE, 10, 184, 118, 18
-    PUSHBUTTON      "Снять с токена", IDC_VPN_ADMIN_UNASSIGN, 134, 184, 78, 18
-    PUSHBUTTON      "Удалить настройку", IDC_VPN_ADMIN_DELETE, 218, 184, 88, 18
-    PUSHBUTTON      "Закрыть", IDCANCEL, 332, 184, 56, 18
+    LTEXT           "Пользователь:", -1, 10, 10, 70, 10
+    LTEXT           "", IDC_VPN_BULK_USER, 82, 10, 528, 10
+    LTEXT           "Поиск:", -1, 10, 32, 48, 10
+    EDITTEXT        IDC_VPN_BULK_SEARCH, 60, 28, 330, 16, ES_AUTOHSCROLL
+    PUSHBUTTON      "Сброс", IDC_VPN_BULK_CLEAR_SEARCH, 398, 27, 64, 18
+    LTEXT           "", IDC_VPN_BULK_COUNT, 470, 32, 140, 10, SS_RIGHT
+    CONTROL         "", IDC_VPN_BULK_LIST, "SysListView32", LVS_REPORT | LVS_SHOWSELALWAYS | WS_BORDER | WS_TABSTOP, 10, 51, 600, 268
+    LTEXT           "Нажмите значение в столбце VPN и выберите: Не назначен, БЕЗ VPN или профиль Windows.", -1, 10, 326, 410, 16
+    PUSHBUTTON      "Автосопоставить", IDC_VPN_BULK_AUTO_MATCH, 10, 344, 104, 18
+    DEFPUSHBUTTON   "Сохранить", IDC_VPN_BULK_SAVE, 430, 344, 84, 18
+    PUSHBUTTON      "Закрыть", IDCANCEL, 522, 344, 88, 18
 END

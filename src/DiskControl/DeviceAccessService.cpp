@@ -1257,6 +1257,35 @@ std::wstring DeviceAccessService::clearVpnProfileForDevices(
     return revision;
 }
 
+std::wstring DeviceAccessService::saveVpnAssignmentsForDevices(
+    const std::vector<VpnProfile>& profiles,
+    const std::vector<DeviceViewModel>& devices,
+    const std::wstring& userName,
+    const std::wstring& expectedRevision) const {
+    std::vector<DeviceRule> assignments;
+    assignments.reserve(devices.size());
+    for (const DeviceViewModel& device : devices) {
+        DeviceRule assignment;
+        assignment.endpoint = device.endpoint;
+        assignment.nickname = device.nickname;
+        assignment.product = device.product;
+        assignment.vpnProfileId = device.vpnProfileId;
+        assignments.push_back(std::move(assignment));
+    }
+
+    PolicyManager policy;
+    const std::wstring revision = policy.saveVpnAssignmentsForDevices(
+        profiles, assignments, userName, expectedRevision);
+    AuditEvent event;
+    event.action = L"SAVE VPN MAPPINGS";
+    event.result = L"OK";
+    event.details = L"user=" + userName + L"; config=" + policy.configPath() +
+        L"; tokens=" + std::to_wstring(devices.size()) +
+        L"; oldRevision=" + expectedRevision + L"; newRevision=" + revision;
+    AuditLogger::log(event);
+    return revision;
+}
+
 void DeviceAccessService::upsertVpnProfile(const VpnProfile& profile) const {
     PolicyManager policy;
     policy.upsertVpnProfile(profile);

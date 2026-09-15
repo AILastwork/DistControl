@@ -9,10 +9,12 @@
 #include <algorithm>
 #include <commdlg.h>
 #include <commctrl.h>
+#include <sddl.h>
 #include <windows.h>
 #include <windowsx.h>
 
 #include <cstdint>
+#include <cwctype>
 #include <exception>
 #include <fstream>
 #include <iomanip>
@@ -39,6 +41,7 @@ constexpr int IDC_COMPUTER = 1018;
 constexpr int IDC_LOAD_COMPUTER = 1019;
 constexpr int IDC_AVAILABLE_LIST = 1020;
 constexpr int IDC_VPN = 1021;
+constexpr int IDC_VPN_MAPPINGS = 1022;
 constexpr UINT_PTR IDT_DELAYED_REFRESH = 2001;
 constexpr UINT_PTR IDT_USAGE_WATCHDOG = 2002;
 constexpr UINT kRefreshRetryDelayMs = 3000;
@@ -283,31 +286,6 @@ INT_PTR CALLBACK vpnCredentialDialogProc(HWND dialog, UINT message, WPARAM wPara
     return FALSE;
 }
 
-struct VpnAdminDialogData {
-    DeviceAccessService* service = nullptr;
-    DeviceViewModel device;
-    std::vector<DeviceViewModel> devices;
-    std::wstring userName;
-    std::wstring expectedRevision;
-    std::wstring savedRevision;
-    std::vector<VpnProfile> profiles;
-    std::vector<WindowsVpnProfileInfo> windowsProfiles;
-    NetworkStateSnapshot networkState;
-    bool networkStateFresh = false;
-    bool changed = false;
-};
-
-std::wstring joinTextValues(const std::vector<std::wstring>& values) {
-    std::wstring result;
-    for (const std::wstring& value : values) {
-        if (!result.empty()) {
-            result += L", ";
-        }
-        result += value;
-    }
-    return result;
-}
-
 bool sameWindowsVpnBinding(
     const VpnProfile& profile,
     const WindowsVpnProfileInfo& windowsProfile) {
@@ -320,10 +298,10 @@ bool sameWindowsVpnBinding(
 }
 
 std::wstring automaticVpnProfileId(
-    const VpnAdminDialogData& data,
+    const std::vector<VpnProfile>& profiles,
     VpnProfileMode mode,
     const WindowsVpnProfileInfo* windowsProfile) {
-    for (const VpnProfile& existing : data.profiles) {
+    for (const VpnProfile& existing : profiles) {
         if ((mode == VpnProfileMode::Direct && existing.mode == VpnProfileMode::Direct) ||
             (windowsProfile && sameWindowsVpnBinding(existing, *windowsProfile))) {
             return existing.id;
@@ -337,7 +315,7 @@ std::wstring automaticVpnProfileId(
             : L"windows-user:") + windowsProfile->name;
     std::wstring candidate = base;
     for (unsigned int suffix = 2;; ++suffix) {
-        const bool occupied = std::any_of(data.profiles.begin(), data.profiles.end(),
+        const bool occupied = std::any_of(profiles.begin(), profiles.end(),
             [&candidate](const VpnProfile& profile) {
                 return CompareStringOrdinal(
                     profile.id.c_str(), static_cast<int>(profile.id.size()),
@@ -355,242 +333,503 @@ std::wstring windowsVpnDisplayName(const WindowsVpnProfileInfo& profile) {
         ? L" [все пользователи]"
         : L" [пользователь]");
 }
+void addColumn(HWND listView, int index, int width, const wchar_t* title);
+void setItemText(HWND listView, int row, int column, const std::wstring& text);
+std::wstring lowerCopy(std::wstring text);
+bool containsIgnoreCase(const std::wstring& text, const std::wstring& query);
+void loadListColumnLayout(HWND listView, int columnCount, const wchar_t* layoutName);
+void saveListColumnLayout(HWND listView, int columnCount, const wchar_t* layoutName);
 
-const WindowsVpnProfileInfo* selectedWindowsVpnProfile(HWND dialog, const VpnAdminDialogData& data) {
-    const LRESULT selection = SendDlgItemMessageW(
-        dialog, IDC_VPN_ADMIN_WINDOWS_PROFILE, CB_GETCURSEL, 0, 0);
-    if (selection != CB_ERR) {
-        const LRESULT index = SendDlgItemMessageW(
-            dialog, IDC_VPN_ADMIN_WINDOWS_PROFILE, CB_GETITEMDATA,
-            static_cast<WPARAM>(selection), 0);
-        if (index != CB_ERR && static_cast<size_t>(index) < data.windowsProfiles.size()) {
-            return &data.windowsProfiles[static_cast<size_t>(index)];
-        }
-    }
+struct VpnBulkDialogData {
+    DeviceAccessService* service = nullptr;
+    std::wstring userName;
+    std::wstring expectedRevision;
+    std::wstring savedRevision;
+    std::vector<DeviceViewModel> devices;
+    std::vector<VpnProfile> profiles;
+    std::vector<WindowsVpnProfileInfo> windowsProfiles;
+    HWND editorCombo = nullptr;
+    size_t editedDeviceIndex = static_cast<size_t>(-1);
+    bool changed = false;
+};
 
-    const std::wstring entered = trim(dialogItemText(dialog, IDC_VPN_ADMIN_WINDOWS_PROFILE));
-    for (const WindowsVpnProfileInfo& profile : data.windowsProfiles) {
-        if (CompareStringOrdinal(
-                windowsVpnDisplayName(profile).c_str(), -1, entered.c_str(), -1, TRUE) == CSTR_EQUAL ||
-            CompareStringOrdinal(profile.name.c_str(), -1, entered.c_str(), -1, TRUE) == CSTR_EQUAL) {
-            return &profile;
+constexpr LPARAM kBulkVpnNotAssigned = -1;
+constexpr LPARAM kBulkVpnDirect = -2;
+constexpr LPARAM kBulkVpnUnavailable = -3;
+
+const VpnProfile* bulkProfileById(
+    const VpnBulkDialogData& data,
+    const std::wstring& profileId) {
+    const auto found = std::find_if(data.profiles.begin(), data.profiles.end(),
+        [&profileId](const VpnProfile& profile) {
+            return CompareStringOrdinal(profile.id.c_str(), -1,
+                profileId.c_str(), -1, TRUE) == CSTR_EQUAL;
+        });
+    return found == data.profiles.end() ? nullptr : &*found;
+}
+
+const WindowsVpnProfileInfo* installedBulkVpnProfile(
+    const VpnBulkDialogData& data,
+    const VpnProfile& profile,
+    size_t* index = nullptr) {
+    for (size_t candidateIndex = 0; candidateIndex < data.windowsProfiles.size(); ++candidateIndex) {
+        if (sameWindowsVpnBinding(profile, data.windowsProfiles[candidateIndex])) {
+            if (index) {
+                *index = candidateIndex;
+            }
+            return &data.windowsProfiles[candidateIndex];
         }
     }
     return nullptr;
 }
 
-void autoCompleteVpnProfileCombo(HWND dialog) {
-    HWND combo = GetDlgItem(dialog, IDC_VPN_ADMIN_WINDOWS_PROFILE);
-    const std::wstring entered = dialogItemText(dialog, IDC_VPN_ADMIN_WINDOWS_PROFILE);
+std::wstring bulkVpnDisplayText(
+    const VpnBulkDialogData& data,
+    const DeviceViewModel& device) {
+    if (device.vpnProfileId.empty()) {
+        return L"Не назначен";
+    }
+    const VpnProfile* profile = bulkProfileById(data, device.vpnProfileId);
+    if (!profile) {
+        return L"Профиль недоступен: " + (device.vpnProfileDisplay.empty()
+            ? device.vpnProfileId : device.vpnProfileDisplay);
+    }
+    if (profile->mode == VpnProfileMode::Direct) {
+        return L"БЕЗ VPN";
+    }
+    if (!installedBulkVpnProfile(data, *profile)) {
+        return L"Профиль недоступен: " +
+            (profile->name.empty() ? profile->id : profile->name);
+    }
+    return profile->name;
+}
+
+void setBulkVpnRow(
+    HWND list,
+    int row,
+    const VpnBulkDialogData& data,
+    const DeviceViewModel& device) {
+    setItemText(list, row, 0, device.nickname.empty() ? device.product : device.nickname);
+    setItemText(list, row, 1, device.endpoint);
+    setItemText(list, row, 2, bulkVpnDisplayText(data, device) + L"   ▼");
+}
+
+bool matchesBulkVpnSearch(
+    const VpnBulkDialogData& data,
+    const DeviceViewModel& device,
+    const std::wstring& query) {
+    if (query.empty()) {
+        return true;
+    }
+    return containsIgnoreCase(device.nickname, query) ||
+        containsIgnoreCase(device.product, query) ||
+        containsIgnoreCase(device.endpoint, query) ||
+        containsIgnoreCase(bulkVpnDisplayText(data, device), query);
+}
+
+void hideBulkVpnEditor(VpnBulkDialogData& data) {
+    if (data.editorCombo) {
+        if (SendMessageW(data.editorCombo, CB_GETDROPPEDSTATE, 0, 0)) {
+            SendMessageW(data.editorCombo, CB_SHOWDROPDOWN, FALSE, 0);
+        }
+        ShowWindow(data.editorCombo, SW_HIDE);
+    }
+    data.editedDeviceIndex = static_cast<size_t>(-1);
+}
+
+void populateBulkVpnList(HWND dialog, VpnBulkDialogData& data) {
+    hideBulkVpnEditor(data);
+    HWND list = GetDlgItem(dialog, IDC_VPN_BULK_LIST);
+    const std::wstring query = trim(dialogItemText(dialog, IDC_VPN_BULK_SEARCH));
+    ListView_DeleteAllItems(list);
+    int row = 0;
+    for (size_t index = 0; index < data.devices.size(); ++index) {
+        if (!matchesBulkVpnSearch(data, data.devices[index], query)) {
+            continue;
+        }
+        LVITEMW item{};
+        item.mask = LVIF_TEXT | LVIF_PARAM;
+        item.iItem = row;
+        item.lParam = static_cast<LPARAM>(index);
+        item.pszText = const_cast<wchar_t*>(L"");
+        ListView_InsertItem(list, &item);
+        setBulkVpnRow(list, row, data, data.devices[index]);
+        ++row;
+    }
+    const std::wstring count = L"Показано токенов: " + std::to_wstring(row) +
+        L" из " + std::to_wstring(data.devices.size());
+    SetDlgItemTextW(dialog, IDC_VPN_BULK_COUNT, count.c_str());
+}
+
+std::wstring normalizedVpnMatchName(std::wstring value) {
+    value = lowerCopy(trim(value));
+    if (value.rfind(L"vpn", 0) == 0) {
+        value.erase(0, 3);
+    }
+    else if (value.rfind(L"впн", 0) == 0) {
+        value.erase(0, 3);
+    }
+    std::wstring normalized;
+    bool pendingSpace = false;
+    for (wchar_t ch : value) {
+        if (iswalnum(ch)) {
+            if (pendingSpace && !normalized.empty()) {
+                normalized.push_back(L' ');
+            }
+            normalized.push_back(ch);
+            pendingSpace = false;
+        }
+        else {
+            pendingSpace = true;
+        }
+    }
+    return normalized;
+}
+
+VpnProfile ensureBulkVpnProfile(
+    VpnBulkDialogData& data,
+    const WindowsVpnProfileInfo& windowsProfile) {
+    VpnProfile profile;
+    profile.id = automaticVpnProfileId(
+        data.profiles, VpnProfileMode::WindowsVpn, &windowsProfile);
+    profile.name = windowsProfile.name;
+    profile.serverAddress = windowsProfile.serverAddress;
+    profile.tunnelType = windowsProfile.tunnelType;
+    profile.phonebookScope = windowsProfile.phonebookScope;
+    profile.enabled = true;
+
+    const auto existing = std::find_if(data.profiles.begin(), data.profiles.end(),
+        [&profile](const VpnProfile& candidate) {
+            return CompareStringOrdinal(candidate.id.c_str(), -1,
+                profile.id.c_str(), -1, TRUE) == CSTR_EQUAL;
+        });
+    if (existing == data.profiles.end()) {
+        data.profiles.push_back(profile);
+    }
+    else {
+        *existing = profile;
+    }
+    return profile;
+}
+
+VpnProfile ensureBulkDirectProfile(VpnBulkDialogData& data) {
+    VpnProfile profile;
+    profile.id = automaticVpnProfileId(data.profiles, VpnProfileMode::Direct, nullptr);
+    profile.name = L"Без VPN";
+    profile.mode = VpnProfileMode::Direct;
+    profile.enabled = true;
+
+    const auto existing = std::find_if(data.profiles.begin(), data.profiles.end(),
+        [&profile](const VpnProfile& candidate) {
+            return CompareStringOrdinal(candidate.id.c_str(), -1,
+                profile.id.c_str(), -1, TRUE) == CSTR_EQUAL;
+        });
+    if (existing == data.profiles.end()) {
+        data.profiles.push_back(profile);
+    }
+    else {
+        *existing = profile;
+    }
+    return profile;
+}
+
+LRESULT addBulkVpnComboItem(HWND combo, const std::wstring& text, LPARAM value) {
+    const LRESULT item = SendMessageW(
+        combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(text.c_str()));
+    if (item != CB_ERR && item != CB_ERRSPACE) {
+        SendMessageW(combo, CB_SETITEMDATA, item, value);
+    }
+    return item;
+}
+
+bool bulkVpnEditorSelection(
+    VpnBulkDialogData& data,
+    DeviceViewModel& device,
+    LRESULT choice) {
+    const std::wstring oldId = device.vpnProfileId;
+    if (choice == kBulkVpnNotAssigned) {
+        device.vpnProfileId.clear();
+        device.vpnProfileDisplay.clear();
+    }
+    else if (choice == kBulkVpnDirect) {
+        const VpnProfile profile = ensureBulkDirectProfile(data);
+        device.vpnProfileId = profile.id;
+        device.vpnProfileDisplay = L"Без VPN";
+    }
+    else if (choice >= 0 && static_cast<size_t>(choice) < data.windowsProfiles.size()) {
+        const VpnProfile profile = ensureBulkVpnProfile(
+            data, data.windowsProfiles[static_cast<size_t>(choice)]);
+        device.vpnProfileId = profile.id;
+        device.vpnProfileDisplay = profile.name;
+    }
+    return CompareStringOrdinal(oldId.c_str(), -1,
+        device.vpnProfileId.c_str(), -1, TRUE) != CSTR_EQUAL;
+}
+
+bool applyBulkVpnEditorSelection(HWND list, VpnBulkDialogData& data) {
+    if (!data.editorCombo || data.editedDeviceIndex >= data.devices.size()) {
+        return false;
+    }
+
+    const LRESULT selection = SendMessageW(data.editorCombo, CB_GETCURSEL, 0, 0);
+    const LRESULT choice = selection == CB_ERR ? kBulkVpnUnavailable :
+        SendMessageW(data.editorCombo, CB_GETITEMDATA, selection, 0);
+    if (selection == CB_ERR || choice == kBulkVpnUnavailable) {
+        return false;
+    }
+
+    DeviceViewModel& device = data.devices[data.editedDeviceIndex];
+    data.changed = bulkVpnEditorSelection(data, device, choice) || data.changed;
+    for (int row = 0; row < ListView_GetItemCount(list); ++row) {
+        LVITEMW item{};
+        item.mask = LVIF_PARAM;
+        item.iItem = row;
+        if (ListView_GetItem(list, &item) && item.lParam >= 0 &&
+            static_cast<size_t>(item.lParam) == data.editedDeviceIndex) {
+            setBulkVpnRow(list, row, data, device);
+            return true;
+        }
+    }
+    return true;
+}
+
+void showBulkVpnEditor(
+    HWND dialog,
+    VpnBulkDialogData& data,
+    int row) {
+    HWND list = GetDlgItem(dialog, IDC_VPN_BULK_LIST);
+    LVITEMW item{};
+    item.mask = LVIF_PARAM;
+    item.iItem = row;
+    if (!ListView_GetItem(list, &item) || item.lParam < 0 ||
+        static_cast<size_t>(item.lParam) >= data.devices.size()) {
+        return;
+    }
+    const size_t deviceIndex = static_cast<size_t>(item.lParam);
+    const DeviceViewModel& device = data.devices[deviceIndex];
+
+    HWND combo = data.editorCombo;
+    SendMessageW(combo, CB_RESETCONTENT, 0, 0);
+    const LRESULT unassignedItem = addBulkVpnComboItem(
+        combo, L"Не назначен", kBulkVpnNotAssigned);
+    const LRESULT directItem = addBulkVpnComboItem(combo, L"БЕЗ VPN", kBulkVpnDirect);
+    std::vector<LRESULT> windowsItems;
+    windowsItems.reserve(data.windowsProfiles.size());
+    for (size_t index = 0; index < data.windowsProfiles.size(); ++index) {
+        windowsItems.push_back(addBulkVpnComboItem(
+            combo, windowsVpnDisplayName(data.windowsProfiles[index]), static_cast<LPARAM>(index)));
+    }
+
+    LRESULT selectedItem = unassignedItem;
+    const VpnProfile* currentProfile = bulkProfileById(data, device.vpnProfileId);
+    if (currentProfile && currentProfile->mode == VpnProfileMode::Direct) {
+        selectedItem = directItem;
+    }
+    else if (currentProfile) {
+        size_t windowsIndex = 0;
+        if (installedBulkVpnProfile(data, *currentProfile, &windowsIndex)) {
+            selectedItem = windowsItems[windowsIndex];
+        }
+        else {
+            selectedItem = addBulkVpnComboItem(
+                combo,
+                L"Профиль недоступен: " + (currentProfile->name.empty()
+                    ? currentProfile->id : currentProfile->name),
+                kBulkVpnUnavailable);
+        }
+    }
+    else if (!device.vpnProfileId.empty()) {
+        selectedItem = addBulkVpnComboItem(combo,
+            L"Профиль недоступен: " + device.vpnProfileId, kBulkVpnUnavailable);
+    }
+
+    RECT cell{};
+    ListView_EnsureVisible(list, row, FALSE);
+    if (!ListView_GetSubItemRect(list, row, 2, LVIR_BOUNDS, &cell)) {
+        return;
+    }
+    MapWindowPoints(list, dialog, reinterpret_cast<POINT*>(&cell), 2);
+    data.editedDeviceIndex = deviceIndex;
+    SendMessageW(combo, CB_SETCURSEL, selectedItem, 0);
+    SetWindowPos(combo, HWND_TOP, cell.left - 1, cell.top - 1,
+        (std::max)(static_cast<int>(cell.right - cell.left + 2), 180), 260,
+        SWP_SHOWWINDOW);
+    SetFocus(combo);
+    SendMessageW(combo, CB_SHOWDROPDOWN, TRUE, 0);
+}
+
+void autoCompleteBulkVpnCombo(HWND combo) {
+    const int length = GetWindowTextLengthW(combo);
+    std::wstring entered(static_cast<size_t>(length) + 1, L'\0');
+    GetWindowTextW(combo, entered.data(), length + 1);
+    entered.resize(static_cast<size_t>(length));
     if (entered.empty()) {
         return;
     }
-    const LRESULT match = SendMessageW(
-        combo, CB_FINDSTRING, static_cast<WPARAM>(-1), reinterpret_cast<LPARAM>(entered.c_str()));
-    if (match == CB_ERR) {
-        return;
-    }
-    SendMessageW(combo, CB_SETCURSEL, static_cast<WPARAM>(match), 0);
-    SendMessageW(combo, CB_SETEDITSEL, 0, MAKELPARAM(entered.size(), -1));
-}
-
-void updateVpnAdminMode(HWND dialog, const VpnAdminDialogData& data) {
-    const bool windowsVpn = IsDlgButtonChecked(dialog, IDC_VPN_ADMIN_MODE_VPN) == BST_CHECKED;
-    EnableWindow(GetDlgItem(dialog, IDC_VPN_ADMIN_WINDOWS_PROFILE), windowsVpn);
-    const WindowsVpnProfileInfo* selected = windowsVpn ? selectedWindowsVpnProfile(dialog, data) : nullptr;
-    if (!windowsVpn) {
-        SetDlgItemTextW(dialog, IDC_VPN_ADMIN_SERVER, L"VPN Windows будет отключён перед проверкой IP.");
-    }
-    else if (!selected) {
-        SetDlgItemTextW(dialog, IDC_VPN_ADMIN_SERVER, L"Выберите существующий профиль VPN Windows.");
-    }
-    else {
-        std::wstring details = selected->serverAddress.empty() ? L"сервер не указан" : selected->serverAddress;
-        if (!selected->tunnelType.empty()) {
-            details += L" / " + selected->tunnelType;
-        }
-        SetDlgItemTextW(dialog, IDC_VPN_ADMIN_SERVER, details.c_str());
+    const LRESULT match = SendMessageW(combo, CB_FINDSTRING,
+        static_cast<WPARAM>(-1), reinterpret_cast<LPARAM>(entered.c_str()));
+    if (match != CB_ERR) {
+        SendMessageW(combo, CB_SETCURSEL, match, 0);
+        SendMessageW(combo, CB_SETEDITSEL, 0, MAKELPARAM(entered.size(), -1));
     }
 }
 
-void selectWindowsVpnProfile(
-    HWND dialog,
-    const VpnAdminDialogData& data,
-    const std::wstring& name,
-    VpnPhonebookScope scope) {
-    for (size_t index = 0; index < data.windowsProfiles.size(); ++index) {
-        const WindowsVpnProfileInfo& candidate = data.windowsProfiles[index];
-        if (candidate.phonebookScope == scope && CompareStringOrdinal(
-            candidate.name.c_str(), static_cast<int>(candidate.name.size()),
-            name.c_str(), static_cast<int>(name.size()), TRUE) == CSTR_EQUAL) {
-            SendDlgItemMessageW(dialog, IDC_VPN_ADMIN_WINDOWS_PROFILE, CB_SETCURSEL, index, 0);
-            return;
-        }
-    }
-    SendDlgItemMessageW(dialog, IDC_VPN_ADMIN_WINDOWS_PROFILE, CB_SETCURSEL,
-        name.empty() && !data.windowsProfiles.empty() ? 0 : static_cast<WPARAM>(-1), 0);
-}
-
-void loadVpnAdminProfile(HWND dialog, const VpnAdminDialogData& data) {
-    const auto found = std::find_if(data.profiles.begin(), data.profiles.end(), [&data](const VpnProfile& profile) {
-        return CompareStringOrdinal(
-            profile.id.c_str(), static_cast<int>(profile.id.size()),
-            data.device.vpnProfileId.c_str(), static_cast<int>(data.device.vpnProfileId.size()),
-            TRUE) == CSTR_EQUAL;
-    });
-    if (found == data.profiles.end()) {
-        CheckRadioButton(dialog, IDC_VPN_ADMIN_MODE_VPN, IDC_VPN_ADMIN_MODE_DIRECT,
-            IDC_VPN_ADMIN_MODE_VPN);
-        selectWindowsVpnProfile(dialog, data, L"", VpnPhonebookScope::CurrentUser);
-        CheckDlgButton(dialog, IDC_VPN_ADMIN_ENABLED, BST_CHECKED);
-        updateVpnAdminMode(dialog, data);
-        return;
-    }
-    CheckRadioButton(dialog, IDC_VPN_ADMIN_MODE_VPN, IDC_VPN_ADMIN_MODE_DIRECT,
-        found->mode == VpnProfileMode::Direct
-            ? IDC_VPN_ADMIN_MODE_DIRECT
-            : IDC_VPN_ADMIN_MODE_VPN);
-    selectWindowsVpnProfile(dialog, data, found->name, found->phonebookScope);
-    CheckDlgButton(dialog, IDC_VPN_ADMIN_ENABLED, found->enabled ? BST_CHECKED : BST_UNCHECKED);
-    updateVpnAdminMode(dialog, data);
-}
-
-INT_PTR CALLBACK vpnAdminDialogProc(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam) {
-    auto* data = reinterpret_cast<VpnAdminDialogData*>(GetWindowLongPtrW(dialog, DWLP_USER));
+INT_PTR CALLBACK vpnBulkDialogProc(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam) {
+    auto* data = reinterpret_cast<VpnBulkDialogData*>(GetWindowLongPtrW(dialog, DWLP_USER));
     if (message == WM_INITDIALOG) {
-        data = reinterpret_cast<VpnAdminDialogData*>(lParam);
+        data = reinterpret_cast<VpnBulkDialogData*>(lParam);
         SetWindowLongPtrW(dialog, DWLP_USER, reinterpret_cast<LONG_PTR>(data));
-        HWND windowsCombo = GetDlgItem(dialog, IDC_VPN_ADMIN_WINDOWS_PROFILE);
-        for (size_t index = 0; index < data->windowsProfiles.size(); ++index) {
-            const std::wstring display = windowsVpnDisplayName(data->windowsProfiles[index]);
-            const LRESULT item = SendMessageW(
-                windowsCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(display.c_str()));
-            if (item != CB_ERR && item != CB_ERRSPACE) {
-                SendMessageW(windowsCombo, CB_SETITEMDATA, item, static_cast<LPARAM>(index));
-            }
-        }
-        SendMessageW(windowsCombo, CB_SETMINVISIBLE, 20, 0);
-        const size_t tokenCount = data->devices.empty() ? 1 : data->devices.size();
-        if (tokenCount > 1) {
-            const std::wstring title = L"DistControl Admin - VPN/IP для токенов (" +
-                std::to_wstring(tokenCount) + L")";
-            const std::wstring saveText = L"Сохранить для " + std::to_wstring(tokenCount);
-            SetWindowTextW(dialog, title.c_str());
-            SetDlgItemTextW(dialog, IDC_VPN_ADMIN_SAVE, saveText.c_str());
-        }
-        loadVpnAdminProfile(dialog, *data);
-        if (data->networkStateFresh) {
-            std::wstring state = L"Текущий внешний IP: " + data->networkState.publicIp + L". VPN Windows: ";
-            if (data->networkState.activeVpnNames.empty()) {
-                state += L"нет";
-            }
-            else {
-                state += joinTextValues(data->networkState.activeVpnNames);
-            }
-            SetDlgItemTextW(dialog, IDC_VPN_ADMIN_STATE, state.c_str());
-        }
-        else {
-            SetDlgItemTextW(dialog, IDC_VPN_ADMIN_STATE,
-                L"Нет свежего отчёта клиента о состоянии сети.");
-        }
+        SetDlgItemTextW(dialog, IDC_VPN_BULK_USER, data->userName.c_str());
+
+        HWND list = GetDlgItem(dialog, IDC_VPN_BULK_LIST);
+        ListView_SetExtendedListViewStyle(list,
+            LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_HEADERDRAGDROP);
+        addColumn(list, 0, 210, L"Название токена");
+        addColumn(list, 1, 170, L"Endpoint");
+        addColumn(list, 2, 250, L"VPN");
+        loadListColumnLayout(list, 3, L"VpnMappings");
+        data->editorCombo = CreateWindowExW(
+            WS_EX_CLIENTEDGE, WC_COMBOBOXW, L"",
+            WS_CHILD | WS_VSCROLL | CBS_DROPDOWN | CBS_AUTOHSCROLL,
+            0, 0, 0, 0, dialog,
+            reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_VPN_BULK_EDITOR)),
+            reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(dialog, GWLP_HINSTANCE)), nullptr);
+        SendMessageW(data->editorCombo, CB_SETMINVISIBLE, 20, 0);
+        populateBulkVpnList(dialog, *data);
         return TRUE;
     }
-    if (message != WM_COMMAND || !data) {
+    if (!data) {
         return FALSE;
     }
 
-    if ((LOWORD(wParam) == IDC_VPN_ADMIN_MODE_VPN ||
-         LOWORD(wParam) == IDC_VPN_ADMIN_MODE_DIRECT) && HIWORD(wParam) == BN_CLICKED) {
-        updateVpnAdminMode(dialog, *data);
-        return TRUE;
-    }
-    if (LOWORD(wParam) == IDC_VPN_ADMIN_WINDOWS_PROFILE && HIWORD(wParam) == CBN_SELCHANGE) {
-        updateVpnAdminMode(dialog, *data);
-        return TRUE;
-    }
-    if (LOWORD(wParam) == IDC_VPN_ADMIN_WINDOWS_PROFILE && HIWORD(wParam) == CBN_EDITUPDATE) {
-        autoCompleteVpnProfileCombo(dialog);
-        updateVpnAdminMode(dialog, *data);
-        return TRUE;
-    }
-
-    try {
-        if (LOWORD(wParam) == IDC_VPN_ADMIN_SAVE) {
-            VpnProfile profile;
-            profile.enabled = IsDlgButtonChecked(dialog, IDC_VPN_ADMIN_ENABLED) == BST_CHECKED;
-            profile.mode = IsDlgButtonChecked(dialog, IDC_VPN_ADMIN_MODE_DIRECT) == BST_CHECKED
-                ? VpnProfileMode::Direct
-                : VpnProfileMode::WindowsVpn;
-            const WindowsVpnProfileInfo* selected = nullptr;
-            if (profile.mode == VpnProfileMode::Direct) {
-                profile.name = L"Без VPN";
-                profile.tunnelType.clear();
+    HWND list = GetDlgItem(dialog, IDC_VPN_BULK_LIST);
+    if (message == WM_NOTIFY && reinterpret_cast<NMHDR*>(lParam)->hwndFrom == list) {
+        const auto* header = reinterpret_cast<NMHDR*>(lParam);
+        if (header->code == NM_CLICK || header->code == NM_DBLCLK) {
+            const auto* activate = reinterpret_cast<NMITEMACTIVATE*>(lParam);
+            if (activate->iItem >= 0 && activate->iSubItem == 2) {
+                showBulkVpnEditor(dialog, *data, activate->iItem);
             }
             else {
-                selected = selectedWindowsVpnProfile(dialog, *data);
-                if (!selected) {
-                    MessageBoxW(dialog, L"Выберите существующий профиль VPN Windows.",
-                        L"DistControl Admin", MB_OK | MB_ICONWARNING);
-                    return TRUE;
+                hideBulkVpnEditor(*data);
+            }
+            return TRUE;
+        }
+        if (header->code == LVN_KEYDOWN) {
+            const auto* key = reinterpret_cast<NMLVKEYDOWN*>(lParam);
+            if (key->wVKey == VK_RETURN || key->wVKey == VK_SPACE || key->wVKey == VK_F2) {
+                const int row = ListView_GetNextItem(list, -1, LVNI_SELECTED);
+                if (row >= 0) {
+                    showBulkVpnEditor(dialog, *data, row);
                 }
-                profile.name = selected->name;
-                profile.serverAddress = selected->serverAddress;
-                profile.tunnelType = selected->tunnelType;
-                profile.phonebookScope = selected->phonebookScope;
-            }
-            profile.id = automaticVpnProfileId(*data, profile.mode, selected);
-            std::vector<DeviceViewModel> devices = data->devices;
-            if (devices.empty()) {
-                devices.push_back(data->device);
-            }
-            data->savedRevision = data->service->saveVpnProfileForDevices(
-                profile, devices, data->userName, data->expectedRevision);
-            data->changed = true;
-            EndDialog(dialog, IDOK);
-            return TRUE;
-        }
-        if (LOWORD(wParam) == IDC_VPN_ADMIN_UNASSIGN) {
-            std::vector<DeviceViewModel> devices = data->devices;
-            if (devices.empty()) {
-                devices.push_back(data->device);
-            }
-            data->savedRevision = data->service->clearVpnProfileForDevices(
-                devices, data->userName, data->expectedRevision);
-            data->changed = true;
-            EndDialog(dialog, IDOK);
-            return TRUE;
-        }
-        if (LOWORD(wParam) == IDC_VPN_ADMIN_DELETE) {
-            const std::wstring id = data->device.vpnProfileId;
-            if (id.empty()) {
-                MessageBoxW(dialog, L"У токена нет назначенной сетевой настройки.",
-                    L"DistControl Admin", MB_OK | MB_ICONWARNING);
                 return TRUE;
             }
-            const std::wstring display = data->device.vpnProfileDisplay.empty()
-                ? id
-                : data->device.vpnProfileDisplay;
-            const std::wstring question = L"Удалить сетевую настройку «" + display +
-                L"» и снять её со всех токенов в этом allow.json?";
-            if (MessageBoxW(dialog, question.c_str(), L"DistControl Admin", MB_YESNO | MB_ICONWARNING) != IDYES) {
-                return TRUE;
-            }
-            data->savedRevision = data->service->removeVpnProfileChecked(id, data->expectedRevision);
-            data->changed = true;
-            EndDialog(dialog, IDOK);
+        }
+        if (header->code == LVN_BEGINSCROLL) {
+            hideBulkVpnEditor(*data);
             return TRUE;
         }
-    }
-    catch (const std::exception& error) {
-        const std::wstring errorMessage = L"Не удалось сохранить сетевую настройку. " +
-            userFriendlyErrorMessage(error.what());
-        logUiError(L"UI VPN ADMIN SAVE ERROR", error.what(), errorMessage);
-        MessageBoxW(dialog, errorMessage.c_str(), L"DistControl Admin", MB_OK | MB_ICONERROR);
-        return TRUE;
     }
 
-    if (LOWORD(wParam) == IDCANCEL) {
-        EndDialog(dialog, IDCANCEL);
+    if (message == WM_COMMAND) {
+        if (LOWORD(wParam) == IDC_VPN_BULK_SEARCH && HIWORD(wParam) == EN_CHANGE) {
+            populateBulkVpnList(dialog, *data);
+            return TRUE;
+        }
+        if (LOWORD(wParam) == IDC_VPN_BULK_CLEAR_SEARCH) {
+            SetDlgItemTextW(dialog, IDC_VPN_BULK_SEARCH, L"");
+            SetFocus(GetDlgItem(dialog, IDC_VPN_BULK_SEARCH));
+            return TRUE;
+        }
+        if (LOWORD(wParam) == IDC_VPN_BULK_EDITOR && HIWORD(wParam) == CBN_EDITUPDATE) {
+            autoCompleteBulkVpnCombo(data->editorCombo);
+            return TRUE;
+        }
+        if (LOWORD(wParam) == IDC_VPN_BULK_EDITOR &&
+            (HIWORD(wParam) == CBN_SELCHANGE || HIWORD(wParam) == CBN_SELENDOK)) {
+            applyBulkVpnEditorSelection(list, *data);
+            return TRUE;
+        }
+        if (LOWORD(wParam) == IDC_VPN_BULK_EDITOR && HIWORD(wParam) == CBN_CLOSEUP) {
+            applyBulkVpnEditorSelection(list, *data);
+            hideBulkVpnEditor(*data);
+            SetFocus(list);
+            return TRUE;
+        }
+
+        if (LOWORD(wParam) == IDC_VPN_BULK_AUTO_MATCH) {
+            size_t matchedCount = 0;
+            for (DeviceViewModel& device : data->devices) {
+                if (!device.vpnProfileId.empty()) {
+                    continue;
+                }
+                const std::wstring tokenName = normalizedVpnMatchName(
+                    device.nickname.empty() ? device.product : device.nickname);
+                if (tokenName.empty()) {
+                    continue;
+                }
+                const WindowsVpnProfileInfo* uniqueMatch = nullptr;
+                bool ambiguous = false;
+                for (const WindowsVpnProfileInfo& windowsProfile : data->windowsProfiles) {
+                    if (normalizedVpnMatchName(windowsProfile.name) != tokenName) {
+                        continue;
+                    }
+                    if (uniqueMatch) {
+                        ambiguous = true;
+                        break;
+                    }
+                    uniqueMatch = &windowsProfile;
+                }
+                if (!uniqueMatch || ambiguous) {
+                    continue;
+                }
+                const VpnProfile profile = ensureBulkVpnProfile(*data, *uniqueMatch);
+                device.vpnProfileId = profile.id;
+                device.vpnProfileDisplay = profile.name;
+                ++matchedCount;
+            }
+            populateBulkVpnList(dialog, *data);
+            data->changed = data->changed || matchedCount != 0;
+            const std::wstring messageText = matchedCount == 0
+                ? L"Для неназначенных токенов однозначных совпадений не найдено."
+                : L"Автоматически сопоставлено: " + std::to_wstring(matchedCount) +
+                    L". Проверьте таблицу и нажмите «Сохранить».";
+            MessageBoxW(dialog, messageText.c_str(), L"DistControl Admin",
+                MB_OK | MB_ICONINFORMATION);
+            return TRUE;
+        }
+
+        if (LOWORD(wParam) == IDC_VPN_BULK_SAVE) {
+            if (!data->changed) {
+                EndDialog(dialog, IDCANCEL);
+                return TRUE;
+            }
+            try {
+                data->savedRevision = data->service->saveVpnAssignmentsForDevices(
+                    data->profiles, data->devices, data->userName, data->expectedRevision);
+                EndDialog(dialog, IDOK);
+            }
+            catch (const std::exception& error) {
+                const std::wstring errorMessage = L"Не удалось сохранить сопоставления. " +
+                    userFriendlyErrorMessage(error.what());
+                logUiError(L"UI BULK VPN SAVE ERROR", error.what(), errorMessage);
+                MessageBoxW(dialog, errorMessage.c_str(), L"DistControl Admin",
+                    MB_OK | MB_ICONERROR);
+            }
+            return TRUE;
+        }
+        if (LOWORD(wParam) == IDCANCEL) {
+            if (data->changed && MessageBoxW(dialog,
+                    L"Есть несохранённые сопоставления. Закрыть окно без сохранения?",
+                    L"DistControl Admin", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) {
+                return TRUE;
+            }
+            EndDialog(dialog, IDCANCEL);
+            return TRUE;
+        }
+    }
+    if (message == WM_DESTROY) {
+        saveListColumnLayout(list, 3, L"VpnMappings");
         return TRUE;
     }
     return FALSE;
@@ -641,6 +880,112 @@ void addColumn(HWND listView, int index, int width, const wchar_t* title) {
     column.cx = width;
     column.iSubItem = index;
     ListView_InsertColumn(listView, index, &column);
+}
+
+std::wstring columnLayoutSettingsPath() {
+    wchar_t localAppData[32768]{};
+    const DWORD length = GetEnvironmentVariableW(
+        L"LOCALAPPDATA", localAppData, static_cast<DWORD>(std::size(localAppData)));
+    if (length == 0 || length >= std::size(localAppData)) {
+        return {};
+    }
+    const std::wstring directory = std::wstring(localAppData) + L"\\DistControl";
+    CreateDirectoryW(directory.c_str(), nullptr);
+    return directory + L"\\admin-ui.ini";
+}
+
+std::vector<int> parseColumnLayout(const std::wstring& text, int columnCount) {
+    std::vector<int> values;
+    std::wistringstream stream(text);
+    std::wstring part;
+    while (std::getline(stream, part, L',')) {
+        try {
+            size_t consumed = 0;
+            const int value = std::stoi(trim(part), &consumed);
+            if (consumed == trim(part).size()) {
+                values.push_back(value);
+            }
+        }
+        catch (...) {
+            return {};
+        }
+    }
+    return values.size() == static_cast<size_t>(columnCount) ? values : std::vector<int>{};
+}
+
+std::wstring serializeColumnLayout(const std::vector<int>& values) {
+    std::wstring result;
+    for (int value : values) {
+        if (!result.empty()) {
+            result += L',';
+        }
+        result += std::to_wstring(value);
+    }
+    return result;
+}
+
+void loadListColumnLayout(HWND listView, int columnCount, const wchar_t* layoutName) {
+    const std::wstring settingsPath = columnLayoutSettingsPath();
+    if (settingsPath.empty() || !listView || columnCount <= 0) {
+        return;
+    }
+    wchar_t orderBuffer[512]{};
+    wchar_t widthsBuffer[512]{};
+    const std::wstring orderKey = std::wstring(layoutName) + L"Order";
+    const std::wstring widthsKey = std::wstring(layoutName) + L"Widths";
+    GetPrivateProfileStringW(L"Columns", orderKey.c_str(), L"", orderBuffer,
+        static_cast<DWORD>(std::size(orderBuffer)), settingsPath.c_str());
+    GetPrivateProfileStringW(L"Columns", widthsKey.c_str(), L"", widthsBuffer,
+        static_cast<DWORD>(std::size(widthsBuffer)), settingsPath.c_str());
+
+    const std::vector<int> order = parseColumnLayout(orderBuffer, columnCount);
+    if (!order.empty()) {
+        std::vector<bool> seen(static_cast<size_t>(columnCount), false);
+        bool valid = true;
+        for (int value : order) {
+            if (value < 0 || value >= columnCount || seen[static_cast<size_t>(value)]) {
+                valid = false;
+                break;
+            }
+            seen[static_cast<size_t>(value)] = true;
+        }
+        if (valid) {
+            ListView_SetColumnOrderArray(listView, columnCount, const_cast<int*>(order.data()));
+        }
+    }
+
+    const std::vector<int> widths = parseColumnLayout(widthsBuffer, columnCount);
+    if (!widths.empty()) {
+        for (int index = 0; index < columnCount; ++index) {
+            const int width = widths[static_cast<size_t>(index)];
+            if (width >= 40 && width <= 1200) {
+                ListView_SetColumnWidth(listView, index, width);
+            }
+        }
+    }
+}
+
+void saveListColumnLayout(HWND listView, int columnCount, const wchar_t* layoutName) {
+    const std::wstring settingsPath = columnLayoutSettingsPath();
+    if (settingsPath.empty() || !listView || columnCount <= 0) {
+        return;
+    }
+    std::vector<int> order(static_cast<size_t>(columnCount));
+    if (!ListView_GetColumnOrderArray(listView, columnCount, order.data())) {
+        return;
+    }
+    std::vector<int> widths(static_cast<size_t>(columnCount));
+    for (int index = 0; index < columnCount; ++index) {
+        widths[static_cast<size_t>(index)] = ListView_GetColumnWidth(listView, index);
+    }
+    const std::wstring orderKey = std::wstring(layoutName) + L"Order";
+    const std::wstring widthsKey = std::wstring(layoutName) + L"Widths";
+    const std::wstring orderText = serializeColumnLayout(order);
+    const std::wstring widthsText = serializeColumnLayout(widths);
+    WritePrivateProfileStringW(
+        L"Columns", orderKey.c_str(), orderText.c_str(), settingsPath.c_str());
+    WritePrivateProfileStringW(
+        L"Columns", widthsKey.c_str(), widthsText.c_str(), settingsPath.c_str());
 }
 
 void setItemText(HWND listView, int row, int column, const std::wstring& text) {
@@ -852,30 +1197,163 @@ std::wstring profilesRootForComputer(const std::wstring& computerName) {
     return L"\\\\" + trimmed + L"\\c$\\Users";
 }
 
-std::wstring localPolicyPath() {
-    wchar_t buffer[32768]{};
-    const DWORD length = GetEnvironmentVariableW(
-        L"LOCALAPPDATA", buffer, static_cast<DWORD>(std::size(buffer)));
-    if (length == 0 || length >= std::size(buffer)) {
-        return {};
-    }
-    return std::wstring(buffer) + L"\\DistControl\\allow.json";
-}
-
 std::wstring profileFolderName(const std::wstring& userName) {
     const size_t slash = userName.find_last_of(L"\\/");
     return slash == std::wstring::npos ? userName : userName.substr(slash + 1);
 }
 
-std::wstring userPhonebookPathForComputer(
-    const std::wstring& computerName,
-    const std::wstring& userName) {
-    const std::wstring folder = profileFolderName(userName);
-    if (folder.empty()) {
+bool isSystemProfileName(const std::wstring& name);
+std::vector<std::wstring> profileUsersFromRoot(const std::wstring& root);
+
+std::wstring accountNameForSid(const std::wstring& computerName, const std::wstring& sidText) {
+    PSID sid = nullptr;
+    if (!ConvertStringSidToSidW(sidText.c_str(), &sid)) {
         return {};
     }
-    return profilesRootForComputer(computerName) + L"\\" + folder +
+
+    DWORD nameLength = 0;
+    DWORD domainLength = 0;
+    SID_NAME_USE use{};
+    const std::wstring lookupComputer = trim(computerName);
+    const wchar_t* systemName = isLocalComputerName(computerName) ? nullptr : lookupComputer.c_str();
+    LookupAccountSidW(systemName, sid, nullptr, &nameLength, nullptr, &domainLength, &use);
+    std::vector<wchar_t> name(nameLength + 1);
+    std::vector<wchar_t> domain(domainLength + 1);
+    std::wstring result;
+    if (nameLength != 0 && LookupAccountSidW(
+            systemName, sid, name.data(), &nameLength, domain.data(), &domainLength, &use)) {
+        result = domainLength == 0
+            ? std::wstring(name.data())
+            : std::wstring(domain.data()) + L"\\" + name.data();
+    }
+    LocalFree(sid);
+    return result;
+}
+
+std::wstring expandLocalProfilePath(const std::wstring& path) {
+    wchar_t expanded[32768]{};
+    const DWORD length = ExpandEnvironmentStringsW(
+        path.c_str(), expanded, static_cast<DWORD>(std::size(expanded)));
+    return length != 0 && length < std::size(expanded) ? std::wstring(expanded) : path;
+}
+
+std::wstring accessibleProfilePath(
+    const std::wstring& computerName,
+    const std::wstring& registeredPath) {
+    std::wstring path = registeredPath;
+    if (isLocalComputerName(computerName)) {
+        return expandLocalProfilePath(path);
+    }
+
+    const std::wstring systemDrive = L"%SystemDrive%";
+    if (path.size() >= systemDrive.size() &&
+        CompareStringOrdinal(path.c_str(), static_cast<int>(systemDrive.size()),
+            systemDrive.c_str(), static_cast<int>(systemDrive.size()), TRUE) == CSTR_EQUAL) {
+        path = L"C:" + path.substr(systemDrive.size());
+    }
+    if (path.size() >= 3 && path[1] == L':' && (path[2] == L'\\' || path[2] == L'/')) {
+        std::wstring result = L"\\\\" + trim(computerName) + L"\\";
+        result.push_back(static_cast<wchar_t>(towlower(path[0])));
+        result += L"$" + path.substr(2);
+        return result;
+    }
+    return profilesRootForComputer(computerName) + L"\\" + profileFolderName(path);
+}
+
+UserProfileEntry makeProfileEntry(
+    const std::wstring& computerName,
+    const std::wstring& accountName,
+    const std::wstring& sid,
+    const std::wstring& registeredPath) {
+    UserProfileEntry entry;
+    entry.accountName = accountName;
+    entry.sid = sid;
+    entry.profileDirectory = accessibleProfilePath(computerName, registeredPath);
+    entry.policyPath = entry.profileDirectory + L"\\AppData\\Local\\DistControl\\allow.json";
+    entry.phonebookPath = entry.profileDirectory +
         L"\\AppData\\Roaming\\Microsoft\\Network\\Connections\\Pbk\\rasphone.pbk";
+    entry.networkStatePath = entry.profileDirectory +
+        L"\\AppData\\Local\\DistControl\\state\\network-state.json";
+    return entry;
+}
+
+std::vector<UserProfileEntry> profileUsersForComputer(const std::wstring& computerName) {
+    std::vector<UserProfileEntry> profiles;
+    HKEY connected = nullptr;
+    HKEY machine = HKEY_LOCAL_MACHINE;
+    if (!isLocalComputerName(computerName)) {
+        const std::wstring remoteName = L"\\\\" + trim(computerName);
+        if (RegConnectRegistryW(remoteName.c_str(), HKEY_LOCAL_MACHINE, &connected) != ERROR_SUCCESS) {
+            connected = nullptr;
+        }
+        machine = connected;
+    }
+
+    HKEY profileList = nullptr;
+    if (machine && RegOpenKeyExW(machine,
+            L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\ProfileList",
+            0, KEY_READ, &profileList) == ERROR_SUCCESS) {
+        for (DWORD index = 0;; ++index) {
+            wchar_t sidName[256]{};
+            DWORD sidLength = static_cast<DWORD>(std::size(sidName));
+            const LONG enumResult = RegEnumKeyExW(
+                profileList, index, sidName, &sidLength, nullptr, nullptr, nullptr, nullptr);
+            if (enumResult == ERROR_NO_MORE_ITEMS) {
+                break;
+            }
+            if (enumResult != ERROR_SUCCESS) {
+                continue;
+            }
+
+            HKEY profileKey = nullptr;
+            if (RegOpenKeyExW(profileList, sidName, 0, KEY_READ, &profileKey) != ERROR_SUCCESS) {
+                continue;
+            }
+            wchar_t path[32768]{};
+            DWORD pathBytes = sizeof(path);
+            DWORD valueType = 0;
+            const LONG readResult = RegQueryValueExW(profileKey, L"ProfileImagePath", nullptr,
+                &valueType, reinterpret_cast<BYTE*>(path), &pathBytes);
+            RegCloseKey(profileKey);
+            if (readResult != ERROR_SUCCESS ||
+                (valueType != REG_SZ && valueType != REG_EXPAND_SZ) || path[0] == L'\0') {
+                continue;
+            }
+
+            std::wstring account = accountNameForSid(computerName, sidName);
+            const std::wstring folder = profileFolderName(path);
+            if (isSystemProfileName(folder)) {
+                continue;
+            }
+            if (account.empty()) {
+                const std::wstring domain = currentDomainPrefix();
+                account = domain.empty() ? folder : domain + folder;
+            }
+            profiles.push_back(makeProfileEntry(computerName, account, sidName, path));
+        }
+        RegCloseKey(profileList);
+    }
+    if (connected) {
+        RegCloseKey(connected);
+    }
+
+    if (profiles.empty()) {
+        const std::wstring root = profilesRootForComputer(computerName);
+        for (const std::wstring& account : profileUsersFromRoot(root)) {
+            profiles.push_back(makeProfileEntry(
+                computerName, account, L"", root + L"\\" + profileFolderName(account)));
+        }
+    }
+
+    std::sort(profiles.begin(), profiles.end(),
+        [](const UserProfileEntry& left, const UserProfileEntry& right) {
+            return lowerCopy(left.accountName) < lowerCopy(right.accountName);
+        });
+    profiles.erase(std::unique(profiles.begin(), profiles.end(),
+        [](const UserProfileEntry& left, const UserProfileEntry& right) {
+            return lowerCopy(left.accountName) == lowerCopy(right.accountName);
+        }), profiles.end());
+    return profiles;
 }
 
 std::wstring allUsersPhonebookPathForComputer(const std::wstring& computerName) {
@@ -886,17 +1364,6 @@ std::wstring allUsersPhonebookPathForComputer(const std::wstring& computerName) 
         L"\\c$\\ProgramData\\Microsoft\\Network\\Connections\\Pbk\\rasphone.pbk";
 }
 
-std::wstring networkStatePathForComputer(
-    const std::wstring& computerName,
-    const std::wstring& userName) {
-    const std::wstring folder = profileFolderName(userName);
-    if (folder.empty()) {
-        return {};
-    }
-    return profilesRootForComputer(computerName) + L"\\" + folder +
-        L"\\AppData\\Local\\DistControl\\state\\network-state.json";
-}
-
 std::uint64_t currentFileTimeTicks() {
     FILETIME fileTime{};
     GetSystemTimeAsFileTime(&fileTime);
@@ -904,13 +1371,6 @@ std::uint64_t currentFileTimeTicks() {
     value.LowPart = fileTime.dwLowDateTime;
     value.HighPart = fileTime.dwHighDateTime;
     return value.QuadPart;
-}
-
-bool isFreshNetworkState(const NetworkStateSnapshot& state) {
-    constexpr std::uint64_t maximumAge = 2ULL * 60ULL * 10000000ULL;
-    const std::uint64_t now = currentFileTimeTicks();
-    return state.updatedAtFileTime != 0 && now >= state.updatedAtFileTime &&
-        now - state.updatedAtFileTime <= maximumAge && !state.publicIp.empty();
 }
 
 std::wstring win32ErrorText(DWORD error) {
@@ -1000,30 +1460,6 @@ std::vector<std::wstring> profileUsersFromRoot(const std::wstring& root) {
             return lowerCopy(left) < lowerCopy(right);
         });
     return users;
-}
-
-std::vector<std::wstring> policyPathsForComputer(
-    const std::wstring& computerName,
-    const std::vector<std::wstring>& profileUsers) {
-    if (isLocalComputerName(computerName)) {
-        const std::wstring path = localPolicyPath();
-        return path.empty() ? std::vector<std::wstring>{} : std::vector<std::wstring>{ path };
-    }
-
-    std::vector<std::wstring> paths;
-    const std::wstring profilesRoot = profilesRootForComputer(computerName);
-    for (const std::wstring& userName : profileUsers) {
-        const std::wstring folder = profileFolderName(userName);
-        if (folder.empty()) {
-            continue;
-        }
-        const std::wstring path = profilesRoot + L"\\" + folder +
-            L"\\AppData\\Local\\DistControl\\allow.json";
-        if (GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES) {
-            paths.push_back(path);
-        }
-    }
-    return paths;
 }
 
 std::wstring formatDuration(ULONGLONG elapsedMs) {
@@ -1322,7 +1758,7 @@ HIMAGELIST createTreeImageList() {
     const COLORREF colors[] = {
         RGB(55, 176, 82),
         RGB(105, 162, 224),
-        RGB(53, 170, 85),
+        RGB(139, 92, 246),
         RGB(229, 146, 56)
     };
     for (COLORREF color : colors) {
@@ -1504,7 +1940,7 @@ LRESULT MainWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             return 0;
         }
         if (kAdminBuild && reinterpret_cast<HWND>(lParam) == assignUserEdit_ &&
-            (HIWORD(wParam) == CBN_EDITCHANGE || HIWORD(wParam) == CBN_SELCHANGE)) {
+            (HIWORD(wParam) == CBN_SELCHANGE || HIWORD(wParam) == CBN_KILLFOCUS)) {
             if (suppressAdminUserChange_) {
                 return 0;
             }
@@ -1517,7 +1953,7 @@ LRESULT MainWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                     return 0;
                 }
             }
-            refreshAccessForEditedUser();
+            selectAdminUserProfile(requestedUser, true);
             return 0;
         }
         switch (LOWORD(wParam)) {
@@ -1572,7 +2008,12 @@ LRESULT MainWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             exportExcel();
             return 0;
         case IDC_VPN:
-            configureVpnForSelectedDevice();
+            if (!kAdminBuild) {
+                configureVpnForSelectedDevice();
+            }
+            return 0;
+        case IDC_VPN_MAPPINGS:
+            manageVpnMappings();
             return 0;
         case IDC_EXPORT_JSON:
             return 0;
@@ -1619,6 +2060,10 @@ LRESULT MainWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         break;
     case WM_DESTROY:
         closing_ = true;
+        if (kAdminBuild) {
+            saveListColumnLayout(listView_, 8, L"AdminAllowed");
+            saveListColumnLayout(availableListView_, 8, L"AdminAvailable");
+        }
         KillTimer(hwnd_, IDT_DELAYED_REFRESH);
         KillTimer(hwnd_, IDT_USAGE_WATCHDOG);
         if (treeImageList_) {
@@ -1665,11 +2110,14 @@ void MainWindow::createControls() {
         availableTitleLabel_ = CreateWindowW(L"STATIC", L"Можно добавить", WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP,
             0, 0, 0, 0, hwnd_, nullptr, instance_, nullptr);
 
-        const DWORD listStyle = LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES;
+        const DWORD listStyle =
+            LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_HEADERDRAGDROP;
         ListView_SetExtendedListViewStyle(listView_, listStyle);
         ListView_SetExtendedListViewStyle(availableListView_, listStyle);
         addDeviceColumns(listView_, false);
         addDeviceColumns(availableListView_, false);
+        loadListColumnLayout(listView_, 8, L"AdminAllowed");
+        loadListColumnLayout(availableListView_, 8, L"AdminAvailable");
     }
     else {
         treeView_ = CreateWindowExW(WS_EX_CLIENTEDGE, WC_TREEVIEWW, nullptr,
@@ -1724,9 +2172,11 @@ void MainWindow::createControls() {
         hwnd_, controlId(IDC_EXPORT), instance_, nullptr);
     exportJsonButton_ = CreateWindowW(L"BUTTON", L"", WS_CHILD, 0, 0, 0, 0,
         hwnd_, controlId(IDC_EXPORT_JSON), instance_, nullptr);
-    vpnButton_ = CreateWindowW(L"BUTTON", kAdminBuild ? L"VPN для токена" : L"Учётные данные VPN",
-        WS_CHILD | WS_VISIBLE, 0, 0, 0, 0,
+    vpnButton_ = CreateWindowW(L"BUTTON", L"Учётные данные VPN",
+        WS_CHILD | (kAdminBuild ? 0 : WS_VISIBLE), 0, 0, 0, 0,
         hwnd_, controlId(IDC_VPN), instance_, nullptr);
+    vpnMappingsButton_ = CreateWindowW(L"BUTTON", L"Токены → VPN", adminActionStyle,
+        0, 0, 0, 0, hwnd_, controlId(IDC_VPN_MAPPINGS), instance_, nullptr);
     statusLabel_ = CreateWindowW(L"STATIC", L"Готово.", WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP,
         0, 0, 0, 0, hwnd_, controlId(IDC_STATUS), instance_, nullptr);
     refreshProgressLabel_ = CreateWindowW(L"STATIC", L"", WS_CHILD | SS_CENTER,
@@ -1825,7 +2275,7 @@ void MainWindow::layoutControls() {
         x += savePolicyWidth + gap;
         MoveWindow(exportButton_, x, buttonTop, 130, buttonHeight, TRUE);
         x += 130 + gap;
-        MoveWindow(vpnButton_, x, buttonTop, 140, buttonHeight, TRUE);
+        MoveWindow(vpnMappingsButton_, x, buttonTop, 150, buttonHeight, TRUE);
     }
     else {
         int listBottom = buttonTop - margin;
@@ -1892,6 +2342,9 @@ void MainWindow::setMainControlsEnabled(bool enabled) {
     }
     if (vpnButton_) {
         EnableWindow(vpnButton_, value && (!kAdminBuild || adminAccessLoaded_));
+    }
+    if (vpnMappingsButton_) {
+        EnableWindow(vpnMappingsButton_, value && adminAccessLoaded_);
     }
 }
 
@@ -1964,7 +2417,6 @@ bool MainWindow::ensureVpnCredentials(const DeviceViewModel& device, bool forceP
 
 void MainWindow::configureVpnForSelectedDevice() {
     if (kAdminBuild) {
-        manageVpnForSelectedDevice();
         return;
     }
     DeviceViewModel* device = selectedDevice();
@@ -1979,86 +2431,73 @@ void MainWindow::configureVpnForSelectedDevice() {
     ensureVpnCredentials(*device, true);
 }
 
-void MainWindow::manageVpnForSelectedDevice() {
+void MainWindow::manageVpnMappings() {
 #ifndef DISKCONTROL_ADMIN
     return;
 #else
-    const std::vector<DeviceViewModel> selected = selectedDevicesFrom(listView_, allowedDevices_);
-    if (selected.empty()) {
-        updateStatus(L"Выберите один или несколько разрешённых токенов для настройки VPN.");
-        return;
-    }
     if (adminAccessDirty_) {
-        updateStatus(L"Сначала сохраните изменения доступа, затем назначьте VPN.");
+        updateStatus(L"Сначала сохраните изменения доступа, затем откройте сопоставление VPN.");
         return;
     }
     const std::wstring userName = getControlText(assignUserEdit_);
-    if (userName.empty()) {
-        updateStatus(L"Выберите пользователя для назначения VPN.");
+    if (userName.empty() || !adminAccessLoaded_ ||
+        lowerCopy(userName) != lowerCopy(loadedPolicyUser_)) {
+        updateStatus(L"Сначала выберите пользователя и дождитесь загрузки его доступов.");
         return;
     }
-    if (!adminAccessLoaded_ || lowerCopy(userName) != lowerCopy(loadedPolicyUser_)) {
-        updateStatus(L"Сначала успешно загрузите доступ выбранного пользователя.");
+    if (allowedDevices_.empty()) {
+        updateStatus(L"У выбранного пользователя нет разрешённых токенов для сопоставления.");
         return;
     }
 
     try {
-        VpnAdminDialogData data;
+        VpnBulkDialogData data;
         data.service = &service_;
-        data.device = selected.front();
-        data.devices = selected;
         data.userName = userName;
         data.expectedRevision = loadedPolicyRevision_;
+        data.devices = allowedDevices_;
         data.profiles = service_.vpnProfiles();
+
         const std::wstring computerName = getControlText(computerEdit_);
+        const auto selectedProfile = std::find_if(profileUsers_.begin(), profileUsers_.end(),
+            [&userName](const UserProfileEntry& profile) {
+                return lowerCopy(profile.accountName) == lowerCopy(userName);
+            });
         if (isLocalComputerName(computerName) &&
             lowerCopy(userName) == lowerCopy(PolicyManager::currentUserName())) {
             data.windowsProfiles = VpnManager::installedProfiles();
         }
-        else {
+        else if (selectedProfile != profileUsers_.end()) {
             data.windowsProfiles = VpnManager::installedProfiles(
-                userPhonebookPathForComputer(computerName, userName),
+                selectedProfile->phonebookPath,
                 allUsersPhonebookPathForComputer(computerName));
         }
-        std::stable_sort(
-            data.windowsProfiles.begin(), data.windowsProfiles.end(),
+        std::stable_sort(data.windowsProfiles.begin(), data.windowsProfiles.end(),
             [](const WindowsVpnProfileInfo& left, const WindowsVpnProfileInfo& right) {
-                const int byName = CompareStringOrdinal(
-                    left.name.c_str(), -1, right.name.c_str(), -1, TRUE);
+                const int byName = CompareStringOrdinal(left.name.c_str(), -1,
+                    right.name.c_str(), -1, TRUE);
                 if (byName != CSTR_EQUAL) {
                     return byName == CSTR_LESS_THAN;
                 }
                 return left.phonebookScope == VpnPhonebookScope::CurrentUser &&
                     right.phonebookScope == VpnPhonebookScope::AllUsers;
             });
-        const std::wstring statePath = networkStatePathForComputer(computerName, userName);
-        std::wstring stateError;
-        if (!statePath.empty() && PolicyManager::tryReadNetworkState(
-            statePath, data.networkState, &stateError)) {
-            const bool matchingUser = lowerCopy(profileFolderName(data.networkState.userName)) ==
-                lowerCopy(profileFolderName(userName));
-            const bool matchingComputer = isLocalComputerName(computerName) ||
-                lowerCopy(data.networkState.computerName) == lowerCopy(trim(computerName));
-            data.networkStateFresh = isFreshNetworkState(data.networkState) &&
-                matchingUser && matchingComputer;
-        }
-        DialogBoxParamW(instance_, MAKEINTRESOURCEW(IDD_VPN_ADMIN), hwnd_, vpnAdminDialogProc,
-            reinterpret_cast<LPARAM>(&data));
-        if (data.changed) {
+
+        const INT_PTR result = DialogBoxParamW(instance_, MAKEINTRESOURCEW(IDD_VPN_BULK), hwnd_,
+            vpnBulkDialogProc, reinterpret_cast<LPARAM>(&data));
+        if (result == IDOK) {
             const std::wstring revision = service_.updateAccessForUser(allDevices_, userName);
             captureAdminAccessState(userName, revision);
             applyDeviceFilter();
-            updateHeaderText();
-            const std::wstring status = selected.size() == 1
-                ? L"Настройка VPN токена сохранена в allow.json выбранного компьютера."
-                : L"Настройка VPN сохранена для токенов: " + std::to_wstring(selected.size()) + L".";
-            updateStatus(status.c_str());
+            updateStatus(L"Сопоставления токенов и VPN сохранены.");
         }
     }
     catch (const std::exception& error) {
-        const std::wstring status = L"Не удалось открыть VPN-настройки. " + userFriendlyErrorMessage(error.what());
-        logUiError(L"UI VPN ADMIN ERROR", error.what(), status);
+        const std::wstring status = L"Не удалось открыть сопоставление токенов и VPN. " +
+            userFriendlyErrorMessage(error.what());
+        logUiError(L"UI BULK VPN ERROR", error.what(), status);
         updateStatus(status.c_str());
+        MessageBoxW(hwnd_, status.c_str(), L"DistControl Admin", MB_OK | MB_ICONERROR);
     }
 #endif
 }
@@ -2720,6 +3159,58 @@ void MainWindow::updateHeaderText() {
     }
 }
 
+bool MainWindow::selectAdminUserProfile(
+    const std::wstring& userName,
+    bool refreshDeviceList) {
+#ifndef DISKCONTROL_ADMIN
+    (void)userName;
+    (void)refreshDeviceList;
+    return false;
+#else
+    const auto found = std::find_if(profileUsers_.begin(), profileUsers_.end(),
+        [&userName](const UserProfileEntry& profile) {
+            return lowerCopy(profile.accountName) == lowerCopy(userName);
+        });
+    if (found == profileUsers_.end()) {
+        invalidateAdminAccessState();
+        updateStatus(L"Выберите пользователя из списка профилей Windows.");
+        return false;
+    }
+    if (GetFileAttributesW(found->policyPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        invalidateAdminAccessState();
+        const std::wstring status = L"Для пользователя " + found->accountName +
+            L" не найден файл " + found->policyPath +
+            L". Установите DistControl для этого пользователя.";
+        updateStatus(status.c_str());
+        updateHeaderText();
+        return false;
+    }
+
+    try {
+        PolicyManager policy(found->policyPath);
+        PolicyManager::setConfigPathOverride(found->policyPath);
+        invalidateAdminAccessState();
+        updateHeaderText();
+        const std::wstring status = L"Выбран пользователь " + found->accountName +
+            L". Конфигурация: " + found->policyPath;
+        updateStatus(status.c_str());
+        if (refreshDeviceList) {
+            refreshDevices();
+        }
+        return true;
+    }
+    catch (const std::exception& error) {
+        invalidateAdminAccessState();
+        const std::wstring status = L"Не удалось открыть настройки пользователя " +
+            found->accountName + L". " + userFriendlyErrorMessage(error.what());
+        logUiError(L"UI SELECT USER POLICY ERROR", error.what(), status);
+        updateStatus(status.c_str());
+        updateHeaderText();
+        return false;
+    }
+#endif
+}
+
 void MainWindow::refreshAccessForEditedUser() {
 #ifndef DISKCONTROL_ADMIN
     return;
@@ -2864,27 +3355,31 @@ void MainWindow::loadProfilesForComputer(const std::wstring& computerName) {
     }
 
     const std::wstring currentUser = PolicyManager::currentUserName();
-    profileUsers_ = profileUsersFromRoot(profilesRootForComputer(computerName));
+    profileUsers_ = profileUsersForComputer(computerName);
 
     suppressAdminUserChange_ = true;
     ComboBox_ResetContent(assignUserEdit_);
-    bool hasCurrentUser = false;
-    if (!currentUser.empty()) {
-        ComboBox_AddString(assignUserEdit_, currentUser.c_str());
-        hasCurrentUser = true;
-    }
-    for (const std::wstring& user : profileUsers_) {
-        if (!currentUser.empty() && lowerCopy(user) == lowerCopy(currentUser)) {
-            continue;
+    const UserProfileEntry* selected = nullptr;
+    for (const UserProfileEntry& profile : profileUsers_) {
+        ComboBox_AddString(assignUserEdit_, profile.accountName.c_str());
+        if (!currentUser.empty() && lowerCopy(profile.accountName) == lowerCopy(currentUser)) {
+            selected = &profile;
         }
-        ComboBox_AddString(assignUserEdit_, user.c_str());
     }
-
-    if (hasCurrentUser) {
-        SetWindowTextW(assignUserEdit_, currentUser.c_str());
+    if (!selected) {
+        const auto found = std::find_if(profileUsers_.begin(), profileUsers_.end(),
+            [](const UserProfileEntry& profile) {
+                return GetFileAttributesW(profile.policyPath.c_str()) != INVALID_FILE_ATTRIBUTES;
+            });
+        selected = found == profileUsers_.end()
+            ? (profileUsers_.empty() ? nullptr : &profileUsers_.front())
+            : &*found;
     }
-    else if (!profileUsers_.empty()) {
-        SetWindowTextW(assignUserEdit_, profileUsers_.front().c_str());
+    if (selected) {
+        SetWindowTextW(assignUserEdit_, selected->accountName.c_str());
+        if (GetFileAttributesW(selected->policyPath.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            PolicyManager::setConfigPathOverride(selected->policyPath);
+        }
     }
     suppressAdminUserChange_ = false;
 #endif
@@ -2905,6 +3400,7 @@ void MainWindow::loadProfilesAndPolicyFromComputer() {
 
     const std::wstring computerName = getControlText(computerEdit_);
     const std::wstring profilesRoot = profilesRootForComputer(computerName);
+    const std::wstring requestedUser = getControlText(assignUserEdit_);
 
     computerLoading_ = true;
     setMainControlsEnabled(false);
@@ -2912,9 +3408,10 @@ void MainWindow::loadProfilesAndPolicyFromComputer() {
     SendMessageW(computerProgressBar_, PBM_SETMARQUEE, TRUE, 30);
     updateStatus(L"Подключение к компьютеру и чтение профилей...");
 
-    computerLoadThread_ = std::thread([this, computerName, profilesRoot]() {
-        std::vector<std::wstring> profiles;
+    computerLoadThread_ = std::thread([this, computerName, profilesRoot, requestedUser]() {
+        std::vector<UserProfileEntry> profiles;
         std::wstring policyPath;
+        std::wstring selectedUser;
         std::wstring errorText;
         bool repaired = false;
 
@@ -2923,19 +3420,34 @@ void MainWindow::loadProfilesAndPolicyFromComputer() {
                 throw std::runtime_error("profiles");
             }
 
-            profiles = profileUsersFromRoot(profilesRoot);
-            const std::vector<std::wstring> policyPaths = policyPathsForComputer(computerName, profiles);
-            if (policyPaths.empty()) {
+            profiles = profileUsersForComputer(computerName);
+            const UserProfileEntry* selected = nullptr;
+            for (const UserProfileEntry& profile : profiles) {
+                if (!requestedUser.empty() &&
+                    lowerCopy(profile.accountName) == lowerCopy(requestedUser)) {
+                    selected = &profile;
+                    break;
+                }
+            }
+            if (!selected) {
+                const auto found = std::find_if(profiles.begin(), profiles.end(),
+                    [](const UserProfileEntry& profile) {
+                        return GetFileAttributesW(profile.policyPath.c_str()) != INVALID_FILE_ATTRIBUTES;
+                    });
+                selected = found == profiles.end() ? nullptr : &*found;
+            }
+            if (!selected) {
                 errorText = L"Не найден файл %LOCALAPPDATA%\\DistControl\\allow.json "
                     L"ни в одном пользовательском профиле выбранного компьютера.";
                 throw std::runtime_error("policy parent");
             }
-            if (policyPaths.size() > 1) {
-                errorText = L"На выбранном компьютере найдено несколько конфигураций DistControl. "
-                    L"Удалите устаревшие копии или откройте нужный allow.json кнопкой «Открыть конфиг».";
-                throw std::runtime_error("multiple policies");
+            selectedUser = selected->accountName;
+            policyPath = selected->policyPath;
+            if (GetFileAttributesW(policyPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
+                errorText = L"Для пользователя " + selectedUser + L" не найден файл " +
+                    policyPath + L". Установите DistControl для этой учётной записи.";
+                throw std::runtime_error("policy missing");
             }
-            policyPath = policyPaths.front();
             repaired = PolicyManager::ensureEditableConfig(policyPath);
         }
         catch (const std::exception& error) {
@@ -2950,6 +3462,7 @@ void MainWindow::loadProfilesAndPolicyFromComputer() {
         {
             std::lock_guard<std::mutex> lock(computerLoadMutex_);
             pendingComputerName_ = computerName;
+            pendingComputerUser_ = selectedUser;
             pendingComputerPolicyPath_ = policyPath;
             pendingProfileUsers_ = std::move(profiles);
             pendingComputerPolicyRepaired_ = repaired;
@@ -2967,8 +3480,9 @@ void MainWindow::finishComputerLoad() {
         computerLoadThread_.join();
     }
 
-    std::vector<std::wstring> profiles;
+    std::vector<UserProfileEntry> profiles;
     std::wstring computerName;
+    std::wstring selectedUser;
     std::wstring policyPath;
     std::wstring errorText;
     bool repaired = false;
@@ -2976,6 +3490,7 @@ void MainWindow::finishComputerLoad() {
         std::lock_guard<std::mutex> lock(computerLoadMutex_);
         profiles = std::move(pendingProfileUsers_);
         computerName = std::move(pendingComputerName_);
+        selectedUser = std::move(pendingComputerUser_);
         policyPath = std::move(pendingComputerPolicyPath_);
         errorText = std::move(pendingComputerError_);
         repaired = pendingComputerPolicyRepaired_;
@@ -2999,21 +3514,14 @@ void MainWindow::finishComputerLoad() {
     profileUsers_ = std::move(profiles);
     suppressAdminUserChange_ = true;
     ComboBox_ResetContent(assignUserEdit_);
-    const std::wstring currentUser = PolicyManager::currentUserName();
-    if (!currentUser.empty()) {
-        ComboBox_AddString(assignUserEdit_, currentUser.c_str());
+    for (const UserProfileEntry& profile : profileUsers_) {
+        ComboBox_AddString(assignUserEdit_, profile.accountName.c_str());
     }
-    for (const std::wstring& user : profileUsers_) {
-        if (!currentUser.empty() && lowerCopy(user) == lowerCopy(currentUser)) {
-            continue;
-        }
-        ComboBox_AddString(assignUserEdit_, user.c_str());
-    }
-    if (!currentUser.empty()) {
-        SetWindowTextW(assignUserEdit_, currentUser.c_str());
+    if (!selectedUser.empty()) {
+        SetWindowTextW(assignUserEdit_, selectedUser.c_str());
     }
     else if (!profileUsers_.empty()) {
-        SetWindowTextW(assignUserEdit_, profileUsers_.front().c_str());
+        SetWindowTextW(assignUserEdit_, profileUsers_.front().accountName.c_str());
     }
     suppressAdminUserChange_ = false;
 

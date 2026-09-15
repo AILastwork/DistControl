@@ -1186,6 +1186,68 @@ void testAtomicVpnAssignmentForMultipleDevices() {
     std::remove(fileName);
 }
 
+void testAtomicDifferentVpnMappingsForMultipleDevices() {
+    const char* fileName = "policy-vpn-mappings-test.json";
+    const std::wstring currentUser = PolicyManager::currentUserSid();
+    std::remove(fileName);
+    {
+        std::ofstream stream(fileName, std::ios::binary);
+        stream << "{\n"
+            << "  \"pipeName\": \"dkclient\",\n"
+            << "  \"vpnProfiles\": [],\n"
+            << "  \"userAssignments\": [{\n"
+            << "    \"users\": [\"" << narrowAscii(currentUser) << "\"],\n"
+            << "    \"groups\": [],\n"
+            << "    \"allowedDevices\": [\n"
+            << "      {\"endpoint\": \"HUB-Gr-2.1\", \"nickname\": \"ALPHA\", \"product\": \"Rutoken\"},\n"
+            << "      {\"endpoint\": \"HUB-Gr-2.2\", \"nickname\": \"BETA\", \"product\": \"Rutoken\"}\n"
+            << "    ]\n"
+            << "  }]\n"
+            << "}\n";
+    }
+
+    VpnProfile alphaProfile;
+    alphaProfile.id = L"windows-user:VPN Alpha";
+    alphaProfile.name = L"VPN Alpha";
+    VpnProfile betaProfile;
+    betaProfile.id = L"windows-user:VPN Beta";
+    betaProfile.name = L"VPN Beta";
+
+    DeviceRule alpha;
+    alpha.endpoint = L"HUB-Gr-2.1";
+    alpha.vpnProfileId = alphaProfile.id;
+    DeviceRule beta;
+    beta.endpoint = L"HUB-Gr-2.2";
+    beta.vpnProfileId = betaProfile.id;
+
+    PolicyManager policy(L"policy-vpn-mappings-test.json");
+    const std::wstring revision = policy.saveVpnAssignmentsForDevices(
+        { alphaProfile, betaProfile }, { alpha, beta }, currentUser, policy.revision());
+    require(!revision.empty(), "Bulk VPN mapping should return the new revision.");
+
+    PolicyManager updated(L"policy-vpn-mappings-test.json");
+    VpnProfile resolved;
+    ParsedDevice alphaDevice{ L"HUB-Gr-2.1", L"ALPHA", L"Rutoken", L"NO ONE" };
+    ParsedDevice betaDevice{ L"HUB-Gr-2.2", L"BETA", L"Rutoken", L"NO ONE" };
+    require(updated.tryGetVpnProfileForDevice(alphaDevice, resolved) &&
+        resolved.id == alphaProfile.id,
+        "Bulk mapping should assign the first VPN to the first token.");
+    require(updated.tryGetVpnProfileForDevice(betaDevice, resolved) &&
+        resolved.id == betaProfile.id,
+        "Bulk mapping should assign the second VPN to the second token.");
+
+    alpha.vpnProfileId.clear();
+    updated.saveVpnAssignmentsForDevices(
+        updated.vpnProfiles(), { alpha, beta }, currentUser, updated.revision());
+    PolicyManager cleared(L"policy-vpn-mappings-test.json");
+    require(!cleared.tryGetVpnProfileForDevice(alphaDevice, resolved),
+        "Bulk mapping should clear an individual token mapping.");
+    require(cleared.tryGetVpnProfileForDevice(betaDevice, resolved) &&
+        resolved.id == betaProfile.id,
+        "Clearing one bulk mapping should preserve the other token mapping.");
+    std::remove(fileName);
+}
+
 void testNetworkStateReportParsing() {
     require(VpnManager::isValidPublicIp(L"89.108.64.96") &&
         VpnManager::isValidPublicIp(L"2001:db8::10") &&
@@ -1315,6 +1377,7 @@ int main() {
         testPolicyUsageStatePath();
         testVpnPolicyRoundTrip();
         testAtomicVpnAssignmentForMultipleDevices();
+        testAtomicDifferentVpnMappingsForMultipleDevices();
         testUnknownVpnMappingFailsClosed();
         testVpnWatchdogRejectsUnmappedToken();
         testNetworkStateReportParsing();

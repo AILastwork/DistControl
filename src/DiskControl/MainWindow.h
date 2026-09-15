@@ -12,6 +12,15 @@
 #include <thread>
 #include <vector>
 
+struct UserProfileEntry {
+    std::wstring accountName;
+    std::wstring sid;
+    std::wstring profileDirectory;
+    std::wstring policyPath;
+    std::wstring phonebookPath;
+    std::wstring networkStatePath;
+};
+
 class MainWindow {
 public:
     bool create(HINSTANCE instance, int showCommand);
@@ -39,10 +48,11 @@ private:
     void loadProfilesAndPolicyFromComputer();
     void loadProfilesForComputer(const std::wstring& computerName);
     void finishComputerLoad();
+    bool selectAdminUserProfile(const std::wstring& userName, bool refreshDeviceList);
     void startTokenAction(DeviceViewModel device, bool connect);
     bool ensureVpnCredentials(const DeviceViewModel& device, bool forcePrompt);
     void configureVpnForSelectedDevice();
-    void manageVpnForSelectedDevice();
+    void manageVpnMappings();
     void finishTokenAction();
     void updateTokenActionProgress();
     void setMainControlsEnabled(bool enabled);
@@ -107,6 +117,7 @@ private:
     HWND exportButton_ = nullptr;
     HWND exportJsonButton_ = nullptr;
     HWND vpnButton_ = nullptr;
+    HWND vpnMappingsButton_ = nullptr;
     HWND statusLabel_ = nullptr;
     HWND refreshProgressBar_ = nullptr;
     HWND refreshProgressLabel_ = nullptr;
@@ -117,7 +128,7 @@ private:
     std::vector<DeviceViewModel> availableDevices_;
     std::vector<DeviceViewModel> pendingDevices_;
     std::vector<DeviceViewModel> baselineAllowedDevices_;
-    std::vector<std::wstring> profileUsers_;
+    std::vector<UserProfileEntry> profileUsers_;
     std::map<std::wstring, ULONGLONG> activeDeviceStartTicks_;
     std::map<std::wstring, ULONGLONG> autoReleaseRequestTicks_;
     std::map<std::wstring, ULONGLONG> tokenActionFailureTicks_;
@@ -126,8 +137,9 @@ private:
     std::wstring pendingPolicyUser_;
     std::wstring loadedPolicyRevision_;
     std::wstring loadedPolicyUser_;
-    std::vector<std::wstring> pendingProfileUsers_;
+    std::vector<UserProfileEntry> pendingProfileUsers_;
     std::wstring pendingComputerName_;
+    std::wstring pendingComputerUser_;
     std::wstring pendingComputerPolicyPath_;
     std::wstring pendingComputerError_;
     std::wstring pendingTokenActionStatus_;

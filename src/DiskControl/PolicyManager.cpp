@@ -1427,6 +1427,102 @@ std::wstring PolicyManager::clearVpnProfileForDevices(
     throw std::runtime_error("Device must be assigned to the user before selecting a VPN profile.");
 }
 
+std::wstring PolicyManager::saveVpnAssignmentsForDevices(
+    const std::vector<VpnProfile>& profilesToSave,
+    const std::vector<DeviceRule>& deviceAssignments,
+    const std::wstring& userName,
+    const std::wstring& expectedRevision) const {
+    if (userName.empty()) {
+        throw std::runtime_error("User name is required.");
+    }
+
+    ConfigWriteLock writeLock(configPath_);
+    std::wstring currentRevision;
+    JsonValue root = readPolicyRoot(configPath_, &currentRevision);
+    verifyPolicyRevision(currentRevision, expectedRevision);
+
+    JsonValue& profiles = root.objectValue[L"vpnProfiles"];
+    if (profiles.type == JsonValue::Type::Null) {
+        profiles = makeArray();
+    }
+    if (profiles.type != JsonValue::Type::Array) {
+        throw std::runtime_error("Config vpnProfiles must be an array.");
+    }
+    for (const VpnProfile& profile : profilesToSave) {
+        if (profile.id.empty() ||
+            (profile.mode == VpnProfileMode::WindowsVpn && profile.name.empty())) {
+            throw std::runtime_error("Network profile id and Windows profile are required.");
+        }
+        bool updated = false;
+        for (JsonValue& existing : profiles.arrayValue) {
+            if (existing.type == JsonValue::Type::Object &&
+                equalsIgnoreCase(stringValue(existing.find(L"id")), profile.id)) {
+                existing = makeVpnProfile(profile);
+                updated = true;
+                break;
+            }
+        }
+        if (!updated) {
+            profiles.arrayValue.push_back(makeVpnProfile(profile));
+        }
+    }
+
+    JsonValue* targetAssignment = nullptr;
+    JsonValue& assignments = root.objectValue[L"userAssignments"];
+    for (JsonValue& assignment : assignments.arrayValue) {
+        if (assignment.type != JsonValue::Type::Object) {
+            continue;
+        }
+        for (const std::wstring& configuredUser : stringArray(assignment.find(L"users"))) {
+            if (configuredUserMatchesTarget(configuredUser, userName)) {
+                targetAssignment = &assignment;
+                break;
+            }
+        }
+        if (targetAssignment) {
+            break;
+        }
+    }
+    if (!targetAssignment) {
+        throw std::runtime_error("Device must be assigned to the user before selecting a VPN profile.");
+    }
+
+    JsonValue& rules = targetAssignment->objectValue[L"allowedDevices"];
+    if (rules.type != JsonValue::Type::Array) {
+        throw std::runtime_error("Config allowedDevices must be an array.");
+    }
+    for (const DeviceRule& deviceAssignment : deviceAssignments) {
+        JsonValue* matchedRule = nullptr;
+        for (JsonValue& rule : rules.arrayValue) {
+            if (rule.type == JsonValue::Type::Object &&
+                equalsIgnoreCase(stringValue(rule.find(L"endpoint")), deviceAssignment.endpoint)) {
+                matchedRule = &rule;
+                break;
+            }
+        }
+        if (!matchedRule) {
+            throw std::runtime_error("Device must be assigned to the user before selecting a VPN profile.");
+        }
+        if (deviceAssignment.vpnProfileId.empty()) {
+            matchedRule->objectValue.erase(L"vpnProfile");
+        }
+        else {
+            const bool knownProfile = std::any_of(profilesToSave.begin(), profilesToSave.end(),
+                [&deviceAssignment](const VpnProfile& profile) {
+                    return equalsIgnoreCase(profile.id, deviceAssignment.vpnProfileId);
+                });
+            if (!knownProfile) {
+                throw std::runtime_error("VPN profile mapping references an unknown profile.");
+            }
+            matchedRule->objectValue[L"vpnProfile"] = makeString(deviceAssignment.vpnProfileId);
+        }
+    }
+
+    const std::wstring serialized = serializeJson(root);
+    writeUtf8File(configPath_, serialized);
+    return policyRevisionForText(serialized);
+}
+
 void PolicyManager::upsertVpnProfile(const VpnProfile& profile) const {
     if (profile.id.empty() ||
         (profile.mode == VpnProfileMode::WindowsVpn && profile.name.empty())) {
