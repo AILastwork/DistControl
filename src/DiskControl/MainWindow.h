@@ -77,7 +77,10 @@ private:
     void updateTreeTimerTextRecursive(HTREEITEM item);
     std::wstring activeDurationText(const DeviceViewModel& device) const;
     void updateHeaderText();
-    void updateStatus(const wchar_t* text);
+    void updateStatus(const wchar_t* text, COLORREF color = CLR_DEFAULT);
+    void createFonts();
+    void updateActionButton();
+    LRESULT customDrawTree(NMTVCUSTOMDRAW* draw);
     void updateRefreshProgress();
     void showRefreshProgress();
     void hideRefreshProgress();
@@ -96,6 +99,10 @@ private:
     HWND availableTitleLabel_ = nullptr;
     HWND treeView_ = nullptr;
     HIMAGELIST treeImageList_ = nullptr;
+    HFONT uiFont_ = nullptr;
+    HFONT treeFont_ = nullptr;
+    HFONT statusFont_ = nullptr;
+    COLORREF statusColor_ = CLR_DEFAULT;
     HWND refreshButton_ = nullptr;
     HWND useButton_ = nullptr;
     HWND stopButton_ = nullptr;

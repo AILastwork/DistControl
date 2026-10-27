@@ -1588,6 +1588,53 @@ void testLocalRouteInspection() {
     const size_t routeCount = VpnManager::localPhysicalRouteCount();
     (void)routeCount;
 }
+
+void testVpnChoiceNameMatching() {
+    const std::vector<std::wstring> names = {
+        L"Не назначен",
+        L"БЕЗ VPN",
+        L"VPN - Фасилити менеджмент АО [пользователь]",
+        L"VPN - Салют УК ООО [все пользователи]",
+        L"VPN - Салют УК ООО [пользователь]",
+        L"VPN - Илария ООО [пользователь]"
+    };
+
+    VpnNameMatch match = matchVpnChoiceName(names, L"  vpn -  фасилити МЕНЕДЖМЕНТ ао ");
+    require(match.kind == VpnNameMatchKind::Exact && match.index == 2,
+        "Pasted VPN name must match exactly ignoring case and extra spaces.");
+
+    match = matchVpnChoiceName(names, L"«VPN - Илария ООО»");
+    require(match.kind == VpnNameMatchKind::Exact && match.index == 5,
+        "Quotes around a pasted VPN name must be ignored.");
+
+    match = matchVpnChoiceName(names, L"Фасилити");
+    require(match.kind == VpnNameMatchKind::Unique && match.index == 2,
+        "A fragment contained in a single VPN name must be a unique match.");
+
+    match = matchVpnChoiceName(names, L"VPN - Салют УК ООО");
+    require(match.kind == VpnNameMatchKind::Ambiguous && match.candidates.size() == 2,
+        "The same VPN name in two phonebooks must not be chosen silently.");
+
+    match = matchVpnChoiceName(names, L"VPN - Салют УК ООО [все пользователи]");
+    require(match.kind == VpnNameMatchKind::Exact && match.index == 3,
+        "A pasted name with its phonebook suffix must pick that entry.");
+
+    match = matchVpnChoiceName(names, L"без vpn");
+    require(match.kind == VpnNameMatchKind::Exact && match.index == 1,
+        "The direct option must stay selectable by text.");
+
+    match = matchVpnChoiceName(names, L"ООО");
+    require(match.kind == VpnNameMatchKind::Ambiguous && match.candidates.size() == 3,
+        "A common fragment must list every candidate.");
+
+    match = matchVpnChoiceName(names, L"Неизвестная сеть");
+    require(match.kind == VpnNameMatchKind::None && match.candidates.empty(),
+        "Unknown VPN text must not match anything.");
+
+    match = matchVpnChoiceName(names, L"   ");
+    require(match.kind == VpnNameMatchKind::None && match.candidates.size() == names.size(),
+        "Empty text must keep the full list.");
+}
 }
 
 int main() {
@@ -1628,6 +1675,7 @@ int main() {
         testVpnWatchdogRejectsUnmappedToken();
         testNetworkStateReportParsing();
         testLocalRouteInspection();
+        testVpnChoiceNameMatching();
         removeFirstMatch("usage-sync-test-*");
         std::cout << "All DistControl C++ tests passed.\n";
         return 0;

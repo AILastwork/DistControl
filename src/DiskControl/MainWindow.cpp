@@ -315,8 +315,14 @@ struct VpnBulkDialogData {
     std::vector<WindowsVpnProfileInfo> windowsProfiles;
     HWND editorCombo = nullptr;
     size_t editedDeviceIndex = static_cast<size_t>(-1);
+    std::vector<std::wstring> choiceNames;
+    std::vector<LPARAM> choiceValues;
+    std::wstring lastEditorText;
+    bool filteringEditor = false;
     bool changed = false;
 };
+
+constexpr UINT WM_BULK_VPN_COMMIT = WM_APP + 40;
 
 constexpr LPARAM kBulkVpnNotAssigned = -1;
 constexpr LPARAM kBulkVpnDirect = -2;
@@ -390,6 +396,14 @@ bool matchesBulkVpnSearch(
         containsIgnoreCase(device.product, query) ||
         containsIgnoreCase(device.endpoint, query) ||
         containsIgnoreCase(bulkVpnDisplayText(data, device), query);
+}
+
+std::wstring rawControlText(HWND hwnd) {
+    const int length = GetWindowTextLengthW(hwnd);
+    std::wstring text(static_cast<size_t>(length) + 1, L'\0');
+    GetWindowTextW(hwnd, text.data(), length + 1);
+    text.resize(static_cast<size_t>(length));
+    return text;
 }
 
 void hideBulkVpnEditor(VpnBulkDialogData& data) {
@@ -531,15 +545,8 @@ bool bulkVpnEditorSelection(
         device.vpnProfileId.c_str(), -1, TRUE) != CSTR_EQUAL;
 }
 
-bool applyBulkVpnEditorSelection(HWND list, VpnBulkDialogData& data) {
-    if (!data.editorCombo || data.editedDeviceIndex >= data.devices.size()) {
-        return false;
-    }
-
-    const LRESULT selection = SendMessageW(data.editorCombo, CB_GETCURSEL, 0, 0);
-    const LRESULT choice = selection == CB_ERR ? kBulkVpnUnavailable :
-        SendMessageW(data.editorCombo, CB_GETITEMDATA, selection, 0);
-    if (selection == CB_ERR || choice == kBulkVpnUnavailable) {
+bool applyBulkVpnChoice(HWND list, VpnBulkDialogData& data, LPARAM choice) {
+    if (data.editedDeviceIndex >= data.devices.size() || choice == kBulkVpnUnavailable) {
         return false;
     }
 
@@ -574,15 +581,22 @@ void showBulkVpnEditor(
     const DeviceViewModel& device = data.devices[deviceIndex];
 
     HWND combo = data.editorCombo;
+    data.choiceNames = { L"Не назначен", L"БЕЗ VPN" };
+    data.choiceValues = { kBulkVpnNotAssigned, kBulkVpnDirect };
+    for (size_t index = 0; index < data.windowsProfiles.size(); ++index) {
+        data.choiceNames.push_back(windowsVpnDisplayName(data.windowsProfiles[index]));
+        data.choiceValues.push_back(static_cast<LPARAM>(index));
+    }
+    data.filteringEditor = true;
     SendMessageW(combo, CB_RESETCONTENT, 0, 0);
     const LRESULT unassignedItem = addBulkVpnComboItem(
-        combo, L"Не назначен", kBulkVpnNotAssigned);
-    const LRESULT directItem = addBulkVpnComboItem(combo, L"БЕЗ VPN", kBulkVpnDirect);
+        combo, data.choiceNames[0], kBulkVpnNotAssigned);
+    const LRESULT directItem = addBulkVpnComboItem(combo, data.choiceNames[1], kBulkVpnDirect);
     std::vector<LRESULT> windowsItems;
     windowsItems.reserve(data.windowsProfiles.size());
     for (size_t index = 0; index < data.windowsProfiles.size(); ++index) {
         windowsItems.push_back(addBulkVpnComboItem(
-            combo, windowsVpnDisplayName(data.windowsProfiles[index]), static_cast<LPARAM>(index)));
+            combo, data.choiceNames[index + 2], static_cast<LPARAM>(index)));
     }
 
     LRESULT selectedItem = unassignedItem;
@@ -616,27 +630,128 @@ void showBulkVpnEditor(
     MapWindowPoints(list, dialog, reinterpret_cast<POINT*>(&cell), 2);
     data.editedDeviceIndex = deviceIndex;
     SendMessageW(combo, CB_SETCURSEL, selectedItem, 0);
+    data.filteringEditor = false;
+    data.lastEditorText = rawControlText(combo);
     SetWindowPos(combo, HWND_TOP, cell.left - 1, cell.top - 1,
-        (std::max)(static_cast<int>(cell.right - cell.left + 2), 180), 260,
+        (std::max)(static_cast<int>(cell.right - cell.left + 2), 260), 320,
         SWP_SHOWWINDOW);
     SetFocus(combo);
-    SendMessageW(combo, CB_SHOWDROPDOWN, TRUE, 0);
+    SendMessageW(combo, CB_SETEDITSEL, 0, MAKELPARAM(0, -1));
+    SetDlgItemTextW(dialog, IDC_VPN_BULK_HINT,
+        L"Выберите VPN из списка (F4) или вставьте скопированное название (Ctrl+V) и нажмите Enter. "
+        L"Esc — отмена.");
 }
 
-void autoCompleteBulkVpnCombo(HWND combo) {
-    const int length = GetWindowTextLengthW(combo);
-    std::wstring entered(static_cast<size_t>(length) + 1, L'\0');
-    GetWindowTextW(combo, entered.data(), length + 1);
-    entered.resize(static_cast<size_t>(length));
-    if (entered.empty()) {
+void filterBulkVpnEditor(HWND dialog, VpnBulkDialogData& data) {
+    if (data.filteringEditor || !data.editorCombo || data.editedDeviceIndex >= data.devices.size()) {
         return;
     }
-    const LRESULT match = SendMessageW(combo, CB_FINDSTRING,
-        static_cast<WPARAM>(-1), reinterpret_cast<LPARAM>(entered.c_str()));
-    if (match != CB_ERR) {
-        SendMessageW(combo, CB_SETCURSEL, match, 0);
-        SendMessageW(combo, CB_SETEDITSEL, 0, MAKELPARAM(entered.size(), -1));
+    HWND combo = data.editorCombo;
+    const std::wstring text = rawControlText(combo);
+    const bool pasted = text.size() > data.lastEditorText.size() + 1;
+    data.lastEditorText = text;
+    const VpnNameMatch match = matchVpnChoiceName(data.choiceNames, text);
+
+    DWORD selectionStart = 0;
+    DWORD selectionEnd = 0;
+    SendMessageW(combo, CB_GETEDITSEL,
+        reinterpret_cast<WPARAM>(&selectionStart), reinterpret_cast<LPARAM>(&selectionEnd));
+
+    data.filteringEditor = true;
+    SendMessageW(combo, CB_RESETCONTENT, 0, 0);
+    for (size_t index : match.candidates) {
+        addBulkVpnComboItem(combo, data.choiceNames[index], data.choiceValues[index]);
     }
+    if (!match.candidates.empty() && !SendMessageW(combo, CB_GETDROPPEDSTATE, 0, 0)) {
+        SendMessageW(combo, CB_SHOWDROPDOWN, TRUE, 0);
+        SetCursor(LoadCursorW(nullptr, IDC_ARROW));
+    }
+    SetWindowTextW(combo, text.c_str());
+    SendMessageW(combo, CB_SETEDITSEL, 0, MAKELPARAM(selectionStart, selectionEnd));
+    data.filteringEditor = false;
+
+    std::wstring hint;
+    if (normalizeVpnChoiceText(text).empty()) {
+        hint = L"Введите или вставьте название VPN.";
+    }
+    else if (match.kind == VpnNameMatchKind::Exact) {
+        hint = L"Найдено: " + data.choiceNames[match.index] + L". Нажмите Enter, чтобы назначить.";
+    }
+    else if (match.kind == VpnNameMatchKind::Unique) {
+        hint = L"Подходит один вариант: " + data.choiceNames[match.index] +
+            L". Нажмите Enter, чтобы назначить.";
+    }
+    else if (match.kind == VpnNameMatchKind::Ambiguous) {
+        hint = L"Подходит вариантов: " + std::to_wstring(match.candidates.size()) +
+            L". Выберите нужный в списке.";
+    }
+    else {
+        hint = L"⚠ VPN «" + trim(text) + L"» не найден среди подключений Windows. Проверьте название.";
+    }
+    SetDlgItemTextW(dialog, IDC_VPN_BULK_HINT, hint.c_str());
+
+    if (pasted && match.kind == VpnNameMatchKind::Exact) {
+        PostMessageW(dialog, WM_BULK_VPN_COMMIT, TRUE, 0);
+    }
+}
+
+// Applies the editor value to the edited token. Returns false and leaves the
+// mapping unchanged when the text does not identify exactly one choice.
+bool commitBulkVpnEditor(HWND dialog, VpnBulkDialogData& data) {
+    if (!data.editorCombo || !IsWindowVisible(data.editorCombo) ||
+        data.editedDeviceIndex >= data.devices.size()) {
+        return true;
+    }
+    HWND combo = data.editorCombo;
+    HWND list = GetDlgItem(dialog, IDC_VPN_BULK_LIST);
+    const std::wstring text = rawControlText(combo);
+
+    LPARAM choice = kBulkVpnUnavailable;
+    std::wstring chosenName;
+    const LRESULT selection = SendMessageW(combo, CB_GETCURSEL, 0, 0);
+    if (selection != CB_ERR) {
+        const int length = (std::max)(static_cast<int>(SendMessageW(combo, CB_GETLBTEXTLEN, selection, 0)), 0);
+        std::wstring itemText(static_cast<size_t>(length) + 1, L'\0');
+        SendMessageW(combo, CB_GETLBTEXT, selection, reinterpret_cast<LPARAM>(itemText.data()));
+        itemText.resize(static_cast<size_t>(length));
+        if (normalizeVpnChoiceText(itemText) == normalizeVpnChoiceText(text)) {
+            choice = SendMessageW(combo, CB_GETITEMDATA, selection, 0);
+            chosenName = itemText;
+        }
+    }
+    if (choice == kBulkVpnUnavailable && selection != CB_ERR &&
+        SendMessageW(combo, CB_GETITEMDATA, selection, 0) == kBulkVpnUnavailable &&
+        text == data.lastEditorText) {
+        // The current mapping points to a missing profile and was not edited.
+        hideBulkVpnEditor(data);
+        return true;
+    }
+    if (choice == kBulkVpnUnavailable) {
+        if (normalizeVpnChoiceText(text).empty()) {
+            hideBulkVpnEditor(data);
+            return true;
+        }
+        const VpnNameMatch match = matchVpnChoiceName(data.choiceNames, text);
+        if (match.kind != VpnNameMatchKind::Exact && match.kind != VpnNameMatchKind::Unique) {
+            const std::wstring warning = match.kind == VpnNameMatchKind::Ambiguous
+                ? L"⚠ Название «" + trim(text) + L"» подходит к нескольким VPN. Выберите нужный в списке. Сопоставление не изменено."
+                : L"⚠ VPN «" + trim(text) + L"» не найден среди подключений Windows. Сопоставление не изменено.";
+            SetDlgItemTextW(dialog, IDC_VPN_BULK_HINT, warning.c_str());
+            MessageBeep(MB_ICONWARNING);
+            return false;
+        }
+        choice = data.choiceValues[match.index];
+        chosenName = data.choiceNames[match.index];
+    }
+
+    const DeviceViewModel& device = data.devices[data.editedDeviceIndex];
+    const std::wstring tokenName = device.nickname.empty() ? device.product : device.nickname;
+    applyBulkVpnChoice(list, data, choice);
+    hideBulkVpnEditor(data);
+    const std::wstring done = L"Назначено: " + tokenName + L" → " + chosenName +
+        L". Не забудьте нажать «Сохранить».";
+    SetDlgItemTextW(dialog, IDC_VPN_BULK_HINT, done.c_str());
+    return true;
 }
 
 INT_PTR CALLBACK vpnBulkDialogProc(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam) {
@@ -672,6 +787,9 @@ INT_PTR CALLBACK vpnBulkDialogProc(HWND dialog, UINT message, WPARAM wParam, LPA
         const auto* header = reinterpret_cast<NMHDR*>(lParam);
         if (header->code == NM_CLICK || header->code == NM_DBLCLK) {
             const auto* activate = reinterpret_cast<NMITEMACTIVATE*>(lParam);
+            if (IsWindowVisible(data->editorCombo) && !commitBulkVpnEditor(dialog, *data)) {
+                hideBulkVpnEditor(*data);
+            }
             if (activate->iItem >= 0 && activate->iSubItem == 2) {
                 showBulkVpnEditor(dialog, *data, activate->iItem);
             }
@@ -707,18 +825,24 @@ INT_PTR CALLBACK vpnBulkDialogProc(HWND dialog, UINT message, WPARAM wParam, LPA
             return TRUE;
         }
         if (LOWORD(wParam) == IDC_VPN_BULK_EDITOR && HIWORD(wParam) == CBN_EDITUPDATE) {
-            autoCompleteBulkVpnCombo(data->editorCombo);
+            filterBulkVpnEditor(dialog, *data);
             return TRUE;
         }
-        if (LOWORD(wParam) == IDC_VPN_BULK_EDITOR &&
-            (HIWORD(wParam) == CBN_SELCHANGE || HIWORD(wParam) == CBN_SELENDOK)) {
-            applyBulkVpnEditorSelection(list, *data);
+        if (LOWORD(wParam) == IDC_VPN_BULK_EDITOR && HIWORD(wParam) == CBN_SELENDOK &&
+            !data->filteringEditor && IsWindowVisible(data->editorCombo)) {
+            PostMessageW(dialog, WM_BULK_VPN_COMMIT, TRUE, 0);
             return TRUE;
         }
-        if (LOWORD(wParam) == IDC_VPN_BULK_EDITOR && HIWORD(wParam) == CBN_CLOSEUP) {
-            applyBulkVpnEditorSelection(list, *data);
+        if (LOWORD(wParam) == IDC_VPN_BULK_EDITOR && HIWORD(wParam) == CBN_SELENDCANCEL &&
+            (GetKeyState(VK_ESCAPE) & 0x8000) != 0) {
             hideBulkVpnEditor(*data);
+            SetDlgItemTextW(dialog, IDC_VPN_BULK_HINT, L"Изменение VPN отменено.");
             SetFocus(list);
+            return TRUE;
+        }
+        if (LOWORD(wParam) == IDC_VPN_BULK_EDITOR && HIWORD(wParam) == CBN_KILLFOCUS &&
+            IsWindowVisible(data->editorCombo)) {
+            PostMessageW(dialog, WM_BULK_VPN_COMMIT, FALSE, 0);
             return TRUE;
         }
 
@@ -764,7 +888,16 @@ INT_PTR CALLBACK vpnBulkDialogProc(HWND dialog, UINT message, WPARAM wParam, LPA
             return TRUE;
         }
 
+        if (LOWORD(wParam) == IDC_VPN_BULK_SAVE && IsWindowVisible(data->editorCombo) &&
+            IsChild(data->editorCombo, GetFocus())) {
+            // Enter in the VPN editor confirms the typed value instead of saving.
+            PostMessageW(dialog, WM_BULK_VPN_COMMIT, TRUE, 0);
+            return TRUE;
+        }
         if (LOWORD(wParam) == IDC_VPN_BULK_SAVE) {
+            if (!commitBulkVpnEditor(dialog, *data)) {
+                return TRUE;
+            }
             if (!data->changed) {
                 EndDialog(dialog, IDCANCEL);
                 return TRUE;
@@ -783,6 +916,12 @@ INT_PTR CALLBACK vpnBulkDialogProc(HWND dialog, UINT message, WPARAM wParam, LPA
             }
             return TRUE;
         }
+        if (LOWORD(wParam) == IDCANCEL && IsWindowVisible(data->editorCombo)) {
+            hideBulkVpnEditor(*data);
+            SetDlgItemTextW(dialog, IDC_VPN_BULK_HINT, L"Изменение VPN отменено.");
+            SetFocus(list);
+            return TRUE;
+        }
         if (LOWORD(wParam) == IDCANCEL) {
             if (data->changed && MessageBoxW(dialog,
                     L"Есть несохранённые сопоставления. Закрыть окно без сохранения?",
@@ -792,6 +931,22 @@ INT_PTR CALLBACK vpnBulkDialogProc(HWND dialog, UINT message, WPARAM wParam, LPA
             EndDialog(dialog, IDCANCEL);
             return TRUE;
         }
+    }
+    if (message == WM_BULK_VPN_COMMIT) {
+        if (!IsWindowVisible(data->editorCombo)) {
+            return TRUE;
+        }
+        const bool keepEditing = wParam != FALSE;
+        if (commitBulkVpnEditor(dialog, *data)) {
+            SetFocus(list);
+        }
+        else if (keepEditing) {
+            SetFocus(data->editorCombo);
+        }
+        else {
+            hideBulkVpnEditor(*data);
+        }
+        return TRUE;
     }
     if (message == WM_DESTROY) {
         saveListColumnLayout(list, 3, L"VpnMappings");
@@ -1875,6 +2030,14 @@ LRESULT MainWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             return 0;
         }
         break;
+    case WM_CTLCOLORSTATIC: {
+        HDC dc = reinterpret_cast<HDC>(wParam);
+        SetBkColor(dc, GetSysColor(COLOR_WINDOW));
+        if (reinterpret_cast<HWND>(lParam) == statusLabel_ && statusColor_ != CLR_DEFAULT) {
+            SetTextColor(dc, statusColor_);
+        }
+        return reinterpret_cast<LRESULT>(GetSysColorBrush(COLOR_WINDOW));
+    }
     case WM_NOTIFY:
         if (listView_ && reinterpret_cast<NMHDR*>(lParam)->hwndFrom == listView_) {
             const auto* header = reinterpret_cast<NMHDR*>(lParam);
@@ -1902,6 +2065,30 @@ LRESULT MainWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         }
         if (treeView_ && reinterpret_cast<NMHDR*>(lParam)->hwndFrom == treeView_) {
             const auto* header = reinterpret_cast<NMHDR*>(lParam);
+            if (header->code == NM_CUSTOMDRAW) {
+                return customDrawTree(reinterpret_cast<NMTVCUSTOMDRAW*>(lParam));
+            }
+            if (header->code == TVN_SELCHANGEDW) {
+                const auto* change = reinterpret_cast<NMTREEVIEWW*>(lParam);
+                updateActionButton();
+                const DeviceViewModel* device = selectedDevice();
+                if (device && change->action != TVC_UNKNOWN && !tokenActionRunning_ && !refreshing_) {
+                    const DeviceUsageInfo usage = DeviceParser::parseUsage(
+                        device->inUseBy, PolicyManager::currentUserName());
+                    std::wstring hint = L"Выбран токен «" + displayDeviceName(*device) + L"». ";
+                    if (usage.isUsedByCurrentUser) {
+                        hint += L"Чтобы отключить: двойной щелчок, Enter или кнопка «Отключить».";
+                    }
+                    else if (usage.isFree) {
+                        hint += L"Чтобы подключить: двойной щелчок, Enter или кнопка «Подключить».";
+                    }
+                    else {
+                        hint += L"Токен сейчас занят другим пользователем.";
+                    }
+                    updateStatus(hint.c_str());
+                }
+                return 0;
+            }
             if (header->code == NM_DBLCLK) {
                 if (selectedDevice()) {
                     activateSelectedDevice();
@@ -1996,6 +2183,15 @@ LRESULT MainWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         case IDC_EXPORT_JSON:
             return 0;
         case IDC_USE:
+            if (treeView_) {
+                if (selectedDevice()) {
+                    activateSelectedDevice();
+                }
+                else {
+                    updateStatus(L"Сначала выберите токен в списке.");
+                }
+                return 0;
+            }
             if (listView_ && ListView_GetSelectedCount(listView_) > 1) {
                 updateStatus(L"Для подключения выберите один токен.");
                 return 0;
@@ -2048,6 +2244,12 @@ LRESULT MainWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         if (treeImageList_) {
             ImageList_Destroy(treeImageList_);
             treeImageList_ = nullptr;
+        }
+        for (HFONT* font : { &uiFont_, &treeFont_, &statusFont_ }) {
+            if (*font) {
+                DeleteObject(*font);
+                *font = nullptr;
+            }
         }
         if (refreshThread_.joinable()) {
             refreshThread_.join();
@@ -2109,7 +2311,7 @@ void MainWindow::createControls() {
         }
     }
 
-    const DWORD userActionStyle = WS_CHILD;
+    const DWORD userActionStyle = WS_CHILD | (kAdminBuild ? 0 : WS_VISIBLE);
     const DWORD adminActionStyle = WS_CHILD | (kAdminBuild ? WS_VISIBLE : 0);
 
     refreshButton_ = CreateWindowW(L"BUTTON", L"Обновить", WS_CHILD | WS_VISIBLE, 0, 0, 0, 0,
@@ -2165,8 +2367,123 @@ void MainWindow::createControls() {
         loadProfilesForComputer(currentComputerName());
     }
 
+    createFonts();
+    updateActionButton();
     updateHeaderText();
     layoutControls();
+}
+
+static BOOL CALLBACK applyFontToChild(HWND child, LPARAM font) {
+    SendMessageW(child, WM_SETFONT, static_cast<WPARAM>(font), FALSE);
+    return TRUE;
+}
+
+void MainWindow::createFonts() {
+    HDC screen = GetDC(nullptr);
+    const int dpi = screen ? GetDeviceCaps(screen, LOGPIXELSY) : 96;
+    if (screen) {
+        ReleaseDC(nullptr, screen);
+    }
+    const auto makeFont = [dpi](int points, int weight) {
+        return CreateFontW(-MulDiv(points, dpi, 72), 0, 0, 0, weight, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+            DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+    };
+    uiFont_ = makeFont(10, FW_NORMAL);
+    statusFont_ = makeFont(10, FW_SEMIBOLD);
+    treeFont_ = makeFont(11, FW_SEMIBOLD);
+
+    if (uiFont_) {
+        EnumChildWindows(hwnd_, applyFontToChild, reinterpret_cast<LPARAM>(uiFont_));
+    }
+    if (statusFont_) {
+        SendMessageW(statusLabel_, WM_SETFONT, reinterpret_cast<WPARAM>(statusFont_), FALSE);
+        if (useButton_) {
+            SendMessageW(useButton_, WM_SETFONT, reinterpret_cast<WPARAM>(statusFont_), FALSE);
+        }
+    }
+    if (treeView_ && treeFont_) {
+        SendMessageW(treeView_, WM_SETFONT, reinterpret_cast<WPARAM>(treeFont_), TRUE);
+        HDC dc = GetDC(treeView_);
+        if (dc) {
+            HGDIOBJ old = SelectObject(dc, treeFont_);
+            TEXTMETRICW metrics{};
+            GetTextMetricsW(dc, &metrics);
+            SelectObject(dc, old);
+            ReleaseDC(treeView_, dc);
+            TreeView_SetItemHeight(treeView_, metrics.tmHeight + MulDiv(10, dpi, 96));
+        }
+    }
+}
+
+void MainWindow::updateActionButton() {
+    if (!useButton_ || kAdminBuild) {
+        return;
+    }
+    const DeviceViewModel* device = selectedDevice();
+    const bool busy = tokenActionRunning_ || refreshing_ || vpnWatchdogRunning_;
+    const wchar_t* text = L"Подключить";
+    bool enabled = false;
+    if (device) {
+        const DeviceUsageInfo usage = DeviceParser::parseUsage(device->inUseBy, PolicyManager::currentUserName());
+        if (usage.isUsedByCurrentUser) {
+            text = L"Отключить";
+            enabled = true;
+        }
+        else if (!usage.isFree) {
+            text = L"Занят";
+        }
+        else {
+            enabled = device->allowed;
+        }
+    }
+    wchar_t current[32]{};
+    GetWindowTextW(useButton_, current, static_cast<int>(std::size(current)));
+    if (wcscmp(current, text) != 0) {
+        SetWindowTextW(useButton_, text);
+    }
+    EnableWindow(useButton_, enabled && !busy ? TRUE : FALSE);
+}
+
+LRESULT MainWindow::customDrawTree(NMTVCUSTOMDRAW* draw) {
+    switch (draw->nmcd.dwDrawStage) {
+    case CDDS_PREPAINT:
+        return CDRF_NOTIFYITEMDRAW;
+    case CDDS_ITEMPREPAINT: {
+        const HTREEITEM item = reinterpret_cast<HTREEITEM>(draw->nmcd.dwItemSpec);
+        if (item == TreeView_GetSelection(treeView_)) {
+            // Keep the classic blue selection even after focus moves to a button.
+            draw->clrText = GetSysColor(COLOR_HIGHLIGHTTEXT);
+            draw->clrTextBk = GetSysColor(COLOR_HIGHLIGHT);
+            return CDRF_NOTIFYPOSTPAINT;
+        }
+        const LPARAM param = draw->nmcd.lItemlParam;
+        if (param == kTreeGroupParam) {
+            draw->clrText = RGB(70, 70, 70);
+        }
+        else if (param >= 0 && static_cast<size_t>(param) < devices_.size()) {
+            const DeviceUsageInfo usage = DeviceParser::parseUsage(
+                devices_[static_cast<size_t>(param)].inUseBy, PolicyManager::currentUserName());
+            if (usage.isUsedByCurrentUser) {
+                draw->clrText = RGB(109, 40, 217);
+            }
+            else if (!usage.isFree) {
+                draw->clrText = RGB(150, 150, 150);
+            }
+        }
+        return CDRF_DODEFAULT;
+    }
+    case CDDS_ITEMPOSTPAINT:
+        if (GetFocus() != treeView_) {
+            RECT label{};
+            if (TreeView_GetItemRect(treeView_, reinterpret_cast<HTREEITEM>(draw->nmcd.dwItemSpec), &label, TRUE)) {
+                DrawFocusRect(draw->nmcd.hdc, &label);
+            }
+        }
+        return CDRF_DODEFAULT;
+    default:
+        return CDRF_DODEFAULT;
+    }
 }
 
 void MainWindow::layoutControls() {
@@ -2264,6 +2581,7 @@ void MainWindow::layoutControls() {
         }
 
         MoveWindow(refreshButton_, margin, buttonTop, buttonWidth, buttonHeight, TRUE);
+        MoveWindow(useButton_, margin + buttonWidth + gap, buttonTop, 170, buttonHeight, TRUE);
     }
 
     constexpr int refreshProgressWidth = 230;
@@ -2317,6 +2635,9 @@ void MainWindow::setMainControlsEnabled(bool enabled) {
     }
     if (vpnMappingsButton_) {
         EnableWindow(vpnMappingsButton_, value && adminAccessLoaded_);
+    }
+    if (enabled) {
+        updateActionButton();
     }
 }
 
@@ -2574,7 +2895,7 @@ void MainWindow::finishTokenAction() {
         if (connect && !vpnError && !endpoint.empty()) {
             tokenActionFailureTicks_[endpoint] = GetTickCount64();
         }
-        updateStatus(errorText.c_str());
+        updateStatus((L"Ошибка: " + errorText).c_str(), RGB(190, 30, 30));
         AuditLogger::trace(operationId,
             L"Интерфейс получил ошибку операции и показал её пользователю: " + errorText);
         scheduleDelayedRefresh();
@@ -2591,7 +2912,7 @@ void MainWindow::finishTokenAction() {
         markDeviceLocallyReleased(endpoint);
     }
 
-    updateStatus(status.c_str());
+    updateStatus((L"✔ " + status).c_str(), RGB(20, 120, 50));
     updateTreeTimerText();
     lastNetworkStateTick_ = 0;
     AuditLogger::trace(operationId,
@@ -2680,7 +3001,7 @@ void MainWindow::updateTokenActionProgress() {
     SetWindowTextW(refreshProgressLabel_, percentText.c_str());
     const std::wstring status = message + L". Шаг " + std::to_wstring(step) + L" из " +
         std::to_wstring(total) + L" (" + percentText + L").";
-    updateStatus(status.c_str());
+    updateStatus(status.c_str(), RGB(0, 90, 170));
 }
 
 void MainWindow::publishNetworkState() {
@@ -2993,7 +3314,7 @@ void MainWindow::populateTreeView() {
         itemInsert.item.iSelectedImage = image;
         TreeView_InsertItem(treeView_, &itemInsert);
         TreeView_Expand(treeView_, groupItem, TVE_EXPAND);
-    }
+    }    updateActionButton();
 }
 
 void MainWindow::updateTreeTimerText() {
@@ -3002,6 +3323,7 @@ void MainWindow::updateTreeTimerText() {
     }
 
     updateTreeTimerTextRecursive(TreeView_GetRoot(treeView_));
+    updateActionButton();
 }
 
 void MainWindow::updateTreeTimerTextRecursive(HTREEITEM item) {
@@ -4145,8 +4467,10 @@ std::wstring MainWindow::activeDurationText(const DeviceViewModel& device) const
     return L"осталось " + formatDuration(remaining);
 }
 
-void MainWindow::updateStatus(const wchar_t* text) {
+void MainWindow::updateStatus(const wchar_t* text, COLORREF color) {
+    statusColor_ = color;
     SetWindowTextW(statusLabel_, text);
+    InvalidateRect(statusLabel_, nullptr, TRUE);
 }
 
 void MainWindow::showRefreshProgress() {

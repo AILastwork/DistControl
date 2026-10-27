@@ -24,6 +24,26 @@ struct WindowsVpnProfileInfo {
     bool connected = false;
 };
 
+enum class VpnNameMatchKind {
+    None,
+    Exact,
+    Unique,
+    Ambiguous
+};
+
+struct VpnNameMatch {
+    VpnNameMatchKind kind = VpnNameMatchKind::None;
+    size_t index = 0;
+    std::vector<size_t> candidates;
+};
+
+// Matches text typed or pasted by an administrator against VPN choice names.
+// Case, repeated whitespace, quotes and a trailing " [пользователь]" or
+// " [все пользователи]" scope suffix are ignored. An exact match wins; otherwise
+// a single name containing the text is a unique match.
+std::wstring normalizeVpnChoiceText(const std::wstring& text);
+VpnNameMatch matchVpnChoiceName(const std::vector<std::wstring>& names, const std::wstring& entered);
+
 struct ActiveVpnConnectionInfo {
     std::wstring name;
     std::wstring phonebookPath;

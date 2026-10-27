@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cwctype>
 #include <map>
 #include <mutex>
 #include <set>
@@ -828,4 +829,103 @@ std::wstring VpnManager::queryPublicIp(const std::wstring& url) {
         throw std::runtime_error("VPN public IP verification service returned an invalid IP address.");
     }
     return publicIp;
+}
+
+namespace {
+std::wstring collapseVpnChoiceText(const std::wstring& text) {
+    std::wstring collapsed;
+    bool pendingSpace = false;
+    for (wchar_t ch : text) {
+        if (ch == L'"' || ch == L'\'' || ch == L'«' || ch == L'»' ||
+            ch == L'“' || ch == L'”' || ch == L'„') {
+            continue;
+        }
+        if (iswspace(ch) || ch == L'\u00A0' || ch == L'\u202F') {
+            pendingSpace = !collapsed.empty();
+            continue;
+        }
+        if (pendingSpace) {
+            collapsed.push_back(L' ');
+            pendingSpace = false;
+        }
+        collapsed.push_back(ch);
+    }
+    if (!collapsed.empty()) {
+        CharLowerBuffW(collapsed.data(), static_cast<DWORD>(collapsed.size()));
+    }
+    return collapsed;
+}
+}
+
+std::wstring normalizeVpnChoiceText(const std::wstring& text) {
+    std::wstring collapsed = collapseVpnChoiceText(text);
+    for (const wchar_t* suffix : { L" [все пользователи]", L" [пользователь]" }) {
+        const std::wstring tail = suffix;
+        if (collapsed.size() > tail.size() &&
+            collapsed.compare(collapsed.size() - tail.size(), tail.size(), tail) == 0) {
+            collapsed.resize(collapsed.size() - tail.size());
+            break;
+        }
+    }
+    return collapsed;
+}
+
+VpnNameMatch matchVpnChoiceName(const std::vector<std::wstring>& names, const std::wstring& entered) {
+    VpnNameMatch result;
+    const std::wstring query = normalizeVpnChoiceText(entered);
+    std::vector<std::wstring> normalizedNames;
+    normalizedNames.reserve(names.size());
+    for (const std::wstring& name : names) {
+        normalizedNames.push_back(normalizeVpnChoiceText(name));
+    }
+
+    if (query.empty()) {
+        for (size_t index = 0; index < names.size(); ++index) {
+            result.candidates.push_back(index);
+        }
+        return result;
+    }
+
+    // A pasted display name with its scope suffix picks that exact entry even
+    // when the same VPN name exists for both the user and all users.
+    const std::wstring fullQuery = collapseVpnChoiceText(entered);
+    std::vector<size_t> exact;
+    for (size_t index = 0; index < names.size(); ++index) {
+        if (collapseVpnChoiceText(names[index]) == fullQuery) {
+            exact.push_back(index);
+        }
+    }
+    if (exact.size() == 1) {
+        result.kind = VpnNameMatchKind::Exact;
+        result.index = exact.front();
+        result.candidates = exact;
+        return result;
+    }
+
+    exact.clear();
+    for (size_t index = 0; index < normalizedNames.size(); ++index) {
+        if (normalizedNames[index] == query) {
+            exact.push_back(index);
+        }
+        if (normalizedNames[index].find(query) != std::wstring::npos) {
+            result.candidates.push_back(index);
+        }
+    }
+
+    if (exact.size() == 1) {
+        result.kind = VpnNameMatchKind::Exact;
+        result.index = exact.front();
+    }
+    else if (exact.size() > 1) {
+        result.kind = VpnNameMatchKind::Ambiguous;
+        result.candidates = exact;
+    }
+    else if (result.candidates.size() == 1) {
+        result.kind = VpnNameMatchKind::Unique;
+        result.index = result.candidates.front();
+    }
+    else if (!result.candidates.empty()) {
+        result.kind = VpnNameMatchKind::Ambiguous;
+    }
+    return result;
 }
