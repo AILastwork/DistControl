@@ -336,24 +336,26 @@ bool AuditLogger::tryWriteTrace(
         pruneLogDirectoryIfDue(directory);
         const fs::path filePath = fs::path(directory) / traceFileName();
         rotateOversizedLog(filePath);
-        const bool newFile = !fs::exists(filePath) || fs::file_size(filePath) == 0;
-
-        std::ofstream stream(filePath, std::ios::binary | std::ios::app);
-        if (!stream) {
-            return false;
-        }
-        if (newFile) {
-            stream << "\xEF\xBB\xBF";
-            stream << wideToUtf8(
-                L"Журнал пошаговой диагностики DistControl. Пароли и общие ключи VPN не записываются.\r\n");
-        }
-
         const std::wstring line = L"[" + traceTimestamp() + L"] [PID " +
             std::to_wstring(GetCurrentProcessId()) + L"] [TID " +
             std::to_wstring(GetCurrentThreadId()) + L"] [" +
             (operationId.empty() ? L"БЕЗ-ОПЕРАЦИИ" : operationId) + L"] " + message + L"\r\n";
-        stream << wideToUtf8(line);
-        return true;
+        std::string bytes = wideToUtf8(line);
+        // The helper and GUI append complete entries without seeking to a shared EOF.
+        HANDLE file = CreateFileW(filePath.c_str(), FILE_APPEND_DATA,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file == INVALID_HANDLE_VALUE) {
+            return false;
+        }
+        if (GetLastError() != ERROR_ALREADY_EXISTS) {
+            bytes = "\xEF\xBB\xBF" + wideToUtf8(
+                L"Журнал пошаговой диагностики DistControl. Пароли и общие ключи VPN не записываются.\r\n") + bytes;
+        }
+        DWORD written = 0;
+        const BOOL ok = WriteFile(file, bytes.data(), static_cast<DWORD>(bytes.size()), &written, nullptr);
+        CloseHandle(file);
+        return ok && written == bytes.size();
     }
     catch (...) {
         return false;

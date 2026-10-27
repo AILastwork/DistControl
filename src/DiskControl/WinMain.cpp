@@ -1,6 +1,7 @@
 #include "MainWindow.h"
 #include "AuditLogger.h"
 #include "PolicyManager.h"
+#include "UsageStateSync.h"
 
 #include <shellapi.h>
 #include <windows.h>
@@ -21,6 +22,10 @@ constexpr const wchar_t* kAppTitle = L"DistControl";
 
 struct CommandLineOptions {
     std::wstring policyPath;
+    bool syncUsage = false;
+    std::wstring sharedUsagePath;
+    std::wstring localUsagePath;
+    std::wstring pipeName;
 };
 
 std::wstring widenAscii(const char* text) {
@@ -177,7 +182,19 @@ CommandLineOptions parseCommandLine() {
     for (int i = 1; i < argc; ++i) {
         const std::wstring arg = argv[i];
         const std::wstring prefix = L"--policy=";
-        if (arg == L"--policy" || arg == L"/policy") {
+        if (arg == L"--sync-usage") {
+            options.syncUsage = true;
+        }
+        else if (arg == L"--shared-usage" && i + 1 < argc) {
+            options.sharedUsagePath = argv[++i];
+        }
+        else if (arg == L"--local-usage" && i + 1 < argc) {
+            options.localUsagePath = argv[++i];
+        }
+        else if (arg == L"--pipe" && i + 1 < argc) {
+            options.pipeName = argv[++i];
+        }
+        else if (arg == L"--policy" || arg == L"/policy") {
             if (i + 1 < argc) {
                 options.policyPath = argv[++i];
             }
@@ -192,10 +209,14 @@ CommandLineOptions parseCommandLine() {
 }
 
 int runApplication(HINSTANCE instance, int showCommand) {
+    const CommandLineOptions options = parseCommandLine();
+    if (options.syncUsage) {
+        return UsageStateSync::runBackgroundSync(
+            options.sharedUsagePath, options.localUsagePath, options.pipeName);
+    }
     const std::wstring startupOperation = AuditLogger::createOperationId(L"APP");
     AuditLogger::trace(startupOperation,
         std::wstring(L"Запуск приложения «") + kAppTitle + L"». Командная строка: " + GetCommandLineW());
-    const CommandLineOptions options = parseCommandLine();
     if (!options.policyPath.empty()) {
         PolicyManager::setConfigPathOverride(options.policyPath);
         AuditLogger::trace(startupOperation,

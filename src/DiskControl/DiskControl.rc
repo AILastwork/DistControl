@@ -5,22 +5,6 @@
 
 IDI_DISKCONTROL ICON "res\\DiskControl.ico"
 
-IDD_VPN_CREDENTIALS DIALOGEX 0, 0, 280, 142
-STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
-CAPTION "DistControl - VPN"
-FONT 9, "Segoe UI"
-BEGIN
-    LTEXT           "Профиль Windows:", -1, 10, 12, 82, 10
-    LTEXT           "", IDC_VPN_PROFILE_NAME, 96, 12, 174, 10
-    LTEXT           "Логин VPN:", -1, 10, 39, 82, 10
-    EDITTEXT        IDC_VPN_USER_NAME, 96, 35, 174, 14, ES_AUTOHSCROLL
-    LTEXT           "Пароль VPN:", -1, 10, 65, 82, 10
-    EDITTEXT        IDC_VPN_PASSWORD, 96, 61, 174, 14, ES_PASSWORD | ES_AUTOHSCROLL
-    LTEXT           "Данные сохраняются средствами Windows и не записываются в allow.json.", -1, 10, 84, 260, 20
-    DEFPUSHBUTTON   "Сохранить", IDOK, 150, 116, 58, 16
-    PUSHBUTTON      "Отмена", IDCANCEL, 212, 116, 58, 16
-END
-
 IDD_VPN_BULK DIALOGEX 0, 0, 620, 372
 STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "DistControl Admin - сопоставление токенов и VPN"

@@ -5,6 +5,7 @@
 #include "IpcClient.h"
 #include "PolicyManager.h"
 #include "UsageStateStore.h"
+#include "UsageStateSync.h"
 #include "VpnManager.h"
 
 #include <windows.h>
@@ -366,18 +367,32 @@ void logUsageStateWarning(const char* details) {
     AuditLogger::log(event);
 }
 
-void markDeviceUsedBestEffort(const PolicyManager& policy, const DeviceViewModel& device) {
+bool markDeviceUsedBestEffort(const PolicyManager& policy, const DeviceViewModel& device,
+    const std::wstring& publicIp, const VpnProfile& profile, const std::wstring& operationId) {
     try {
-        UsageStateStore(policy.usageStatePath()).markUsed(toParsedDevice(device), PolicyManager::currentUserName());
+        UsageStateSync sync(policy.usageStatePath());
+        const UsageStateRecord record = sync.markUsed(toParsedDevice(device), PolicyManager::currentUserName(),
+            publicIp, profile.id, profile.name, operationId);
+        AuditLogger::trace(operationId, L"Таймер сохранён на компьютере. Токен: «" + device.nickname +
+            L"»; время: " + record.updatedAt + L"; внешний IP: " +
+            (publicIp.empty() ? L"не определён" : publicIp) + L". Общая папка обновляется в фоне.");
+        sync.requestBackgroundSync(policy.pipeName());
+        return true;
     }
     catch (const std::exception& error) {
         logUsageStateWarning(error.what());
+        return false;
     }
 }
 
-void markDeviceReleasedBestEffort(const PolicyManager& policy, const DeviceViewModel& device) {
+void markDeviceReleasedBestEffort(const PolicyManager& policy, const DeviceViewModel& device,
+    const std::wstring& operationId = {}) {
     try {
-        UsageStateStore(policy.usageStatePath()).markReleased(toParsedDevice(device));
+        UsageStateSync sync(policy.usageStatePath());
+        sync.markReleased(toParsedDevice(device), PolicyManager::currentUserName(), operationId);
+        AuditLogger::trace(operationId, L"Отключение токена «" + device.nickname +
+            L"» записано на компьютере. Общая папка обновляется в фоне.");
+        sync.requestBackgroundSync(policy.pipeName());
     }
     catch (const std::exception& error) {
         logUsageStateWarning(error.what());
@@ -523,10 +538,10 @@ void prepareVpnForTokenConnection(
         }
     }
 
-    // LIST can omit ownership immediately after USE. The shared usage state is the
+    // LIST can omit ownership immediately after USE. The local usage journal is the
     // durable source for candidates; DEVICE INFO below remains the final authority.
     try {
-        const std::vector<UsageStateRecord> records = UsageStateStore(policy.usageStatePath()).snapshot();
+        const std::vector<UsageStateRecord> records = UsageStateSync(policy.usageStatePath()).snapshot();
         for (const UsageStateRecord& record : records) {
             if (!equalsIgnoreCase(record.user, currentUser) ||
                 (!record.computer.empty() && !equalsIgnoreCase(record.computer, currentComputer)) ||
@@ -547,7 +562,7 @@ void prepareVpnForTokenConnection(
         }
     }
     catch (const std::exception& error) {
-        trace.step(L"Общий таймер токенов прочитать не удалось; продолжаем проверку по данным службы. " +
+        trace.step(L"Локальный таймер токенов прочитать не удалось; продолжаем проверку по данным службы. " +
             humanErrorDescription(error.what()) + L".");
     }
 
@@ -615,7 +630,7 @@ void prepareVpnForTokenConnection(
             }
             throw;
         }
-        markDeviceReleasedBestEffort(policy, candidateView);
+        markDeviceReleasedBestEffort(policy, candidateView, trace.id());
         ++releasedCount;
         AuditLogger::logDeviceAction(L"AUTO STOP BEFORE VPN SWITCH", candidateView, L"OK",
             L"Released before connecting token " + target.endpoint + L".");
@@ -908,11 +923,12 @@ std::wstring DeviceAccessService::useDevice(
             trace.step(L"Несмотря на ошибочный ответ USE, DEVICE INFO подтвердил подключение токена.");
             response = L"OK";
         }
-        markDeviceUsedBestEffort(policy, verified);
+        const bool timerSaved = markDeviceUsedBestEffort(policy, verified, verifiedPublicIp, preparedProfile, trace.id());
         trace.step(L"Токен подключён. Использованный внешний IP: " +
             (verifiedPublicIp.empty() ? L"не определён" : verifiedPublicIp) +
             L". Операция завершена успешно.");
-        const std::wstring message = response.empty() ? L"Команда USE отправлена: " + verified.endpoint : response;
+        const std::wstring message = timerSaved ? L"Токен подключён. Таймер сохранён на компьютере."
+            : L"Токен подключён, но таймер сохранить не удалось. Обратитесь к администратору.";
         AuditLogger::logDeviceAction(L"USE", verified, L"OK",
             L"operationId=" + trace.id() + L"; elapsedMs=" + std::to_wstring(trace.elapsedMs()) +
                 L"; profileId=" + preparedProfile.id + L"; profileName=" + preparedProfile.name +
@@ -1018,8 +1034,8 @@ std::wstring DeviceAccessService::stopUsingOwnedDevice(
             trace.step(L"Несмотря на ошибочный ответ STOP USING, DEVICE INFO подтвердил освобождение токена.");
             response = L"OK";
         }
-        markDeviceReleasedBestEffort(policy, verified);
-        trace.step(L"Токен освобождён, запись общего таймера удалена. Операция завершена успешно.");
+        markDeviceReleasedBestEffort(policy, verified, trace.id());
+        trace.step(L"Служба подтвердила освобождение токена. Обновление общего таймера выполняется в фоне.");
         if (progress) progress(4, 5, L"Отключаем VPN, который больше не нужен");
         const std::wstring vpnStatus = disconnectReleasedTokenVpnBestEffort(policy, ipc, verified, trace);
         const std::wstring message = response.empty()
@@ -1042,13 +1058,25 @@ std::wstring DeviceAccessService::stopUsingOwnedDevice(
 void DeviceAccessService::refreshUsageTimer(const DeviceViewModel& device) const {
     try {
         PolicyManager policy;
-        UsageStateStore(policy.usageStatePath()).markUsed(toParsedDevice(device), PolicyManager::currentUserName());
-        AuditLogger::logDeviceAction(L"USAGE TIMER", device, L"OK", L"Usage timer refreshed.");
+        UsageStateSync sync(policy.usageStatePath());
+        sync.markUsed(toParsedDevice(device), PolicyManager::currentUserName(), {}, {}, {}, {}, true);
+        sync.requestBackgroundSync(policy.pipeName());
+        AuditLogger::logDeviceAction(L"USAGE TIMER", device, L"OK", L"Таймер обновлён на компьютере; общая папка синхронизируется в фоне.");
     }
     catch (const std::exception& error) {
         AuditLogger::logDeviceAction(L"USAGE TIMER", device, L"ERROR", widenAscii(error.what()));
         throw;
     }
+}
+
+void DeviceAccessService::requestUsageStateSync() const {
+    PolicyManager policy;
+    UsageStateSync(policy.usageStatePath()).requestBackgroundSync(policy.pipeName());
+}
+
+size_t DeviceAccessService::pendingUsageSyncCount() const {
+    PolicyManager policy;
+    return UsageStateSync(policy.usageStatePath()).pendingCount();
 }
 
 std::wstring DeviceAccessService::assignDeviceToCurrentUser(const DeviceViewModel& device) const {
@@ -1383,13 +1411,13 @@ std::vector<DeviceViewModel> DeviceAccessService::listDevices(
             : policyUserRules;
         std::vector<UsageStateRecord> usageRecords;
         try {
-            usageRecords = usageState.snapshot();
-            trace.step(L"Общий файл таймеров прочитан. Активных записей: " +
+            usageRecords = UsageStateSync(policy.usageStatePath()).snapshot();
+            trace.step(L"Локальные таймеры и копия общих данных прочитаны. Активных записей: " +
                 std::to_wstring(usageRecords.size()) + L".");
         }
         catch (const std::exception& error) {
             logUsageStateWarning(error.what());
-            trace.step(L"Не удалось прочитать общий файл таймеров. Список продолжит загружаться. " +
+            trace.step(L"Не удалось прочитать локальную копию таймеров. Список продолжит загружаться. " +
                 humanErrorDescription(error.what()) + L".");
         }
 

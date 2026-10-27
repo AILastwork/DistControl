@@ -99,6 +99,8 @@
     <ClInclude Include="..\DiskControl\IpcClient.h" />
     <ClInclude Include="..\DiskControl\PolicyManager.h" />
     <ClInclude Include="..\DiskControl\UsageStateStore.h" />
+    <ClInclude Include="..\DiskControl\UsageStateSync.h" />
+    <ClInclude Include="..\DiskControl\StructuredJson.h" />
     <ClInclude Include="..\DiskControl\VpnManager.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

@@ -100,6 +100,8 @@
     <ClInclude Include="PolicyManager.h" />
     <ClInclude Include="resource.h" />
     <ClInclude Include="UsageStateStore.h" />
+    <ClInclude Include="UsageStateSync.h" />
+    <ClInclude Include="StructuredJson.h" />
     <ClInclude Include="VpnManager.h" />
   </ItemGroup>
   <ItemGroup>

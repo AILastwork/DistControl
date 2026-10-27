@@ -40,10 +40,10 @@ constexpr int IDC_SAVE_POLICY = 1015;
 constexpr int IDC_COMPUTER = 1018;
 constexpr int IDC_LOAD_COMPUTER = 1019;
 constexpr int IDC_AVAILABLE_LIST = 1020;
-constexpr int IDC_VPN = 1021;
 constexpr int IDC_VPN_MAPPINGS = 1022;
 constexpr UINT_PTR IDT_DELAYED_REFRESH = 2001;
 constexpr UINT_PTR IDT_USAGE_WATCHDOG = 2002;
+constexpr UINT_PTR IDT_USAGE_SYNC = 2003;
 constexpr UINT kRefreshRetryDelayMs = 3000;
 constexpr unsigned int kMaximumAutomaticRefreshRetries = 10;
 constexpr UINT WM_REFRESH_COMPLETE = WM_APP + 1;
@@ -99,10 +99,10 @@ std::wstring userFriendlyErrorMessage(const char* error) {
         return L"На компьютере не найден нужный профиль VPN Windows. Создайте его в параметрах Windows или обратитесь к администратору.";
     }
     if (containsAscii(error, "VPN credentials are not configured")) {
-        return L"Не сохранены логин и пароль VPN. Выберите токен и нажмите «Учётные данные VPN».";
+        return L"Не сохранены логин и пароль VPN. Обратитесь к администратору для настройки подключения в Windows.";
     }
     if (containsAscii(error, "RAS error 691")) {
-        return L"VPN отклонил логин или пароль. Нажмите «Учётные данные VPN» и введите их заново.";
+        return L"VPN отклонил сохранённый логин или пароль. Обратитесь к администратору для проверки подключения в Windows.";
     }
     if (containsAscii(error, "RAS error 789")) {
         return L"Не удалось согласовать L2TP/IPsec. Проверьте общий ключ и параметры безопасности VPN в Windows.";
@@ -243,47 +243,12 @@ std::wstring trim(const std::wstring& text) {
     return text.substr(first, last - first + 1);
 }
 
-struct VpnCredentialDialogData {
-    std::wstring profileName;
-    std::wstring userName;
-    std::wstring password;
-};
-
 std::wstring dialogItemText(HWND dialog, int controlId) {
     const int length = GetWindowTextLengthW(GetDlgItem(dialog, controlId));
     std::wstring value(static_cast<size_t>(length) + 1, L'\0');
     GetDlgItemTextW(dialog, controlId, value.data(), length + 1);
     value.resize(static_cast<size_t>(length));
     return value;
-}
-
-INT_PTR CALLBACK vpnCredentialDialogProc(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam) {
-    auto* data = reinterpret_cast<VpnCredentialDialogData*>(GetWindowLongPtrW(dialog, DWLP_USER));
-    if (message == WM_INITDIALOG) {
-        data = reinterpret_cast<VpnCredentialDialogData*>(lParam);
-        SetWindowLongPtrW(dialog, DWLP_USER, reinterpret_cast<LONG_PTR>(data));
-        SetDlgItemTextW(dialog, IDC_VPN_PROFILE_NAME, data->profileName.c_str());
-        SetDlgItemTextW(dialog, IDC_VPN_USER_NAME, data->userName.c_str());
-        return TRUE;
-    }
-    if (message != WM_COMMAND || !data) {
-        return FALSE;
-    }
-    if (LOWORD(wParam) == IDOK) {
-        data->userName = trim(dialogItemText(dialog, IDC_VPN_USER_NAME));
-        data->password = dialogItemText(dialog, IDC_VPN_PASSWORD);
-        if (data->userName.empty() || data->password.empty()) {
-            MessageBoxW(dialog, L"Введите логин и пароль VPN.", L"DistControl", MB_OK | MB_ICONWARNING);
-            return TRUE;
-        }
-        EndDialog(dialog, IDOK);
-        return TRUE;
-    }
-    if (LOWORD(wParam) == IDCANCEL) {
-        EndDialog(dialog, IDCANCEL);
-        return TRUE;
-    }
-    return FALSE;
 }
 
 bool sameWindowsVpnBinding(
@@ -1828,6 +1793,12 @@ LRESULT MainWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     case WM_CREATE:
         createControls();
         SetTimer(hwnd_, IDT_USAGE_WATCHDOG, 1000, nullptr);
+        SetTimer(hwnd_, IDT_USAGE_SYNC, 5000, nullptr);
+        try {
+            service_.requestUsageStateSync();
+        }
+        catch (const std::exception&) {
+        }
         refreshDevices();
         return 0;
     case WM_CLOSE:
@@ -1873,6 +1844,18 @@ LRESULT MainWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         layoutControls();
         return 0;
     case WM_TIMER:
+        if (wParam == IDT_USAGE_SYNC) {
+            if (!tokenActionRunning_ && !closing_) {
+                try {
+                    service_.requestUsageStateSync();
+                    updateHeaderText();
+                }
+                catch (const std::exception&) {
+                    // Policy errors are shown by the regular device refresh.
+                }
+            }
+            return 0;
+        }
         if (wParam == IDT_DELAYED_REFRESH) {
             KillTimer(hwnd_, IDT_DELAYED_REFRESH);
             refreshDevices();
@@ -2007,11 +1990,6 @@ LRESULT MainWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         case IDC_EXPORT:
             exportExcel();
             return 0;
-        case IDC_VPN:
-            if (!kAdminBuild) {
-                configureVpnForSelectedDevice();
-            }
-            return 0;
         case IDC_VPN_MAPPINGS:
             manageVpnMappings();
             return 0;
@@ -2066,6 +2044,7 @@ LRESULT MainWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         }
         KillTimer(hwnd_, IDT_DELAYED_REFRESH);
         KillTimer(hwnd_, IDT_USAGE_WATCHDOG);
+        KillTimer(hwnd_, IDT_USAGE_SYNC);
         if (treeImageList_) {
             ImageList_Destroy(treeImageList_);
             treeImageList_ = nullptr;
@@ -2172,9 +2151,6 @@ void MainWindow::createControls() {
         hwnd_, controlId(IDC_EXPORT), instance_, nullptr);
     exportJsonButton_ = CreateWindowW(L"BUTTON", L"", WS_CHILD, 0, 0, 0, 0,
         hwnd_, controlId(IDC_EXPORT_JSON), instance_, nullptr);
-    vpnButton_ = CreateWindowW(L"BUTTON", L"Учётные данные VPN",
-        WS_CHILD | (kAdminBuild ? 0 : WS_VISIBLE), 0, 0, 0, 0,
-        hwnd_, controlId(IDC_VPN), instance_, nullptr);
     vpnMappingsButton_ = CreateWindowW(L"BUTTON", L"Токены → VPN", adminActionStyle,
         0, 0, 0, 0, hwnd_, controlId(IDC_VPN_MAPPINGS), instance_, nullptr);
     statusLabel_ = CreateWindowW(L"STATIC", L"Готово.", WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP,
@@ -2288,7 +2264,6 @@ void MainWindow::layoutControls() {
         }
 
         MoveWindow(refreshButton_, margin, buttonTop, buttonWidth, buttonHeight, TRUE);
-        MoveWindow(vpnButton_, margin + buttonWidth + gap, buttonTop, 180, buttonHeight, TRUE);
     }
 
     constexpr int refreshProgressWidth = 230;
@@ -2340,15 +2315,12 @@ void MainWindow::setMainControlsEnabled(bool enabled) {
     if (clearSearchButton_) {
         EnableWindow(clearSearchButton_, value);
     }
-    if (vpnButton_) {
-        EnableWindow(vpnButton_, value && (!kAdminBuild || adminAccessLoaded_));
-    }
     if (vpnMappingsButton_) {
         EnableWindow(vpnMappingsButton_, value && adminAccessLoaded_);
     }
 }
 
-bool MainWindow::ensureVpnCredentials(const DeviceViewModel& device, bool forcePrompt) {
+bool MainWindow::ensureVpnCredentials(const DeviceViewModel& device) {
     if (device.vpnProfileId.empty()) {
         updateStatus(L"Для токена не выбран VPN Windows или режим «Без VPN». Обратитесь к администратору.");
         return false;
@@ -2377,58 +2349,19 @@ bool MainWindow::ensureVpnCredentials(const DeviceViewModel& device, bool forceP
             updateStatus(L"Нужный профиль VPN Windows не найден. Создайте его в параметрах Windows или обратитесь к администратору.");
             return false;
         }
-        if (!forcePrompt && VpnManager::hasStoredCredentials(*found)) {
+        if (VpnManager::hasStoredCredentials(*found)) {
             return true;
         }
 
-        VpnCredentialDialogData data;
-        data.profileName = found->name;
-        const INT_PTR answer = DialogBoxParamW(
-            instance_, MAKEINTRESOURCEW(IDD_VPN_CREDENTIALS), hwnd_, vpnCredentialDialogProc,
-            reinterpret_cast<LPARAM>(&data));
-        if (answer != IDOK) {
-            if (answer == -1) {
-                updateStatus(L"Не удалось открыть окно ввода учётных данных VPN.");
-            }
-            return false;
-        }
-
-        VpnManager::saveCredentials(*found, data.userName, data.password);
-        if (!data.password.empty()) {
-            SecureZeroMemory(data.password.data(), data.password.size() * sizeof(wchar_t));
-            data.password.clear();
-        }
-        AuditEvent event;
-        event.action = L"VPN CREDENTIALS";
-        event.result = L"OK";
-        event.details = L"profileId=" + found->id + L"; profileName=" + found->name +
-            L"; user=" + data.userName + L"; password=<not logged>";
-        AuditLogger::log(event);
-        updateStatus(L"Учётные данные VPN сохранены средствами Windows.");
-        return true;
+        updateStatus(L"Для выбранного VPN не сохранены логин и пароль. Обратитесь к администратору для настройки подключения в Windows.");
+        return false;
     }
     catch (const std::exception& error) {
-        const std::wstring message = L"Не удалось сохранить учётные данные VPN. " + userFriendlyErrorMessage(error.what());
+        const std::wstring message = L"Не удалось проверить настройки VPN. " + userFriendlyErrorMessage(error.what());
         logUiError(L"UI VPN CREDENTIALS ERROR", error.what(), message);
         updateStatus(message.c_str());
         return false;
     }
-}
-
-void MainWindow::configureVpnForSelectedDevice() {
-    if (kAdminBuild) {
-        return;
-    }
-    DeviceViewModel* device = selectedDevice();
-    if (!device) {
-        updateStatus(L"Выберите токен, для которого нужно изменить учётные данные VPN.");
-        return;
-    }
-    if (device->vpnProfileId.empty()) {
-        updateStatus(L"Для выбранного токена не назначен VPN Windows или режим «Без VPN».");
-        return;
-    }
-    ensureVpnCredentials(*device, true);
 }
 
 void MainWindow::manageVpnMappings() {
@@ -2518,9 +2451,9 @@ void MainWindow::startTokenAction(DeviceViewModel device, bool connect) {
         updateStatus(L"Дождитесь окончания обновления списка устройств.");
         return;
     }
-    if (connect && !ensureVpnCredentials(device, false)) {
+    if (connect && !ensureVpnCredentials(device)) {
         AuditLogger::trace(operationId,
-            L"Операция не начата: учётные данные VPN не подтверждены или пользователь закрыл окно ввода.");
+            L"Операция не начата: настройки VPN или сохранённые учётные данные Windows не прошли проверку.");
         return;
     }
 
@@ -2633,6 +2566,7 @@ void MainWindow::finishTokenAction() {
     }
 
     tokenActionRunning_ = false;
+    updateHeaderText();
     hideRefreshProgress();
     setMainControlsEnabled(true);
 
@@ -3149,7 +3083,18 @@ void MainWindow::updateHeaderText() {
             SetWindowTextW(userInfoLabel_, text.c_str());
         }
         else {
-            SetWindowTextW(userInfoLabel_, service_.currentUserSummary().c_str());
+            std::wstring text = service_.currentUserSummary();
+            try {
+                const size_t pending = service_.pendingUsageSyncCount();
+                if (pending != 0) {
+                    text += L" | Общий таймер: ожидает синхронизации (" + std::to_wstring(pending) + L")";
+                }
+            }
+            catch (const std::exception& error) {
+                text += L" | Локальные таймеры недоступны";
+                logUiError(L"UI USAGE STATE ERROR", error.what(), text);
+            }
+            SetWindowTextW(userInfoLabel_, text.c_str());
         }
     }
     catch (const std::exception& error) {

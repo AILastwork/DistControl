@@ -4,6 +4,7 @@
 #include "IpcClient.h"
 #include "PolicyManager.h"
 #include "UsageStateStore.h"
+#include "UsageStateSync.h"
 #include "VpnManager.h"
 
 #include <windows.h>
@@ -395,7 +396,8 @@ void testUseDeviceAllowsSlowUseResponse() {
         device.inUseBy = L"NO ONE";
         device.allowed = true;
 
-        require(service.useDevice(device) == L"OK", "Slow USE response should be accepted.");
+        require(service.useDevice(device).find(L"Токен подключён") != std::wstring::npos,
+            "Slow USE response should be accepted.");
     }
     catch (...) {
         server.join();
@@ -804,6 +806,242 @@ void testUsageStateStore() {
 
     std::remove(fileName);
     removeFirstMatch("usage-state-test.json.tmp-*");
+}
+
+class UsageSyncFixture {
+public:
+    explicit UsageSyncFixture(const wchar_t* name)
+        : sharedPath(L"usage-sync-case-" + std::to_wstring(GetCurrentProcessId()) + L"-" + name + L"-shared.json"),
+          localPath(L"usage-sync-case-" + std::to_wstring(GetCurrentProcessId()) + L"-" + name + L"-local.json"),
+          sync(sharedPath, localPath), shared(sharedPath) {
+        cleanup();
+    }
+    ~UsageSyncFixture() { cleanup(); }
+    std::wstring sharedPath;
+    std::wstring localPath;
+    UsageStateSync sync;
+    UsageStateStore shared;
+    ParsedDevice device{L"SYNC-HUB-Gr-1.1", L"Тестовый токен", L"Rutoken", L"YOU"};
+    std::wstring user = L"DOMAIN\\test";
+private:
+    void cleanup() {
+        for (const std::wstring& path : {sharedPath, localPath}) {
+            DeleteFileW(path.c_str());
+            DeleteFileW((path + L".lock").c_str());
+            DeleteFileW((path + L".sync.lock").c_str());
+            removeFirstMatch((narrowAscii(path) + ".tmp-*").c_str());
+        }
+    }
+};
+
+void testUsageSyncOfflinePersistenceAndMetadata() {
+    UsageSyncFixture f(L"metadata");
+    const UsageStateRecord original = f.sync.markUsed(f.device, f.user, L"203.0.113.10",
+        L"vpn-one", L"VPN - Компания", L"CONNECT-TEST");
+    require(f.shared.snapshot().empty(), "Connecting must not synchronously write the shared file.");
+    require(f.sync.pendingCount() == 1, "Connecting must durably queue one change.");
+    UsageStateSync reopened(f.sharedPath, f.localPath);
+    require(reopened.snapshot().size() == 1 && reopened.pendingCount() == 1,
+        "The queue and local timer must survive restarting the application.");
+    require(reopened.synchronize([](const UsageStateRecord&) { return true; }), "Synchronization should succeed.");
+    const UsageStateRecord sent = f.shared.snapshot().at(0);
+    require(sent.updatedAt == original.updatedAt && sent.eventFileTime == original.eventFileTime &&
+        sent.publicIp == original.publicIp && sent.vpnProfileId == original.vpnProfileId &&
+        sent.vpnProfileName == original.vpnProfileName && sent.connectionId == original.connectionId &&
+        sent.operationId == original.operationId, "Synchronization must preserve the original time, IP and session.");
+    require(reopened.pendingCount() == 0, "A synchronized change must leave the queue.");
+    const UsageStateRecord extended = reopened.markUsed(f.device, f.user, {}, {}, {}, L"EXTEND", true);
+    require(extended.connectionId == original.connectionId && extended.publicIp == original.publicIp &&
+        extended.vpnProfileName == original.vpnProfileName, "Extending the timer must preserve its IP and session.");
+    reopened.markReleased(f.device, f.user, L"DISCONNECT-TEST");
+    require(reopened.snapshot().empty(), "A local release must hide the old cached timer immediately.");
+    require(reopened.synchronize([](const UsageStateRecord&) { return false; }), "Release should synchronize.");
+    require(f.shared.snapshot().empty() && reopened.snapshot().empty() && reopened.pendingCount() == 0,
+        "A released timer must disappear from both the shared file and local cache.");
+}
+
+void testUsageSyncSharedFileUnavailable() {
+    UsageSyncFixture f(L"offline");
+    f.sync.markUsed(f.device, f.user);
+    require(f.sync.synchronize([](const UsageStateRecord&) { return true; }), "Initial synchronization should succeed.");
+    HANDLE unavailable = CreateFileW(f.sharedPath.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+    require(unavailable != INVALID_HANDLE_VALUE, "Test must exclusively hold the shared file.");
+    bool fast = false;
+    bool retryable = false;
+    try {
+        const ULONGLONG started = GetTickCount64();
+        f.sync.markUsed(f.device, f.user, L"203.0.113.20");
+        fast = f.sync.snapshot().at(0).publicIp == L"203.0.113.20" && GetTickCount64() - started < 1000;
+        retryable = !f.sync.synchronize([](const UsageStateRecord&) { return true; }) && f.sync.pendingCount() == 1;
+    }
+    catch (...) {
+        CloseHandle(unavailable);
+        throw;
+    }
+    CloseHandle(unavailable);
+    require(fast, "Local writes and reads must remain fast when the shared file is inaccessible.");
+    require(retryable, "An inaccessible shared file must leave the change queued, not erase shared records.");
+    require(f.sync.synchronize([](const UsageStateRecord&) { return true; }) &&
+        f.shared.snapshot().at(0).publicIp == L"203.0.113.20", "Retry must send the queued original IP.");
+}
+
+void testUsageSyncCoalescingAndStaleRelease() {
+    UsageSyncFixture f(L"stale");
+    UsageStateRecord old = f.sync.markUsed(f.device, f.user, L"203.0.113.1");
+    f.sync.markReleased(f.device, f.user);
+    const UsageStateRecord current = f.sync.markUsed(f.device, f.user, L"203.0.113.2");
+    require(f.sync.pendingCount() == 1 && current.connectionId != old.connectionId,
+        "Fast reconnects should keep only the latest state with a new session ID.");
+    require(f.sync.synchronize([](const UsageStateRecord&) { return true; }), "Latest session should synchronize.");
+    old.eventFileTime = current.eventFileTime + 100;
+    f.shared.applyReleasedRecord(old);
+    require(f.shared.snapshot().at(0).connectionId == current.connectionId,
+        "An old session release must not delete a newer session, even with a later timestamp.");
+    f.sync.markReleased(f.device, f.user);
+    UsageStateRecord other = current;
+    other.user = L"DOMAIN\\other";
+    other.computer = L"OTHER-PC";
+    other.connectionId = L"OTHER-SESSION";
+    other.eventFileTime += 1000;
+    f.shared.applyUsedRecord(other);
+    require(f.sync.synchronize([](const UsageStateRecord&) { return false; }) &&
+        f.shared.snapshot().at(0).user == other.user, "A queued release must not delete another user's timer.");
+    f.shared.applyUsedRecord(current);
+    require(f.shared.snapshot().at(0).user == other.user, "A delayed old use must not replace a newer shared record.");
+}
+
+void testUsageSyncConcurrentChangesRemainQueued() {
+    UsageSyncFixture f(L"concurrent");
+    f.sync.markUsed(f.device, f.user, L"203.0.113.1");
+    std::atomic_bool waiting = false;
+    std::atomic_bool proceed = false;
+    bool result = false;
+    int checks = 0;
+    std::thread background([&]() {
+        result = f.sync.synchronize([&](const UsageStateRecord&) {
+            if (++checks == 2) {
+                waiting = true;
+                while (!proceed) Sleep(1);
+            }
+            return true;
+        });
+    });
+    const ULONGLONG started = GetTickCount64();
+    while (!waiting && GetTickCount64() - started < 2000) Sleep(1);
+    const bool didWait = waiting;
+    UsageStateRecord latest;
+    bool localStayedFast = false;
+    try {
+        const ULONGLONG beforeWrite = GetTickCount64();
+        f.sync.markReleased(f.device, f.user);
+        latest = f.sync.markUsed(f.device, f.user, L"203.0.113.2");
+        localStayedFast = GetTickCount64() - beforeWrite < 1000;
+    }
+    catch (...) {
+        proceed = true;
+        background.join();
+        throw;
+    }
+    proceed = true;
+    background.join();
+    require(didWait && result && localStayedFast, "A background service/network wait must not hold the local journal lock.");
+    require(f.sync.pendingCount() == 1 && f.sync.snapshot().at(0).connectionId == latest.connectionId,
+        "Acknowledging an older change must not discard a concurrent reconnect.");
+    require(f.sync.synchronize([](const UsageStateRecord&) { return true; }) &&
+        f.shared.snapshot().at(0).publicIp == L"203.0.113.2", "The next run must synchronize the newest session.");
+}
+
+void testUsageSyncReconciliationAndInvalidFiles() {
+    UsageSyncFixture f(L"recovery");
+    f.sync.markUsed(f.device, f.user);
+    require(f.sync.synchronize([](const UsageStateRecord&) { return true; }), "Initial timer should synchronize.");
+    UsageStateSync restarted(f.sharedPath, f.localPath);
+    require(restarted.synchronize([](const UsageStateRecord&) { return false; }) &&
+        restarted.snapshot().empty() && f.shared.snapshot().empty(),
+        "Restart recovery must reconcile a token that was released while the application was closed.");
+    f.sync.markUsed(f.device, f.user);
+    {
+        std::ofstream stream(narrowAscii(f.sharedPath), std::ios::binary);
+        stream << "{broken shared state";
+    }
+    require(!f.sync.synchronize([](const UsageStateRecord&) { return true; }) && f.sync.pendingCount() == 1,
+        "Invalid shared JSON must not be overwritten or acknowledged.");
+    {
+        std::ifstream stream(narrowAscii(f.sharedPath), std::ios::binary);
+        const std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+        require(text == "{broken shared state", "Invalid shared contents must remain intact.");
+    }
+    {
+        std::ofstream stream(narrowAscii(f.localPath), std::ios::binary);
+        stream << "{broken local state";
+    }
+    bool rejected = false;
+    try { f.sync.markReleased(f.device, f.user); }
+    catch (const std::exception&) { rejected = true; }
+    require(rejected, "Invalid local JSON must not be silently replaced with an empty queue.");
+}
+
+void testUsageSyncProductionOwnerValidation() {
+    UsageSyncFixture f(L"owner");
+    f.sync.markUsed(f.device, f.user, L"203.0.113.10");
+    const std::wstring pipeName = testPipeName(L"usage-sync");
+    HANDLE pipe = createTestPipe(pipeName);
+    require(pipe != INVALID_HANDLE_VALUE, "Usage sync test pipe must be created.");
+    bool serverOk = true;
+    std::thread server([&]() {
+        for (int i = 0; i < 2; ++i) {
+            char request[4096]{};
+            DWORD read = 0;
+            if (!connectTestPipe(pipe) || !ReadFile(pipe, request, sizeof(request), &read, nullptr)) {
+                serverOk = false;
+                break;
+            }
+            serverOk = serverOk && std::string(request, read) == "DEVICE INFO,SYNC-HUB-Gr-1.1";
+            const std::string response = "IN USE BY: DOMAIN\\test AT 10.14.32.100 (" +
+                narrowAscii(UsageStateStore::currentComputerName()) + ")\r\n";
+            DWORD written = 0;
+            serverOk = serverOk && WriteFile(pipe, response.data(), static_cast<DWORD>(response.size()), &written, nullptr);
+            FlushFileBuffers(pipe);
+            DisconnectNamedPipe(pipe);
+        }
+        CloseHandle(pipe);
+    });
+    const int result = UsageStateSync::runBackgroundSync(f.sharedPath, f.localPath, pipeName);
+    server.join();
+    require(serverOk && result == 0 && f.shared.snapshot().size() == 1,
+        "Background owner validation must recognize the workstation in an IP (COMPUTER) location.");
+    f.sync.markUsed(f.device, f.user);
+    pipe = createTestPipe(pipeName);
+    require(pipe != INVALID_HANDLE_VALUE, "Invalid owner test pipe must be created.");
+    std::thread invalidServer([pipe]() {
+        char request[4096]{};
+        DWORD read = 0;
+        if (connectTestPipe(pipe) && ReadFile(pipe, request, sizeof(request), &read, nullptr)) {
+            const char* response = "NICKNAME: incomplete response\r\n";
+            DWORD written = 0;
+            WriteFile(pipe, response, static_cast<DWORD>(strlen(response)), &written, nullptr);
+            FlushFileBuffers(pipe);
+        }
+        DisconnectNamedPipe(pipe);
+        CloseHandle(pipe);
+    });
+    const int invalidResult = UsageStateSync::runBackgroundSync(f.sharedPath, f.localPath, pipeName);
+    invalidServer.join();
+    require(invalidResult == 1 && f.sync.pendingCount() == 1 && f.sync.snapshot().size() == 1,
+        "An incomplete owner response must retain the queue, not treat a token as released.");
+}
+
+void testUsageSyncLargeQueueAndEscaping() {
+    UsageSyncFixture f(L"large");
+    f.device.nickname = L"Токен «Компания» \\\"\n" + std::wstring(1, L'\x01');
+    for (int i = 0; i < 150; ++i) {
+        f.device.endpoint = L"SYNC-HUB-Gr-1." + std::to_wstring(i);
+        f.sync.markUsed(f.device, f.user);
+    }
+    for (int i = 0; i < 20; ++i) f.sync.markUsed(f.device, f.user);
+    require(f.sync.pendingCount() == 150 && f.sync.snapshot().size() == 150,
+        "Offline repeated operations must coalesce instead of growing the queue indefinitely.");
+    require(f.sync.snapshot().at(0).nickname == f.device.nickname, "Russian names and JSON escapes must round-trip.");
 }
 
 void testAuditCsvEscaping() {
@@ -1354,6 +1592,7 @@ void testLocalRouteInspection() {
 
 int main() {
     try {
+        removeFirstMatch("usage-sync-test-*");
         testIpcRoundTrip();
         testIpcReadTimeout();
         testIpcRetriesBusyPipe();
@@ -1367,6 +1606,13 @@ int main() {
         testPolicyMatching();
         testUsageParsing();
         testUsageStateStore();
+        testUsageSyncOfflinePersistenceAndMetadata();
+        testUsageSyncSharedFileUnavailable();
+        testUsageSyncCoalescingAndStaleRelease();
+        testUsageSyncConcurrentChangesRemainQueued();
+        testUsageSyncReconciliationAndInvalidFiles();
+        testUsageSyncProductionOwnerValidation();
+        testUsageSyncLargeQueueAndEscaping();
         testAuditCsvEscaping();
         testAssignDeviceToUser();
         testRemoveDeviceFromUser();
@@ -1382,6 +1628,7 @@ int main() {
         testVpnWatchdogRejectsUnmappedToken();
         testNetworkStateReportParsing();
         testLocalRouteInspection();
+        removeFirstMatch("usage-sync-test-*");
         std::cout << "All DistControl C++ tests passed.\n";
         return 0;
     }

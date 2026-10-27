@@ -53,3 +53,18 @@ diagnose*.log
 *.backup
 *.old
 *.orig
+
+# Unrelated local tooling kept next to the project (browser packages, keys, 1C lists)
+tools/*Gosuslugi*
+tools/*Yandex*
+tools/_mv2test_profile*/
+tools/Fido.ps1
+tools/Add-IbasesEntries.ps1
+ibases-*
+*.pem
+*.crx
+tmp-*.txt
+diagnostics-current/
+output/
+DiskControl-0.1.1-win64/
+allowlist — копия.json

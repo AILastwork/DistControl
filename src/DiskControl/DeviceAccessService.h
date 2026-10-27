@@ -42,6 +42,8 @@ public:
         const std::wstring& operationId = {},
         const TokenActionProgressCallback& progress = {}) const;
     void refreshUsageTimer(const DeviceViewModel& device) const;
+    void requestUsageStateSync() const;
+    size_t pendingUsageSyncCount() const;
     std::wstring verifyVpnForDevice(const DeviceViewModel& device) const;
     std::wstring assignDeviceToCurrentUser(const DeviceViewModel& device) const;
     std::wstring assignDeviceToUser(const DeviceViewModel& device, const std::wstring& userName) const;

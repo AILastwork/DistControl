@@ -50,8 +50,7 @@ private:
     void finishComputerLoad();
     bool selectAdminUserProfile(const std::wstring& userName, bool refreshDeviceList);
     void startTokenAction(DeviceViewModel device, bool connect);
-    bool ensureVpnCredentials(const DeviceViewModel& device, bool forcePrompt);
-    void configureVpnForSelectedDevice();
+    bool ensureVpnCredentials(const DeviceViewModel& device);
     void manageVpnMappings();
     void finishTokenAction();
     void updateTokenActionProgress();
@@ -116,7 +115,6 @@ private:
     HWND clearSearchButton_ = nullptr;
     HWND exportButton_ = nullptr;
     HWND exportJsonButton_ = nullptr;
-    HWND vpnButton_ = nullptr;
     HWND vpnMappingsButton_ = nullptr;
     HWND statusLabel_ = nullptr;
     HWND refreshProgressBar_ = nullptr;

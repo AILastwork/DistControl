@@ -104,6 +104,8 @@
     <ClInclude Include="..\DiskControl\PolicyManager.h" />
     <ClInclude Include="..\DiskControl\resource.h" />
     <ClInclude Include="..\DiskControl\UsageStateStore.h" />
+    <ClInclude Include="..\DiskControl\UsageStateSync.h" />
+    <ClInclude Include="..\DiskControl\StructuredJson.h" />
     <ClInclude Include="..\DiskControl\VpnManager.h" />
   </ItemGroup>
   <ItemGroup>
