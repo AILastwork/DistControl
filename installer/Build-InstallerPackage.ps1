@@ -50,6 +50,26 @@ function Copy-IntoStageAs([string]$Source, [string]$RelativeDestination) {
     Copy-Item -LiteralPath $Source -Destination $destination -Force
 }
 
+# The VirtualHere USB driver used by dkcl64.exe is exported from a computer
+# where the DistKontrol client installed it (pnputil /export-driver) and is not
+# kept in git, like dkcl64.exe itself.
+$DriverSourceDir = Join-Path $Root "driver-export\virtualhere-vhusb3hc"
+
+function Assert-VirtualHereDriverPackage {
+    foreach ($name in @("vhusb3hc.inf", "vhusb3hc.sys", "vhusb3hc.cat")) {
+        if (-not (Test-Path -LiteralPath (Join-Path $DriverSourceDir $name))) {
+            throw "VirtualHere driver package is incomplete: $name is missing in $DriverSourceDir. Export it with: pnputil /export-driver <oemNN.inf for vhusb3hc.inf> `"$DriverSourceDir`""
+        }
+    }
+    foreach ($name in @("vhusb3hc.cat", "vhusb3hc.sys")) {
+        $signature = Get-AuthenticodeSignature -LiteralPath (Join-Path $DriverSourceDir $name)
+        if ($signature.Status -ne "Valid" -or -not $signature.SignerCertificate -or
+            $signature.SignerCertificate.Subject -notmatch "Microsoft") {
+            throw "VirtualHere driver file $name is not validly signed by Microsoft: $($signature.Status)."
+        }
+    }
+}
+
 function Get-CSharpCompiler {
     $candidates = @(
         (Join-Path $env:WINDIR "Microsoft.NET\Framework64\v4.0.30319\csc.exe"),
@@ -114,7 +134,8 @@ function Build-SetupExe {
         /reference:System.Security.dll `
         /reference:System.IO.Compression.dll `
         /reference:System.IO.Compression.FileSystem.dll `
-        $SetupSourcePath
+        $SetupSourcePath `
+        (Join-Path $PSScriptRoot "CredentialCheck.cs")
 
     if ($LASTEXITCODE -ne 0) {
         throw "Setup bootstrapper build failed."
@@ -225,6 +246,7 @@ foreach ($relative in @(
     "installer\Launch-Install-DiskControl.ps1",
     "installer\Launch-Uninstall-DiskControl.ps1",
     "installer\Sign-DiskControl.ps1",
+    "installer\CredentialCheck.cs",
     "README.md",
     "DistControl-guide.html",
     "dkcl64.exe",
@@ -235,6 +257,11 @@ foreach ($relative in @(
 }
 
 Copy-IntoStageAs $UninstallExePath "Uninstall-DistControl.exe"
+
+Assert-VirtualHereDriverPackage
+foreach ($name in @("vhusb3hc.inf", "vhusb3hc.sys", "vhusb3hc.cat")) {
+    Copy-IntoStageAs (Join-Path $DriverSourceDir $name) "drivers\vhusb3hc\$name"
+}
 
 foreach ($relative in @(
     "build\x64\Release\DistControl.exe",

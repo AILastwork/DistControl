@@ -382,6 +382,7 @@ internal static class SetupBootstrapper
             cancelButton.Text = "Отмена";
             form.Controls.Add(cancelButton);
 
+            int wrongPasswordAttempts = 0;
             okButton.Click += delegate
             {
                 string account = accountBox.Text.Trim();
@@ -397,6 +398,46 @@ internal static class SetupBootstrapper
                     MessageBox.Show("Введите пароль учетной записи службы.", ProductName + " Setup", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     passwordBox.Focus();
                     return;
+                }
+
+                // Check the password now instead of failing at service start.
+                int logonError = CredentialCheck.Validate(account, password);
+                CredentialCheckResult check = CredentialCheck.Classify(logonError);
+                if (check != CredentialCheckResult.Valid)
+                {
+                    string checkMessage = CredentialCheck.Message(check, account, logonError);
+                    if (CredentialCheck.CountsAsWrongPassword(check))
+                    {
+                        wrongPasswordAttempts++;
+                        if (wrongPasswordAttempts >= CredentialCheck.MaximumWrongPasswordAttempts)
+                        {
+                            MessageBox.Show(checkMessage + "\r\n\r\nПароль введен неверно " + wrongPasswordAttempts +
+                                " раза. Установка остановлена, чтобы не заблокировать учетную запись политикой домена.",
+                                ProductName + " Setup", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                            form.DialogResult = DialogResult.Cancel;
+                            form.Close();
+                            return;
+                        }
+                        MessageBox.Show(checkMessage + "\r\n\r\nОсталось попыток: " +
+                            (CredentialCheck.MaximumWrongPasswordAttempts - wrongPasswordAttempts) + ".",
+                            ProductName + " Setup", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        passwordBox.Clear();
+                        passwordBox.Focus();
+                        return;
+                    }
+                    if (!CredentialCheck.MayContinueUnverified(check))
+                    {
+                        MessageBox.Show(checkMessage, ProductName + " Setup", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        accountBox.Focus();
+                        return;
+                    }
+                    if (MessageBox.Show(checkMessage + "\r\n\r\nПродолжить установку без проверки пароля? " +
+                            "Если пароль неверный, служба не запустится.",
+                            ProductName + " Setup", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+                    {
+                        passwordBox.Focus();
+                        return;
+                    }
                 }
 
                 string usageStateDirectory = usageBox.Text.Trim();
