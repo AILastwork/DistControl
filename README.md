@@ -58,6 +58,9 @@
 Контрольная сумма архива:
 [DistControl-0.6.3-win64.zip.sha256](release-assets/DistControl-0.6.3-win64.zip.sha256).
 
+Предыдущий выпуск старой ветки DiskControl 1.1 доступен на странице
+[релиза v1.1](https://github.com/AILastwork/DistControl/releases/tag/v1.1).
+
 `DistControl` — небольшая программа для Windows, которая показывает и
 подключает только разрешённые USB-ключи через клиент `DistKontrolUSB`.
 
