@@ -534,6 +534,125 @@ void testUseDeviceFailedResponseIsError() {
     removeFirstMatch("usage-failed-use-test.json.tmp-*");
 }
 
+void testUseDeviceRecoversWhenTokenConnectsAfterFailure() {
+    const char* policyFile = "policy-late-use-test.json";
+    const char* usageFile = "usage-late-use-test.json";
+    std::remove(policyFile);
+    std::remove(usageFile);
+
+    const std::wstring pipeName = testPipeName(L"late-use");
+    {
+        std::ofstream stream(policyFile, std::ios::binary);
+        stream << "{\n"
+            << "  \"pipeName\": \"" << narrowAscii(pipeName) << "\",\n"
+            << "  \"usageStatePath\": \"" << usageFile << "\",\n"
+            << "  \"vpnProfiles\": [{\"id\": \"test-direct\", \"mode\": \"direct\", \"enabled\": true}],\n"
+            << "  \"userAssignments\": [\n"
+            << "    {\n"
+            << "      \"users\": [\"" << narrowAscii(PolicyManager::currentUserSid()) << "\"],\n"
+            << "      \"groups\": [],\n"
+            << "      \"allowedDevices\": [\n"
+            << "        { \"endpoint\": \"OFFICE-HUB-Gr-1.4\", \"nickname\": \"Late Key\", "
+            << "\"product\": \"Rutoken\", \"vpnProfile\": \"test-direct\" }\n"
+            << "      ]\n"
+            << "    }\n"
+            << "  ]\n"
+            << "}\n";
+    }
+
+    HANDLE pipe = createTestPipe(pipeName);
+    require(pipe != INVALID_HANDLE_VALUE, "Late USE test named pipe could not be created.");
+
+    // Every USE answers FAILED. After the last attempt the first DEVICE INFO
+    // still shows the token as free and the next one shows it connected.
+    std::atomic_bool serverOk = true;
+    std::thread server([pipe, &serverOk]() {
+        int useCount = 0;
+        int infoAfterLastUse = 0;
+        while (true) {
+            char request[256]{};
+            DWORD read = 0;
+            if (!connectTestPipe(pipe) || !ReadFile(pipe, request, sizeof(request), &read, nullptr)) {
+                serverOk = false;
+                break;
+            }
+            const std::string command(request, request + read);
+            if (command == "QUIT") {
+                DisconnectNamedPipe(pipe);
+                break;
+            }
+            std::string response;
+            if (command == "DEVICE INFO,OFFICE-HUB-Gr-1.4") {
+                const bool connected = useCount >= 4 && ++infoAfterLastUse >= 2;
+                response = connected
+                    ? "NICKNAME: Late Key\r\nPRODUCT: Rutoken\r\nIN USE BY: YOU\r\n"
+                    : "NICKNAME: Late Key\r\nPRODUCT: Rutoken\r\nIN USE BY: NO ONE\r\n";
+            }
+            else if (command == "LIST") {
+                response = "Late Key (OFFICE-HUB-Gr-1.4)\n";
+            }
+            else if (command == "SERVER INFO,OFFICE-HUB-Gr-1") {
+                response = "STATE: Logged in\r\n";
+            }
+            else if (command == "USE,OFFICE-HUB-Gr-1.4") {
+                ++useCount;
+                response = "FAILED";
+            }
+            else {
+                serverOk = false;
+                response = "ERROR";
+            }
+            DWORD written = 0;
+            if (!WriteFile(pipe, response.data(), static_cast<DWORD>(response.size()), &written, nullptr) ||
+                written != response.size()) {
+                serverOk = false;
+            }
+            FlushFileBuffers(pipe);
+            DisconnectNamedPipe(pipe);
+        }
+        CloseHandle(pipe);
+    });
+
+    std::wstring message;
+    std::string failure;
+    try {
+        PolicyManager::setConfigPathOverride(L"policy-late-use-test.json");
+        StubbedNetworkOperationsGuard networkGuard;
+        DeviceAccessService service;
+        DeviceViewModel device;
+        device.endpoint = L"OFFICE-HUB-Gr-1.4";
+        device.nickname = L"Late Key";
+        device.product = L"Rutoken";
+        device.inUseBy = L"NO ONE";
+        device.allowed = true;
+        message = service.useDevice(device);
+    }
+    catch (const std::exception& error) {
+        failure = error.what();
+    }
+    try {
+        IpcClient(pipeName).issueCommand(L"QUIT", 1000);
+    }
+    catch (const std::exception&) {
+    }
+    server.join();
+
+    size_t pending = 0;
+    try {
+        pending = UsageStateSync(L"usage-late-use-test.json").pendingCount();
+    }
+    catch (const std::exception&) {
+    }
+    PolicyManager::setConfigPathOverride(L"");
+    require(serverOk, "Late USE test pipe server failed.");
+    require(failure.empty(), ("A token connected after a FAILED answer must not be reported as an error: " + failure).c_str());
+    require(message.rfind(L"Токен подключён", 0) == 0, "A late connection must be reported as success.");
+    require(pending == 1, "A late connection must start the usage timer like a normal one.");
+
+    std::remove(policyFile);
+    std::remove(usageFile);
+}
+
 void testRevokedActiveTokenCanBeStopped() {
     const char* policyFile = "policy-revoked-active-test.json";
     const char* usageFile = "usage-revoked-active-test.json";
@@ -1023,6 +1142,30 @@ void testBackgroundSyncSchedule() {
     require(UsageStateSync::isBackgroundSyncDue(0, 31000, 1000), "Periodic refresh must start after 30 seconds.");
     require(UsageStateSync::isBackgroundSyncDue(2, 6000, 1000), "Unsent own changes must be retried after 5 seconds.");
     require(!UsageStateSync::isBackgroundSyncDue(2, 3000, 1000), "Retries must not start more often than every 5 seconds.");
+}
+
+void testSharedVpnDetection() {
+    std::vector<VpnProfile> profiles(4);
+    profiles[0].id = L"vpn-facility";
+    profiles[0].name = L"VPN - Фасилити менеджмент АО";
+    profiles[1].id = L"vpn-facility-2";
+    profiles[1].name = L"vpn - фасилити менеджмент ао";
+    profiles[2].id = L"vpn-salut";
+    profiles[2].name = L"VPN - Салют УК ООО";
+    profiles[3].id = L"direct";
+    profiles[3].name = L"Без VPN";
+    profiles[3].mode = VpnProfileMode::Direct;
+
+    require(usesSameVpn(L"vpn-facility", L"VPN-FACILITY", profiles),
+        "Tokens with the same network profile share one VPN.");
+    require(usesSameVpn(L"vpn-facility", L"vpn-facility-2", profiles),
+        "Profiles that point to the same Windows VPN must be treated as one VPN.");
+    require(!usesSameVpn(L"vpn-facility", L"vpn-salut", profiles),
+        "Different Windows VPN connections must not keep each other alive.");
+    require(!usesSameVpn(L"vpn-facility", L"", profiles) && !usesSameVpn(L"", L"", profiles),
+        "Tokens without a network profile never share a VPN.");
+    require(!usesSameVpn(L"direct", L"vpn-facility", profiles),
+        "The direct mode is not a VPN.");
 }
 
 void testQuickRefreshReusesUnchangedDeviceInfo() {
@@ -1716,6 +1859,7 @@ int main() {
         testEmptyDeviceCatalogIsTransientError();
         testUseDeviceAllowsSlowUseResponse();
         testUseDeviceFailedResponseIsError();
+        testUseDeviceRecoversWhenTokenConnectsAfterFailure();
         testRevokedActiveTokenCanBeStopped();
         testParseList();
         testApplyDeviceInfo();
@@ -1748,6 +1892,7 @@ int main() {
         testUsageElapsedUsesUtcAndLegacyText();
         testBackgroundSyncSchedule();
         testQuickRefreshReusesUnchangedDeviceInfo();
+        testSharedVpnDetection();
         removeFirstMatch("usage-sync-test-*");
         std::cout << "All DistControl C++ tests passed.\n";
         return 0;

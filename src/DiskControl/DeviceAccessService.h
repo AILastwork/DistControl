@@ -34,6 +34,12 @@ struct DeviceViewModel {
 // together with DEVICE INFO, so that DEVICE INFO does not need to be repeated.
 bool canReuseDeviceInfo(const ParsedDevice& fromList, const DeviceViewModel& previous);
 
+// True when two network profile ids lead to the same network: the same id, or
+// Windows VPN profiles with the same connection name. Several tokens can share
+// one VPN, and it must stay connected while any of them is in use.
+bool usesSameVpn(const std::wstring& leftId, const std::wstring& rightId,
+    const std::vector<VpnProfile>& profiles);
+
 class DeviceAccessService {
 public:
     std::vector<DeviceViewModel> listVisibleDevices(const DeviceListProgressCallback& progress = {}) const;

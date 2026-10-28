@@ -83,7 +83,7 @@ private:
     void createFonts();
     void updateActionButton();
     void updateAdminMoveButtons(bool controlsEnabled);
-    void drawSelectedTreeLabel(const NMTVCUSTOMDRAW* draw);
+    void drawTreeLabel(const NMTVCUSTOMDRAW* draw);
     LRESULT customDrawTree(NMTVCUSTOMDRAW* draw);
     void updateRefreshProgress();
     void showRefreshProgress();

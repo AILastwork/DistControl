@@ -2446,47 +2446,53 @@ LRESULT MainWindow::customDrawTree(NMTVCUSTOMDRAW* draw) {
         return CDRF_NOTIFYITEMDRAW;
     case CDDS_ITEMPREPAINT: {
         const HTREEITEM item = reinterpret_cast<HTREEITEM>(draw->nmcd.dwItemSpec);
-        if (item == TreeView_GetSelection(treeView_)) {
-            // Keep the classic blue selection even after focus moves to a button.
-            draw->clrText = GetSysColor(COLOR_HIGHLIGHTTEXT);
-            draw->clrTextBk = GetSysColor(COLOR_HIGHLIGHT);
-            return CDRF_NOTIFYPOSTPAINT;
-        }
+        const bool selected = item == TreeView_GetSelection(treeView_);
         const LPARAM param = draw->nmcd.lItemlParam;
+        bool connected = false;
         if (param == kTreeGroupParam) {
             draw->clrText = RGB(70, 70, 70);
         }
         else if (param >= 0 && static_cast<size_t>(param) < devices_.size()) {
             const DeviceUsageInfo usage = DeviceParser::parseUsage(
                 devices_[static_cast<size_t>(param)].inUseBy, PolicyManager::currentUserName());
-            if (usage.isUsedByCurrentUser) {
-                draw->clrText = RGB(109, 40, 217);
-            }
-            else if (!usage.isFree) {
+            connected = usage.isUsedByCurrentUser;
+            if (!usage.isFree && !usage.isUsedByCurrentUser) {
                 draw->clrText = RGB(150, 150, 150);
             }
+        }
+        if (selected || connected) {
+            // These labels are painted by drawTreeLabel after the default drawing.
+            draw->clrText = GetSysColor(COLOR_WINDOWTEXT);
+            draw->clrTextBk = GetSysColor(COLOR_WINDOW);
+            return CDRF_NOTIFYPOSTPAINT;
         }
         return CDRF_DODEFAULT;
     }
     case CDDS_ITEMPOSTPAINT:
-        drawSelectedTreeLabel(draw);
+        drawTreeLabel(draw);
         return CDRF_DODEFAULT;
     default:
         return CDRF_DODEFAULT;
     }
 }
 
-void MainWindow::drawSelectedTreeLabel(const NMTVCUSTOMDRAW* draw) {
+// Connected tokens: blue background with white bold text and a dotted frame;
+// the selected connected token gets a thick dark frame. A selected token that
+// is not connected gets a light blue background with a blue frame.
+void MainWindow::drawTreeLabel(const NMTVCUSTOMDRAW* draw) {
     const HTREEITEM item = reinterpret_cast<HTREEITEM>(draw->nmcd.dwItemSpec);
     RECT label{};
     if (!TreeView_GetItemRect(treeView_, item, &label, TRUE)) {
         return;
     }
 
+    const bool selected = item == TreeView_GetSelection(treeView_);
+    bool connected = false;
     std::wstring text;
     const LPARAM param = draw->nmcd.lItemlParam;
     if (param >= 0 && static_cast<size_t>(param) < devices_.size()) {
         const DeviceViewModel& device = devices_[static_cast<size_t>(param)];
+        connected = DeviceParser::parseUsage(device.inUseBy, PolicyManager::currentUserName()).isUsedByCurrentUser;
         text = treeDeviceText(device, true);
         const std::wstring duration = activeDurationText(device);
         if (!duration.empty()) {
@@ -2506,7 +2512,8 @@ void MainWindow::drawSelectedTreeLabel(const NMTVCUSTOMDRAW* draw) {
     }
 
     HDC dc = draw->nmcd.hdc;
-    HGDIOBJ oldFont = SelectObject(dc, treeSelectedFont_ ? treeSelectedFont_ : treeFont_);
+    HFONT font = connected && treeSelectedFont_ ? treeSelectedFont_ : treeFont_;
+    HGDIOBJ oldFont = SelectObject(dc, font);
     RECT measure{ 0, 0, 0, 0 };
     DrawTextW(dc, text.c_str(), static_cast<int>(text.size()), &measure,
         DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
@@ -2516,19 +2523,31 @@ void MainWindow::drawSelectedTreeLabel(const NMTVCUSTOMDRAW* draw) {
     box.right = (std::min)((std::max)(label.right, label.left + (measure.right - measure.left) + 8),
         client.right);
 
-    // Paint over the default label: blue background, white bold text and a
-    // focus frame, kept even when focus is on a button.
-    HBRUSH highlight = GetSysColorBrush(COLOR_HIGHLIGHT);
-    FillRect(dc, &box, highlight);
+    const COLORREF background = connected ? GetSysColor(COLOR_HIGHLIGHT) : RGB(204, 232, 255);
+    HBRUSH fill = CreateSolidBrush(background);
+    FillRect(dc, &box, fill);
+    DeleteObject(fill);
     SetBkMode(dc, TRANSPARENT);
-    SetTextColor(dc, GetSysColor(COLOR_HIGHLIGHTTEXT));
+    SetTextColor(dc, connected ? GetSysColor(COLOR_HIGHLIGHTTEXT) : GetSysColor(COLOR_WINDOWTEXT));
     RECT textBox = box;
     textBox.left += 4;
     DrawTextW(dc, text.c_str(), static_cast<int>(text.size()), &textBox,
         DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
     SelectObject(dc, oldFont);
     SetTextColor(dc, RGB(0, 0, 0));
-    DrawFocusRect(dc, &box);
+
+    if (connected && !selected) {
+        DrawFocusRect(dc, &box);
+        return;
+    }
+    const int thickness = connected ? 3 : 1;
+    HBRUSH frame = CreateSolidBrush(connected ? RGB(0, 32, 96) : RGB(0, 120, 215));
+    RECT edge = box;
+    for (int line = 0; line < thickness; ++line) {
+        FrameRect(dc, &edge, frame);
+        InflateRect(&edge, -1, -1);
+    }
+    DeleteObject(frame);
 }
 
 void MainWindow::layoutControls() {
@@ -3577,9 +3596,9 @@ void MainWindow::updateTreeTimerTextRecursive(HTREEITEM item) {
                     update.iImage = image;
                     update.iSelectedImage = image;
                     TreeView_SetItem(treeView_, &update);
+                    // Custom-painted labels can be wider than the tree knows.
                     RECT row{};
-                    if (item == TreeView_GetSelection(treeView_) &&
-                        TreeView_GetItemRect(treeView_, item, &row, FALSE)) {
+                    if (TreeView_GetItemRect(treeView_, item, &row, FALSE)) {
                         InvalidateRect(treeView_, &row, TRUE);
                     }
                 }

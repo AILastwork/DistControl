@@ -19,6 +19,13 @@ namespace {
 constexpr unsigned long kUseCommandTimeoutMs = 120UL * 1000UL;
 constexpr unsigned long kStopCommandTimeoutMs = 30UL * 1000UL;
 constexpr ULONGLONG kCommandConfirmationTimeoutMs = 15ULL * 1000ULL;
+// The service sometimes answers FAILED or does not answer in time although the
+// token gets connected a moment later, so a failure is re-checked this long.
+#ifdef DISKCONTROL_TESTING
+constexpr ULONGLONG kFailedCommandConfirmationMs = 1500ULL;
+#else
+constexpr ULONGLONG kFailedCommandConfirmationMs = 8ULL * 1000ULL;
+#endif
 constexpr unsigned long kVpnRecoveryCommandTimeoutMs = 5000UL;
 constexpr unsigned long kActiveTokenScanCommandTimeoutMs = 1000UL;
 constexpr ULONGLONG kVpnDeviceRecoveryTimeoutMs = 60ULL * 1000ULL;
@@ -500,7 +507,10 @@ DeviceViewModel confirmDeviceStateAfterCommand(
                 humanErrorDescription(error.what()) + L".");
         }
 
-        if (!waitForTransition || GetTickCount64() - startedAt >= kCommandConfirmationTimeoutMs) {
+        const ULONGLONG confirmationLimitMs = waitForTransition
+            ? kCommandConfirmationTimeoutMs
+            : kFailedCommandConfirmationMs;
+        if (GetTickCount64() - startedAt >= confirmationLimitMs) {
             break;
         }
         Sleep(500);
@@ -616,7 +626,7 @@ void prepareVpnForTokenConnection(
         }
 
         const std::wstring activeProfileId = vpnProfileIdForDevice(toParsedDevice(candidateView), rules);
-        if (equalsIgnoreCase(activeProfileId, targetProfile.id)) {
+        if (usesSameVpn(activeProfileId, targetProfile.id, policy.vpnProfiles())) {
             continue;
         }
 
@@ -668,6 +678,13 @@ void prepareVpnForTokenConnection(
         }
         trace.step(L"Перед переключением активны VPN Windows: " + names + L".");
     }
+    if (targetProfile.mode == VpnProfileMode::WindowsVpn && activeConnections.size() == 1 &&
+        equalsIgnoreCase(activeConnections.front().name, targetProfile.name)) {
+        // Other tokens may already work through this VPN; reconnecting would cut them off.
+        trace.step(L"Нужный VPN «" + targetProfile.name +
+            L"» уже подключён и может использоваться другими токенами. Оставляем его без переподключения.");
+        return;
+    }
     VpnManager::disconnectAll(
         [&trace](const std::wstring& message) { trace.step(message); });
 }
@@ -704,18 +721,65 @@ std::wstring disconnectReleasedTokenVpnBestEffort(
             throw std::runtime_error("DistKontrol device catalog is temporarily empty.");
         }
 
+        // LIST often omits the owner right after USE, so tokens with an unknown
+        // owner and tokens from the local timer journal are checked with
+        // DEVICE INFO. Any doubt keeps the VPN connected.
         const std::vector<DeviceRule>& rules = policy.effectiveRules();
+        const std::wstring currentUser = PolicyManager::currentUserName();
+        const std::wstring currentComputer = UsageStateStore::currentComputerName();
+        std::vector<ParsedDevice> candidates;
         for (const ParsedDevice& device : devices) {
             if (equalsIgnoreCase(device.endpoint, released.endpoint)) {
                 continue;
             }
-            const DeviceUsageInfo usage =
-                DeviceParser::parseUsage(device.inUseBy, PolicyManager::currentUserName());
+            const DeviceUsageInfo usage = DeviceParser::parseUsage(device.inUseBy, currentUser);
+            if (usage.isUsedByCurrentUser || (!usage.isFree && usage.userText.empty())) {
+                candidates.push_back(device);
+            }
+        }
+        try {
+            for (const UsageStateRecord& record : UsageStateSync(policy.usageStatePath()).snapshot()) {
+                if (!equalsIgnoreCase(record.user, currentUser) ||
+                    (!record.computer.empty() && !equalsIgnoreCase(record.computer, currentComputer)) ||
+                    equalsIgnoreCase(record.endpoint, released.endpoint) ||
+                    std::any_of(candidates.begin(), candidates.end(), [&record](const ParsedDevice& item) {
+                        return equalsIgnoreCase(item.endpoint, record.endpoint);
+                    })) {
+                    continue;
+                }
+                ParsedDevice candidate;
+                candidate.endpoint = record.endpoint;
+                candidate.nickname = record.nickname;
+                candidate.product = record.product;
+                candidates.push_back(std::move(candidate));
+            }
+        }
+        catch (const std::exception& error) {
+            trace.step(L"Локальный журнал таймеров прочитать не удалось; проверяем по данным службы. " +
+                humanErrorDescription(error.what()) + L".");
+        }
+
+        for (const ParsedDevice& candidate : candidates) {
+            if (!usesSameVpn(vpnProfileIdForDevice(candidate, rules), released.vpnProfileId, policy.vpnProfiles())) {
+                continue;
+            }
+            DeviceViewModel candidateView = toViewModel(candidate, true);
+            try {
+                candidateView = loadCurrentDevice(ipc, candidateView, kActiveTokenScanCommandTimeoutMs);
+            }
+            catch (const std::exception& error) {
+                trace.step(L"VPN оставлен подключённым: не удалось проверить токен «" + candidate.nickname +
+                    L"» на том же VPN. " + humanErrorDescription(error.what()) + L".");
+                return L" VPN оставлен включённым: его может использовать токен «" + candidate.nickname + L"».";
+            }
+            const DeviceUsageInfo usage = DeviceParser::parseUsage(candidateView.inUseBy, currentUser);
             if (usage.isUsedByCurrentUser &&
-                equalsIgnoreCase(vpnProfileIdForDevice(device, rules), released.vpnProfileId)) {
-                trace.step(L"VPN остаётся подключённым: токен «" + device.nickname +
-                    L"» продолжает использовать этот профиль.");
-                return {};
+                (usage.locationText.empty() || equalsIgnoreCase(usage.locationText, currentComputer)) &&
+                usesSameVpn(vpnProfileIdForDevice(toParsedDevice(candidateView), rules),
+                    released.vpnProfileId, policy.vpnProfiles())) {
+                trace.step(L"VPN остаётся подключённым: токен «" + candidateView.nickname +
+                    L"» продолжает использовать этот же VPN.");
+                return L" VPN оставлен включённым: им пользуется токен «" + candidateView.nickname + L"».";
             }
         }
 
@@ -750,6 +814,29 @@ std::vector<DeviceViewModel> DeviceAccessService::listVisibleDevicesQuick(
 std::vector<DeviceViewModel> DeviceAccessService::listAllDevices(
     const DeviceListProgressCallback& progress) const {
     return listDevices(true, L"", progress, nullptr);
+}
+
+bool usesSameVpn(const std::wstring& leftId, const std::wstring& rightId,
+    const std::vector<VpnProfile>& profiles) {
+    if (leftId.empty() || rightId.empty()) {
+        return false;
+    }
+    if (CompareStringOrdinal(leftId.c_str(), -1, rightId.c_str(), -1, TRUE) == CSTR_EQUAL) {
+        return true;
+    }
+    const auto findProfile = [&profiles](const std::wstring& id) -> const VpnProfile* {
+        for (const VpnProfile& profile : profiles) {
+            if (CompareStringOrdinal(profile.id.c_str(), -1, id.c_str(), -1, TRUE) == CSTR_EQUAL) {
+                return &profile;
+            }
+        }
+        return nullptr;
+    };
+    const VpnProfile* left = findProfile(leftId);
+    const VpnProfile* right = findProfile(rightId);
+    return left && right && left->mode == VpnProfileMode::WindowsVpn &&
+        right->mode == VpnProfileMode::WindowsVpn && !left->name.empty() &&
+        CompareStringOrdinal(left->name.c_str(), -1, right->name.c_str(), -1, TRUE) == CSTR_EQUAL;
 }
 
 bool canReuseDeviceInfo(const ParsedDevice& fromList, const DeviceViewModel& previous) {
@@ -904,7 +991,16 @@ std::wstring DeviceAccessService::useDevice(
                 std::to_wstring(attempt) + L" из " + std::to_wstring(maximumAttempts));
             const ULONGLONG commandStartedAt = GetTickCount64();
             useCommandSent = true;
-            response = ipc.issueCommand(L"USE," + verified.endpoint, kUseCommandTimeoutMs);
+            try {
+                response = ipc.issueCommand(L"USE," + verified.endpoint, kUseCommandTimeoutMs);
+            }
+            catch (const std::exception& error) {
+                // No answer does not mean the token was not connected; the
+                // DEVICE INFO confirmation below decides.
+                trace.step(L"Служба dkclient не ответила на USE: " + humanErrorDescription(error.what()) +
+                    L". Проверяем фактическое состояние токена.");
+                response = L"ERROR: no USE response (" + widenAscii(error.what()) + L")";
+            }
             trace.step(L"Служба dkclient ответила на USE за " +
                 std::to_wstring(GetTickCount64() - commandStartedAt) + L" мс: " +
                 (trimResponse(response).empty() ? L"пустой ответ" : trimResponse(response)) + L".");
@@ -938,6 +1034,8 @@ std::wstring DeviceAccessService::useDevice(
         }
         if (useReportedFailure) {
             trace.step(L"Несмотря на ошибочный ответ USE, DEVICE INFO подтвердил подключение токена.");
+            AuditLogger::logDeviceAction(L"USE RECOVERY", verified, L"OK",
+                L"The token was connected although USE reported: " + trimResponse(response));
             response = L"OK";
         }
         const bool timerSaved = markDeviceUsedBestEffort(policy, verified, verifiedPublicIp, preparedProfile, trace.id());
