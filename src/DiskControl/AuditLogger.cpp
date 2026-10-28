@@ -1,6 +1,7 @@
 #include "AuditLogger.h"
 
 #include "PolicyManager.h"
+#include "UsageEventLog.h"
 
 #include <windows.h>
 
@@ -215,13 +216,22 @@ std::wstring traceFileName() {
 void AuditLogger::log(const AuditEvent& event) {
     try {
         const std::lock_guard<std::mutex> lock(gLogMutex);
-        if (tryWrite(defaultLogDirectory(), event)) {
-            return;
+        if (!tryWrite(defaultLogDirectory(), event)) {
+            tryWrite(fallbackLogDirectory(), event);
         }
-
-        tryWrite(fallbackLogDirectory(), event);
     }
     catch (...) {
+    }
+
+    // Usage events also go to the shared usage log through a local queue; the
+    // synchronization helper moves them, so the network never delays a token.
+    if (UsageEventLog::isUsageEvent(event.action, event.result)) {
+        try {
+            UsageEventLog::enqueue(UsageEventLog::queuePath(),
+                UsageEventLog::makeEvent(event.action, event.endpoint, event.nickname, event.result));
+        }
+        catch (...) {
+        }
     }
 }
 

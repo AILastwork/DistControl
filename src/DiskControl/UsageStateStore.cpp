@@ -4,6 +4,7 @@
 #include "AuditLogger.h"
 #include "IpcClient.h"
 #include "PolicyManager.h"
+#include "UsageEventLog.h"
 
 #include <windows.h>
 
@@ -1096,6 +1097,13 @@ int UsageStateSync::runBackgroundSync(const std::wstring& sharedPath,
     try {
         if (sharedPath.empty() || localPath.empty() || pipeName.empty()) {
             return 1;
+        }
+        try {
+            UsageEventLog::flush(UsageEventLog::queuePath(), UsageEventLog::sharedLogDirectory(sharedPath),
+                UsageStateStore::currentComputerName(), PolicyManager::currentUserName());
+        }
+        catch (const std::exception&) {
+            // Events stay queued and are moved on the next synchronization.
         }
         UsageStateSync sync(sharedPath, localPath);
         IpcClient ipc(pipeName);

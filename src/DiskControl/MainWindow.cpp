@@ -1899,7 +1899,7 @@ LRESULT MainWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         if (!kAdminBuild && !sessionEndReleaseDone_) {
             ShutdownBlockReasonCreate(hwnd_, L"DistControl отключает токены");
             closing_ = true;
-            releaseActiveDevices(false);
+            releaseActiveDevices(false, L"SIGNOUT");
             sessionEndReleaseDone_ = true;
             ShutdownBlockReasonDestroy(hwnd_);
         }
@@ -1908,7 +1908,7 @@ LRESULT MainWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         if (wParam && !kAdminBuild && !sessionEndReleaseDone_) {
             // Forced sign-out may skip WM_QUERYENDSESSION.
             closing_ = true;
-            releaseActiveDevices(false);
+            releaseActiveDevices(false, L"SIGNOUT");
             sessionEndReleaseDone_ = true;
         }
         else if (!wParam) {
@@ -1929,7 +1929,7 @@ LRESULT MainWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             return 0;
         }
         if (!kAdminBuild) {
-            releaseActiveDevices(false);
+            releaseActiveDevices(false, L"CLOSE");
         }
         DestroyWindow(hwnd_);
         return 0;
@@ -4310,7 +4310,7 @@ void MainWindow::activateSelectedDevice() {
     updateStatus(status.c_str());
 }
 
-void MainWindow::releaseActiveDevices(bool interactive) {
+void MainWindow::releaseActiveDevices(bool interactive, const wchar_t* reason) {
     if (kAdminBuild) {
         return;
     }
@@ -4323,6 +4323,7 @@ void MainWindow::releaseActiveDevices(bool interactive) {
         }
 
         try {
+            AuditLogger::logDeviceAction(L"STOP REASON", device, reason, L"DistControl releases the token automatically.");
             service_.stopUsingOwnedDevice(device);
             autoReleaseRequestTicks_.erase(device.endpoint);
             activeDeviceStartTicks_.erase(device.endpoint);
@@ -4482,7 +4483,7 @@ void MainWindow::finishVpnHealthCheck() {
         userFriendlyErrorMessage(asciiError.c_str()) + L" Токен будет освобождён.";
     logUiError(L"UI VPN WATCHDOG ERROR", asciiError.c_str(), status);
     updateStatus(status.c_str());
-    requestAutoRelease(*current);
+    requestAutoRelease(*current, L"VPN CHECK");
 #endif
 }
 
@@ -4643,7 +4644,8 @@ void MainWindow::retryPendingAutoReleases(ULONGLONG now) {
     }
 }
 
-void MainWindow::requestAutoRelease(DeviceViewModel& device) {
+void MainWindow::requestAutoRelease(DeviceViewModel& device, const wchar_t* reason) {
+    AuditLogger::logDeviceAction(L"STOP REASON", device, reason, L"DistControl releases the token automatically.");
     autoReleaseRequestTicks_[device.endpoint] = GetTickCount64();
     activeDeviceStartTicks_.erase(device.endpoint);
     updateTreeTimerText();

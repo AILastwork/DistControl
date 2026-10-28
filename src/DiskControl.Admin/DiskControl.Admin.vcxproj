@@ -92,6 +92,8 @@
     <ClCompile Include="..\DiskControl\MainWindow.cpp" />
     <ClCompile Include="..\DiskControl\PolicyManager.cpp" />
     <ClCompile Include="..\DiskControl\UsageStateStore.cpp" />
+    <ClCompile Include="..\DiskControl\UsageEventLog.cpp" />
+    <ClCompile Include="..\DiskControl\UsageReport.cpp" />
     <ClCompile Include="..\DiskControl\VpnManager.cpp" />
     <ClCompile Include="..\DiskControl\WinMain.cpp" />
   </ItemGroup>
@@ -104,6 +106,8 @@
     <ClInclude Include="..\DiskControl\PolicyManager.h" />
     <ClInclude Include="..\DiskControl\resource.h" />
     <ClInclude Include="..\DiskControl\UsageStateStore.h" />
+    <ClInclude Include="..\DiskControl\UsageEventLog.h" />
+    <ClInclude Include="..\DiskControl\UsageReport.h" />
     <ClInclude Include="..\DiskControl\UsageStateSync.h" />
     <ClInclude Include="..\DiskControl\StructuredJson.h" />
     <ClInclude Include="..\DiskControl\VpnManager.h" />

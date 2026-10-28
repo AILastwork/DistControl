@@ -18,6 +18,8 @@
     <ClCompile Include="..\DiskControl\IpcClient.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="..\DiskControl\PolicyManager.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="..\DiskControl\UsageStateStore.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="..\DiskControl\UsageEventLog.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="..\DiskControl\UsageReport.cpp"><Filter>Source Files</Filter></ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\DiskControl\AuditLogger.h"><Filter>Header Files</Filter></ClInclude>
@@ -26,5 +28,7 @@
     <ClInclude Include="..\DiskControl\IpcClient.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="..\DiskControl\PolicyManager.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="..\DiskControl\UsageStateStore.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="..\DiskControl\UsageEventLog.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="..\DiskControl\UsageReport.h"><Filter>Header Files</Filter></ClInclude>
   </ItemGroup>
 </Project>

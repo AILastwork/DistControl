@@ -65,7 +65,8 @@ private:
     void sortDevices();
     void sortByColumn(int column);
     void activateSelectedDevice();
-    void releaseActiveDevices(bool interactive);
+    // reason is written to the audit log as "STOP REASON" for the usage report.
+    void releaseActiveDevices(bool interactive, const wchar_t* reason);
     void updateActiveDeviceTracking();
     void checkActiveDeviceTimeouts();
     void checkActiveVpnHealth();
@@ -73,7 +74,7 @@ private:
     void publishNetworkState();
     void finishNetworkStatePublish();
     void retryPendingAutoReleases(ULONGLONG now);
-    void requestAutoRelease(DeviceViewModel& device);
+    void requestAutoRelease(DeviceViewModel& device, const wchar_t* reason = L"TIMER");
     void markDeviceLocallyReleased(const std::wstring& endpoint);
     void updateTreeTimerText();
     void updateTreeTimerTextRecursive(HTREEITEM item);

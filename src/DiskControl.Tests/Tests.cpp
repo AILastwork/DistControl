@@ -5,6 +5,8 @@
 #include "PolicyManager.h"
 #include "UsageStateStore.h"
 #include "UsageStateSync.h"
+#include "UsageEventLog.h"
+#include "UsageReport.h"
 #include "VpnManager.h"
 
 #include <windows.h>
@@ -1801,6 +1803,153 @@ void testLocalRouteInspection() {
     (void)routeCount;
 }
 
+void removeDirectoryWithFiles(const char* directory) {
+    WIN32_FIND_DATAA data{};
+    HANDLE find = FindFirstFileA((std::string(directory) + "\\*").c_str(), &data);
+    if (find != INVALID_HANDLE_VALUE) {
+        do {
+            if ((data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+                DeleteFileA((std::string(directory) + "\\" + data.cFileName).c_str());
+            }
+        } while (FindNextFileA(find, &data));
+        FindClose(find);
+    }
+    RemoveDirectoryA(directory);
+}
+
+void removeUsageLogArtifacts() {
+    removeFirstMatch("usage-log-queue-test.csv*");
+    removeFirstMatch("usage-log-case-*.csv*");
+    removeDirectoryWithFiles("usage-log");
+    removeDirectoryWithFiles("usage-log-case-dir");
+}
+
+void testUsageEventLogQueueAndFlush() {
+    removeUsageLogArtifacts();
+    const std::wstring queue = L"usage-log-case-queue.csv";
+    const std::wstring folder = L"usage-log-case-dir";
+    require(UsageEventLog::isUsageEvent(L"USE", L"OK") && UsageEventLog::isUsageEvent(L"STOP REASON", L"TIMER") &&
+        UsageEventLog::isUsageEvent(L"AUTO STOP BEFORE VPN SWITCH", L"OK") && !UsageEventLog::isUsageEvent(L"USE", L"ERROR") &&
+        !UsageEventLog::isUsageEvent(L"DEVICE INFO", L"OK"), "Only usage events go to the shared log.");
+
+    UsageLogEvent use{ L"2026-10-05 09:00:00", L"2026-10-05T06:00:00Z", L"PC-1", L"DOMAIN\\ivanov", L"S-1",
+        L"USE", L"HUB-Gr-1.1", L"Ключ, \"А\"", L"OK" };
+    UsageLogEvent stop = use;
+    stop.localTime = L"2026-11-01 08:00:00";
+    stop.action = L"STOP USING OWN";
+    UsageEventLog::enqueue(queue, use);
+    UsageEventLog::enqueue(queue, stop);
+    require(UsageEventLog::queuedCount(queue) == 2, "Events must be kept in the local queue.");
+
+    // Unavailable folder: nothing moves, the queue stays.
+    require(UsageEventLog::flush(queue, L"usage-log-case-bad<>dir", L"PC-1", L"DOMAIN\\ivanov") == 0 &&
+        UsageEventLog::queuedCount(queue) == 2, "Events must stay queued while the shared folder is unavailable.");
+
+    require(UsageEventLog::flush(queue, folder, L"PC-1", L"DOMAIN\\ivanov") == 2 &&
+        UsageEventLog::queuedCount(queue) == 0, "Queued events must move to the shared folder.");
+    const std::wstring october = folder + L"\\" + UsageEventLog::fileNameFor(L"PC-1", L"DOMAIN\\ivanov", use.localTime);
+    const std::wstring november = folder + L"\\" + UsageEventLog::fileNameFor(L"PC-1", L"DOMAIN\\ivanov", stop.localTime);
+    require(UsageEventLog::fileNameFor(L"PC-1", L"DOMAIN\\ivanov", use.localTime) == L"PC-1-DOMAIN_ivanov-202610.csv",
+        "File name must be computer, user and month.");
+
+    std::ifstream stream(narrowAscii(october), std::ios::binary);
+    const std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    const std::vector<AuditRecord> records = parseAuditCsv(text);
+    require(records.size() == 1 && records[0].computer == L"PC-1" && records[0].nickname == L"Ключ, \"А\"" &&
+        records[0].action == L"USE", "Shared log records must be readable with quoting preserved.");
+    require(GetFileAttributesW(november.c_str()) != INVALID_FILE_ATTRIBUTES, "Each month must use its own file.");
+
+    UsageEventLog::enqueue(queue, use);
+    require(UsageEventLog::flush(queue, folder, L"PC-1", L"DOMAIN\\ivanov") == 1, "Later events must be appended.");
+    std::ifstream again(narrowAscii(october), std::ios::binary);
+    const std::string appended((std::istreambuf_iterator<char>(again)), std::istreambuf_iterator<char>());
+    require(parseAuditCsv(appended).size() == 2, "Appending must keep earlier events and a single header.");
+    stream.close();
+    again.close();
+    removeUsageLogArtifacts();
+    DeleteFileW(queue.c_str());
+    DeleteFileW((queue + L".lock").c_str());
+}
+
+void testUsageSessionsFromAuditLog() {
+    const std::string csv =
+        "\xEF\xBB\xBFtimestamp,user,sid,action,endpoint,nickname,product,result,details\n"
+        "2026-10-20 09:00:00,DOMAIN\\a,S,USE,HUB-Gr-1.1,KEY-1,R,OK,\"profile, \"\"x\"\"\"\n"
+        "2026-10-20 09:20:00,DOMAIN\\a,S,USAGE TIMER,HUB-Gr-1.1,KEY-1,R,OK,\n"
+        "2026-10-20 09:45:00,DOMAIN\\a,S,STOP REASON,HUB-Gr-1.1,KEY-1,R,TIMER,\n"
+        "2026-10-20 09:45:05,DOMAIN\\a,S,STOP USING OWN,HUB-Gr-1.1,KEY-1,R,OK,\n"
+        "2026-10-20 10:00:00,DOMAIN\\a,S,USE,HUB-Gr-1.2,KEY-2,R,OK,\n"
+        "2026-10-20 10:01:00,DOMAIN\\a,S,USE,HUB-Gr-1.2,KEY-2,R,OK,\n"
+        "2026-10-20 10:30:00,DOMAIN\\a,S,STOP USING OWN,HUB-Gr-1.2,KEY-2,R,OK,\n"
+        "2026-10-20 11:00:00,DOMAIN\\a,S,USE,HUB-Gr-1.3,KEY-3,R,ERROR,\n"
+        "2026-10-20 11:05:00,DOMAIN\\a,S,STOP USING OWN,HUB-Gr-1.4,KEY-4,R,OK,\n"
+        "2026-10-20 12:00:00,DOMAIN\\a,S,USE,HUB-Gr-1.5,KEY-5,R,OK,\n"
+        "2026-10-20 12:10:00,DOMAIN\\a,S,AUTO STOP BEFORE VPN SWITCH,HUB-Gr-1.5,KEY-5,R,OK,\n"
+        "2026-10-20 13:00:00,DOMAIN\\a,S,USE,HUB-Gr-1.6,KEY-6,R,OK,\n"
+        "broken line\n";
+    const std::vector<AuditRecord> records = parseAuditCsv(csv);
+    require(records.size() == 12 && records[0].details == L"profile, \"x\"", "Audit CSV must be parsed with quotes and BOM.");
+
+    long long dayStart = 0;
+    long long dayEnd = 0;
+    require(parseAuditTime(L"2026-10-20 00:00:00", dayStart) && parseAuditTime(L"2026-10-21 00:00:00", dayEnd) &&
+        dayEnd - dayStart == 86400, "Audit time must be parsed.");
+    const std::vector<UsageSession> sessions = buildUsageSessions(records, L"PC-1", dayStart, dayEnd);
+    require(sessions.size() == 4, "Successful USE records must form sessions; failed USE and orphan releases are ignored.");
+    require(sessions[0].endReason == SessionEnd::Timer && sessions[0].extensions == 1 &&
+        sessionSecondsInPeriod(sessions[0], dayStart, dayEnd) == 45 * 60 + 5 && sessions[0].computer == L"PC-1",
+        "Timer release, extension and duration must be recorded.");
+    require(sessions[1].endReason == SessionEnd::Manual && sessions[1].start + 30 * 60 == sessions[1].end,
+        "A repeated USE must not start a second session.");
+    require(sessions[2].endReason == SessionEnd::VpnSwitch, "Release before a VPN switch must be recognised.");
+    require(sessions[3].end == 0 && sessions[3].endReason == SessionEnd::Open &&
+        sessionSecondsInPeriod(sessions[3], dayStart, dayEnd) == 0, "A session without release stays open.");
+
+    long long clipStart = 0;
+    parseAuditTime(L"2026-10-20 09:30:00", clipStart);
+    const std::vector<UsageSession> clipped = buildUsageSessions(records, L"PC-1", clipStart, dayEnd);
+    require(clipped.size() == 4 && sessionSecondsInPeriod(clipped[0], clipStart, dayEnd) == 15 * 60 + 5,
+        "Sessions crossing the period start must be clipped.");
+
+    std::vector<AuditRecord> twoComputers = records;
+    for (AuditRecord& record : twoComputers) {
+        record.computer = L"PC-2";
+    }
+    twoComputers.insert(twoComputers.end(), records.begin(), records.end());
+    require(buildUsageSessions(twoComputers, L"PC-1", dayStart, dayEnd).size() == 8,
+        "The same user on two computers must give separate sessions.");
+
+    require(formatUsageDuration(65 * 60) == L"1 ч 05 мин" && formatUsageDuration(12 * 60) == L"12 мин" &&
+        formatUsageDuration(30) == L"менее 1 мин", "Durations must be formatted in Russian.");
+    require(formatAuditTime(dayStart + 9 * 3600 + 5 * 60) == L"20.10.2026 09:05", "Time must be formatted for the report.");
+}
+
+void testUsageReportHtmlEscapesData() {
+    UsageReportInput input;
+    UsageSession session;
+    session.endpoint = L"HUB-Gr-1.1";
+    session.nickname = L"</script><script>alert(1)</script>";
+    session.user = L"DOMAIN\\\"evil\" & <b>";
+    session.computer = L"PC-1";
+    parseAuditTime(L"2026-10-20 09:00:00", session.start);
+    session.end = session.start + 600;
+    session.endReason = SessionEnd::Manual;
+    input.sessions.push_back(session);
+    input.sources.push_back({ L"PC-<1>", L"DOMAIN\\a", L"\\\\server\\share", 1, 3 });
+    input.periodStart = session.start - 3600;
+    input.periodEnd = session.start + 3600;
+    input.generatedAt = input.periodEnd;
+    input.periodTitle = L"Сегодня";
+    input.sourceNote = L"Общая папка <недоступна>";
+    const std::string html = renderUsageReportHtml(input);
+    require(html.find("<script>alert(1)") == std::string::npos && html.find("\\u003c/script\\u003e") != std::string::npos,
+        "Token names must not be able to close or inject scripts.");
+    require(html.find("PC-&lt;1&gt;") != std::string::npos && html.find("&lt;недоступна&gt;") != std::string::npos,
+        "Header values must be HTML-escaped.");
+    require(html.find("http://") == std::string::npos && html.find("https://") == std::string::npos,
+        "The report must not load anything from the network.");
+}
+
 void testVpnChoiceNameMatching() {
     const std::vector<std::wstring> names = {
         L"Не назначен",
@@ -1889,11 +2038,15 @@ int main() {
         testNetworkStateReportParsing();
         testLocalRouteInspection();
         testVpnChoiceNameMatching();
+        testUsageEventLogQueueAndFlush();
+        testUsageSessionsFromAuditLog();
+        testUsageReportHtmlEscapesData();
         testUsageElapsedUsesUtcAndLegacyText();
         testBackgroundSyncSchedule();
         testQuickRefreshReusesUnchangedDeviceInfo();
         testSharedVpnDetection();
         removeFirstMatch("usage-sync-test-*");
+        removeUsageLogArtifacts();
         std::cout << "All DistControl C++ tests passed.\n";
         return 0;
     }
