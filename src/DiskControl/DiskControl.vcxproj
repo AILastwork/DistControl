@@ -88,6 +88,8 @@
     <ClCompile Include="MainWindow.cpp" />
     <ClCompile Include="PolicyManager.cpp" />
     <ClCompile Include="UsageStateStore.cpp" />
+    <ClCompile Include="UsageEventLog.cpp" />
+    <ClCompile Include="UsageReport.cpp" />
     <ClCompile Include="VpnManager.cpp" />
     <ClCompile Include="WinMain.cpp" />
   </ItemGroup>
@@ -100,6 +102,8 @@
     <ClInclude Include="PolicyManager.h" />
     <ClInclude Include="resource.h" />
     <ClInclude Include="UsageStateStore.h" />
+    <ClInclude Include="UsageEventLog.h" />
+    <ClInclude Include="UsageReport.h" />
     <ClInclude Include="UsageStateSync.h" />
     <ClInclude Include="StructuredJson.h" />
     <ClInclude Include="VpnManager.h" />

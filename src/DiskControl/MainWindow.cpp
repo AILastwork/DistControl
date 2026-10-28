@@ -4,11 +4,14 @@
 #include "DeviceParser.h"
 #include "PolicyManager.h"
 #include "UsageStateStore.h"
+#include "UsageEventLog.h"
+#include "UsageReport.h"
 #include "VpnManager.h"
 #include "resource.h"
 
 #include <algorithm>
 #include <commdlg.h>
+#include <shellapi.h>
 #include <commctrl.h>
 #include <sddl.h>
 #include <windows.h>
@@ -43,6 +46,7 @@ constexpr int IDC_COMPUTER = 1018;
 constexpr int IDC_LOAD_COMPUTER = 1019;
 constexpr int IDC_AVAILABLE_LIST = 1020;
 constexpr int IDC_VPN_MAPPINGS = 1022;
+constexpr int IDC_USAGE_REPORT = 1030;
 constexpr UINT_PTR IDT_DELAYED_REFRESH = 2001;
 constexpr UINT_PTR IDT_USAGE_WATCHDOG = 2002;
 constexpr UINT_PTR IDT_USAGE_SYNC = 2003;
@@ -1862,7 +1866,7 @@ bool MainWindow::create(HINSTANCE instance, int showCommand) {
 
     INITCOMMONCONTROLSEX controls{};
     controls.dwSize = sizeof(controls);
-    controls.dwICC = ICC_LISTVIEW_CLASSES | ICC_TREEVIEW_CLASSES | ICC_PROGRESS_CLASS;
+    controls.dwICC = ICC_LISTVIEW_CLASSES | ICC_TREEVIEW_CLASSES | ICC_PROGRESS_CLASS | ICC_DATE_CLASSES;
     InitCommonControlsEx(&controls);
 
     const wchar_t* className = L"DistControlMainWindow";
@@ -1930,7 +1934,7 @@ LRESULT MainWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         if (!kAdminBuild && !sessionEndReleaseDone_) {
             ShutdownBlockReasonCreate(hwnd_, L"DistControl отключает токены");
             closing_ = true;
-            releaseActiveDevices(false);
+            releaseActiveDevices(false, L"SIGNOUT");
             sessionEndReleaseDone_ = true;
             ShutdownBlockReasonDestroy(hwnd_);
         }
@@ -1939,7 +1943,7 @@ LRESULT MainWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         if (wParam && !kAdminBuild && !sessionEndReleaseDone_) {
             // Forced sign-out may skip WM_QUERYENDSESSION.
             closing_ = true;
-            releaseActiveDevices(false);
+            releaseActiveDevices(false, L"SIGNOUT");
             sessionEndReleaseDone_ = true;
         }
         else if (!wParam) {
@@ -1960,7 +1964,7 @@ LRESULT MainWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             return 0;
         }
         if (!kAdminBuild) {
-            releaseActiveDevices(false);
+            releaseActiveDevices(false, L"CLOSE");
         }
         DestroyWindow(hwnd_);
         return 0;
@@ -2203,6 +2207,9 @@ LRESULT MainWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         case IDC_VPN_MAPPINGS:
             manageVpnMappings();
             return 0;
+        case IDC_USAGE_REPORT:
+            showUsageReport();
+            return 0;
         case IDC_EXPORT_JSON:
             return 0;
         case IDC_USE:
@@ -2379,6 +2386,8 @@ void MainWindow::createControls() {
         hwnd_, controlId(IDC_EXPORT_JSON), instance_, nullptr);
     vpnMappingsButton_ = CreateWindowW(L"BUTTON", L"Токены → VPN", adminActionStyle,
         0, 0, 0, 0, hwnd_, controlId(IDC_VPN_MAPPINGS), instance_, nullptr);
+    usageReportButton_ = CreateWindowW(L"BUTTON", L"Отчёт по использованию…", adminActionStyle,
+        0, 0, 0, 0, hwnd_, controlId(IDC_USAGE_REPORT), instance_, nullptr);
     statusLabel_ = CreateWindowW(L"STATIC", L"Готово.", WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP,
         0, 0, 0, 0, hwnd_, controlId(IDC_STATUS), instance_, nullptr);
     refreshProgressLabel_ = CreateWindowW(L"STATIC", L"", WS_CHILD | SS_CENTER,
@@ -2667,6 +2676,8 @@ void MainWindow::layoutControls() {
         MoveWindow(exportButton_, x, buttonTop, 130, buttonHeight, TRUE);
         x += 130 + gap;
         MoveWindow(vpnMappingsButton_, x, buttonTop, 150, buttonHeight, TRUE);
+        x += 150 + gap;
+        MoveWindow(usageReportButton_, x, buttonTop, 210, buttonHeight, TRUE);
     }
     else {
         int listBottom = buttonTop - margin;
@@ -2739,6 +2750,9 @@ void MainWindow::setMainControlsEnabled(bool enabled) {
     if (vpnMappingsButton_) {
         EnableWindow(vpnMappingsButton_, value && adminAccessLoaded_);
     }
+    if (usageReportButton_) {
+        EnableWindow(usageReportButton_, value);
+    }
     if (enabled) {
         updateActionButton();
     }
@@ -2785,6 +2799,164 @@ bool MainWindow::ensureVpnCredentials(const DeviceViewModel& device) {
         logUiError(L"UI VPN CREDENTIALS ERROR", error.what(), message);
         updateStatus(message.c_str());
         return false;
+    }
+}
+
+namespace {
+struct ReportPeriodDialogData {
+    SYSTEMTIME from{};
+    SYSTEMTIME to{};
+};
+
+long long localSeconds(const SYSTEMTIME& time) {
+    wchar_t text[32]{};
+    swprintf_s(text, L"%04u-%02u-%02u %02u:%02u:%02u",
+        time.wYear, time.wMonth, time.wDay, time.wHour, time.wMinute, time.wSecond);
+    long long seconds = 0;
+    parseAuditTime(text, seconds);
+    return seconds;
+}
+
+long long startOfDay(const SYSTEMTIME& time) {
+    SYSTEMTIME day = time;
+    day.wHour = day.wMinute = day.wSecond = day.wMilliseconds = 0;
+    return localSeconds(day);
+}
+
+INT_PTR CALLBACK reportPeriodDialogProc(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam) {
+    auto* data = reinterpret_cast<ReportPeriodDialogData*>(GetWindowLongPtrW(dialog, DWLP_USER));
+    if (message == WM_INITDIALOG) {
+        data = reinterpret_cast<ReportPeriodDialogData*>(lParam);
+        SetWindowLongPtrW(dialog, DWLP_USER, reinterpret_cast<LONG_PTR>(data));
+        DateTime_SetSystemtime(GetDlgItem(dialog, IDC_REPORT_FROM), GDT_VALID, &data->from);
+        DateTime_SetSystemtime(GetDlgItem(dialog, IDC_REPORT_TO), GDT_VALID, &data->to);
+        return TRUE;
+    }
+    if (message == WM_COMMAND && data) {
+        if (LOWORD(wParam) == IDOK) {
+            DateTime_GetSystemtime(GetDlgItem(dialog, IDC_REPORT_FROM), &data->from);
+            DateTime_GetSystemtime(GetDlgItem(dialog, IDC_REPORT_TO), &data->to);
+            if (startOfDay(data->from) > startOfDay(data->to)) {
+                MessageBoxW(dialog, L"Дата начала периода позже даты окончания.", L"DistControl Admin",
+                    MB_OK | MB_ICONWARNING);
+                return TRUE;
+            }
+            EndDialog(dialog, IDOK);
+            return TRUE;
+        }
+        if (LOWORD(wParam) == IDCANCEL) {
+            EndDialog(dialog, IDCANCEL);
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+}
+
+void MainWindow::showUsageReport() {
+    RECT button{};
+    GetWindowRect(usageReportButton_, &button);
+    HMENU menu = CreatePopupMenu();
+    AppendMenuW(menu, MF_STRING, 1, L"Сегодня");
+    AppendMenuW(menu, MF_STRING, 2, L"Последние 7 дней");
+    AppendMenuW(menu, MF_STRING, 3, L"Последние 30 дней");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, 4, L"Свой период…");
+    const int choice = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_BOTTOMALIGN,
+        button.left, button.top, 0, hwnd_, nullptr);
+    DestroyMenu(menu);
+
+    SYSTEMTIME now{};
+    GetLocalTime(&now);
+    const long long nowSeconds = localSeconds(now);
+    const long long today = startOfDay(now);
+    switch (choice) {
+    case 1:
+        generateUsageReport(today, nowSeconds, L"Сегодня");
+        break;
+    case 2:
+        generateUsageReport(today - 6LL * 86400LL, nowSeconds, L"Последние 7 дней");
+        break;
+    case 3:
+        generateUsageReport(today - 29LL * 86400LL, nowSeconds, L"Последние 30 дней");
+        break;
+    case 4: {
+        ReportPeriodDialogData data;
+        data.to = now;
+        FILETIME fileTime{};
+        SystemTimeToFileTime(&now, &fileTime);
+        ULARGE_INTEGER ticks{};
+        ticks.LowPart = fileTime.dwLowDateTime;
+        ticks.HighPart = fileTime.dwHighDateTime;
+        ticks.QuadPart -= 6ULL * 86400ULL * 10000000ULL;
+        fileTime.dwLowDateTime = ticks.LowPart;
+        fileTime.dwHighDateTime = ticks.HighPart;
+        FileTimeToSystemTime(&fileTime, &data.from);
+        if (DialogBoxParamW(instance_, MAKEINTRESOURCEW(IDD_REPORT_PERIOD), hwnd_, reportPeriodDialogProc,
+                reinterpret_cast<LPARAM>(&data)) == IDOK) {
+            generateUsageReport(startOfDay(data.from), startOfDay(data.to) + 86400LL, L"Период");
+        }
+        break;
+    }
+    default:
+        break;
+    }
+}
+
+void MainWindow::generateUsageReport(long long periodStart, long long periodEnd, const std::wstring& title) {
+    HCURSOR oldCursor = SetCursor(LoadCursorW(nullptr, IDC_WAIT));
+    try {
+        const std::wstring policyPath = service_.currentPolicyPath();
+        UsageReportRequest request;
+        try {
+            request.sharedLogDirectory = UsageEventLog::sharedLogDirectory(PolicyManager(policyPath).usageStatePath());
+        }
+        catch (const std::exception&) {
+            // Without a readable policy only the local journal is used.
+        }
+        const size_t slash = policyPath.find_last_of(L"\\/");
+        request.localLogDirectory = (slash == std::wstring::npos ? std::wstring{} : policyPath.substr(0, slash)) + L"\\logs";
+        request.localComputer = currentComputerName();
+        if (policyPath.rfind(L"\\\\", 0) == 0) {
+            const size_t hostEnd = policyPath.find(L'\\', 2);
+            request.localComputer = policyPath.substr(2, hostEnd == std::wstring::npos ? std::wstring::npos : hostEnd - 2);
+        }
+        request.localUser = loadedPolicyUser_.empty() ? getControlText(assignUserEdit_) : loadedPolicyUser_;
+        SYSTEMTIME now{};
+        GetLocalTime(&now);
+        request.generatedAt = localSeconds(now);
+        request.periodStart = periodStart;
+        request.periodEnd = periodEnd;
+        request.periodTitle = title;
+
+        const UsageReportInput input = collectUsageReport(request);
+        const std::string html = renderUsageReportHtml(input);
+
+        wchar_t localAppData[MAX_PATH]{};
+        const DWORD length = GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData, MAX_PATH);
+        if (length == 0 || length >= MAX_PATH) {
+            throw std::runtime_error("LOCALAPPDATA is not available.");
+        }
+        const std::wstring directory = std::wstring(localAppData) + L"\\DistControl\\reports";
+        CreateDirectoryW((std::wstring(localAppData) + L"\\DistControl").c_str(), nullptr);
+        CreateDirectoryW(directory.c_str(), nullptr);
+        const std::wstring path = directory + L"\\usage-" + timestampForFileName() + L".html";
+        std::ofstream stream(path, std::ios::binary);
+        stream.write(html.data(), static_cast<std::streamsize>(html.size()));
+        stream.close();
+        if (!stream) {
+            throw std::runtime_error("Cannot write the usage report file.");
+        }
+        SetCursor(oldCursor);
+        const std::wstring status = L"Отчёт сохранён: " + path;
+        updateStatus(status.c_str());
+        ShellExecuteW(hwnd_, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    }
+    catch (const std::exception& error) {
+        SetCursor(oldCursor);
+        const std::wstring message = L"Не удалось сформировать отчёт. " + userFriendlyErrorMessage(error.what());
+        logUiError(L"UI USAGE REPORT ERROR", error.what(), message);
+        MessageBoxW(hwnd_, message.c_str(), L"DistControl Admin", MB_OK | MB_ICONERROR);
     }
 }
 
@@ -4341,7 +4513,7 @@ void MainWindow::activateSelectedDevice() {
     updateStatus(status.c_str());
 }
 
-void MainWindow::releaseActiveDevices(bool interactive) {
+void MainWindow::releaseActiveDevices(bool interactive, const wchar_t* reason) {
     if (kAdminBuild) {
         return;
     }
@@ -4354,6 +4526,7 @@ void MainWindow::releaseActiveDevices(bool interactive) {
         }
 
         try {
+            AuditLogger::logDeviceAction(L"STOP REASON", device, reason, L"DistControl releases the token automatically.");
             service_.stopUsingOwnedDevice(device);
             autoReleaseRequestTicks_.erase(device.endpoint);
             activeDeviceStartTicks_.erase(device.endpoint);
@@ -4513,7 +4686,7 @@ void MainWindow::finishVpnHealthCheck() {
         userFriendlyErrorMessage(asciiError.c_str()) + L" Токен будет освобождён.";
     logUiError(L"UI VPN WATCHDOG ERROR", asciiError.c_str(), status);
     updateStatus(status.c_str());
-    requestAutoRelease(*current);
+    requestAutoRelease(*current, L"VPN CHECK");
 #endif
 }
 
@@ -4674,7 +4847,8 @@ void MainWindow::retryPendingAutoReleases(ULONGLONG now) {
     }
 }
 
-void MainWindow::requestAutoRelease(DeviceViewModel& device) {
+void MainWindow::requestAutoRelease(DeviceViewModel& device, const wchar_t* reason) {
+    AuditLogger::logDeviceAction(L"STOP REASON", device, reason, L"DistControl releases the token automatically.");
     autoReleaseRequestTicks_[device.endpoint] = GetTickCount64();
     activeDeviceStartTicks_.erase(device.endpoint);
     updateTreeTimerText();

@@ -1,6 +1,7 @@
 #include "AuditLogger.h"
 
 #include "PolicyManager.h"
+#include "UsageEventLog.h"
 
 #include <windows.h>
 
@@ -215,13 +216,22 @@ std::wstring traceFileName() {
 void AuditLogger::log(const AuditEvent& event) {
     try {
         const std::lock_guard<std::mutex> lock(gLogMutex);
-        if (tryWrite(defaultLogDirectory(), event)) {
-            return;
+        if (!tryWrite(defaultLogDirectory(), event)) {
+            tryWrite(fallbackLogDirectory(), event);
         }
-
-        tryWrite(fallbackLogDirectory(), event);
     }
     catch (...) {
+    }
+
+    // Usage events also go to the shared usage log through a local queue; the
+    // synchronization helper moves them, so the network never delays a token.
+    if (UsageEventLog::isUsageEvent(event.action, event.result)) {
+        try {
+            UsageEventLog::enqueue(UsageEventLog::queuePath(),
+                UsageEventLog::makeEvent(event.action, event.endpoint, event.nickname, event.result));
+        }
+        catch (...) {
+        }
     }
 }
 
@@ -265,6 +275,10 @@ std::string AuditLogger::csvEscapeForTest(const std::wstring& value) {
 }
 
 std::wstring AuditLogger::defaultLogDirectory() {
+#ifdef DISKCONTROL_TESTING
+    // Tests must never add fake tokens to the real journal and usage report.
+    return (fs::current_path() / L"audit-test-logs").wstring();
+#else
     const DWORD needed = GetEnvironmentVariableW(L"LOCALAPPDATA", nullptr, 0);
     if (needed == 0) {
         return fallbackLogDirectory();
@@ -278,6 +292,7 @@ std::wstring AuditLogger::defaultLogDirectory() {
 
     localAppData.resize(written);
     return (fs::path(localAppData) / L"DistControl" / L"logs").wstring();
+#endif
 }
 
 std::wstring AuditLogger::fallbackLogDirectory() {
