@@ -53,10 +53,10 @@
 Актуальный установщик после сборки находится в `dist\DistControl-Setup.exe`,
 переносимый пакет — в `dist\DistControl-Installer.zip`.
 
-Опубликованная версия `0.6.2` для скачивания с GitHub:
-[DistControl-0.6.2-win64.zip](release-assets/DistControl-0.6.2-win64.zip).
+Опубликованная версия `0.6.3` для скачивания с GitHub:
+[DistControl-0.6.3-win64.zip](release-assets/DistControl-0.6.3-win64.zip).
 Контрольная сумма архива:
-[DistControl-0.6.2-win64.zip.sha256](release-assets/DistControl-0.6.2-win64.zip.sha256).
+[DistControl-0.6.3-win64.zip.sha256](release-assets/DistControl-0.6.3-win64.zip.sha256).
 
 `DistControl` — небольшая программа для Windows, которая показывает и
 подключает только разрешённые USB-ключи через клиент `DistKontrolUSB`.
