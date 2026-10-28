@@ -1,8 +1,8 @@
 #Requires -Version 5.1
 [CmdletBinding()]
 param(
-    [string]$InstallDir = (Join-Path $env:ProgramFiles "DiskControl"),
-    [string]$ProgramDataDir = (Join-Path $env:ProgramData "DiskControl"),
+    [string]$InstallDir = (Join-Path $env:ProgramFiles "DistControl"),
+    [string]$ProgramDataDir = (Join-Path $env:LOCALAPPDATA "DistControl"),
     [string]$ServiceName = "dkclient",
     [string]$PipeName = "dkclient",
     [string]$OutputRoot = $env:TEMP,
@@ -25,7 +25,7 @@ catch {
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $computer = $env:COMPUTERNAME
 $safeComputer = ($computer -replace '[^\w.-]', '_')
-$baseName = "DiskControl-Diagnostics-$safeComputer-$timestamp"
+$baseName = "DistControl-Diagnostics-$safeComputer-$timestamp"
 $outDir = Join-Path $OutputRoot $baseName
 $zipPath = Join-Path $OutputRoot ($baseName + ".zip")
 
@@ -312,7 +312,7 @@ if (Test-Path -LiteralPath $policyPath) {
 }
 
 $summary = New-Object System.Text.StringBuilder
-Add-Line $summary "DiskControl diagnostics"
+Add-Line $summary "DistControl diagnostics"
 Add-Line $summary ("CreatedAt: {0}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss zzz"))
 Add-Line $summary ("Computer: {0}" -f $env:COMPUTERNAME)
 Add-Line $summary ("UserEnv: {0}\{1}" -f $env:USERDOMAIN, $env:USERNAME)
@@ -322,7 +322,7 @@ Add-Line $summary ("IsAdmin: {0}" -f (Get-IsAdmin))
 Add-Line $summary ("PowerShell: {0}" -f $PSVersionTable.PSVersion)
 Add-Line $summary ("OS: {0}" -f ([Environment]::OSVersion.VersionString))
 Add-Line $summary ("InstallDir: {0}" -f $InstallDir)
-Add-Line $summary ("ProgramDataDir: {0}" -f $ProgramDataDir)
+Add-Line $summary ("DataDir: {0}" -f $ProgramDataDir)
 Add-Line $summary ("PolicyPath: {0}" -f $policyPath)
 Add-Line $summary ("PipeName: {0}" -f $PipeName)
 Add-Line $summary ("UsageStatePath: {0}" -f $usageStatePath)
@@ -335,7 +335,7 @@ if (-not (Test-Path -LiteralPath $InstallDir)) {
     Add-Line $summary "WARN: InstallDir not found."
 }
 if (-not (Test-Path -LiteralPath $ProgramDataDir)) {
-    Add-Line $summary "WARN: ProgramDataDir not found."
+    Add-Line $summary "WARN: DataDir not found."
 }
 if (-not (Test-Path -LiteralPath $policyPath)) {
     Add-Line $summary "WARN: allow.json not found."
@@ -378,11 +378,11 @@ $importantPaths = @(
     $ProgramDataDir,
     $logsDir,
     $policyPath,
-    (Join-Path $InstallDir "DiskControl.exe"),
-    (Join-Path $InstallDir "DiskControl.Admin.exe"),
+    (Join-Path $InstallDir "DistControl.exe"),
+    (Join-Path $InstallDir "DistControl.Admin.exe"),
     (Join-Path $InstallDir "dkcl64.exe"),
     (Join-Path $InstallDir "dkcl.ini"),
-    (Join-Path $InstallDir "Uninstall-DiskControl.exe"),
+    (Join-Path $InstallDir "Uninstall-DistControl.exe"),
     (Join-Path $InstallDir "installer"),
     (Join-Path $InstallDir "installer\Uninstall-DiskControl.ps1")
 )
@@ -484,13 +484,13 @@ Invoke-Capture "process\dkcl64-processes.txt" {
 }
 Invoke-Capture "process\diskcontrol-processes.txt" {
     Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -in @("DiskControl.exe", "DiskControl.Admin.exe", "dkcl64.exe") } |
+        Where-Object { $_.Name -in @("DistControl.exe", "DistControl.Admin.exe", "dkcl64.exe") } |
         Select-Object Name, ProcessId, ParentProcessId, ExecutablePath, CommandLine, SessionId |
         Format-Table -AutoSize -Wrap
 }
 
 Invoke-Capture "registry\uninstall-entry.txt" {
-    $key = "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\DiskControl"
+    $key = "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\DistControl"
     if (Test-Path -LiteralPath $key) {
         Get-ItemProperty -LiteralPath $key | Format-List *
     }
@@ -501,7 +501,7 @@ Invoke-Capture "registry\uninstall-entry.txt" {
 
 Invoke-Capture "shortcuts\shortcuts.txt" {
     $paths = @(
-        (Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\DiskControl"),
+        (Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\DistControl"),
         (Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\Startup"),
         ([Environment]::GetFolderPath("CommonDesktopDirectory"))
     )
@@ -523,7 +523,7 @@ Invoke-Capture "events\system-service-control-manager.txt" {
         ProviderName = "Service Control Manager"
         StartTime = (Get-Date).AddDays(-2)
     } -ErrorAction SilentlyContinue |
-        Where-Object { $_.Message -match "dkclient|DiskControl|dkcl64" } |
+        Where-Object { $_.Message -match "dkclient|DistControl|DiskControl|dkcl64" } |
         Select-Object TimeCreated, Id, LevelDisplayName, Message |
         Format-List
 }
@@ -532,7 +532,7 @@ Invoke-Capture "events\application-diskcontrol.txt" {
         LogName = "Application"
         StartTime = (Get-Date).AddDays(-2)
     } -ErrorAction SilentlyContinue |
-        Where-Object { $_.Message -match "DiskControl|dkclient|dkcl64|DistKontrol" -or $_.ProviderName -match "DiskControl|Application Error|Windows Error Reporting" } |
+        Where-Object { $_.Message -match "DistControl|DiskControl|dkclient|dkcl64|DistKontrol" -or $_.ProviderName -match "DistControl|DiskControl|Application Error|Windows Error Reporting" } |
         Select-Object TimeCreated, ProviderName, Id, LevelDisplayName, Message |
         Format-List
 }
@@ -613,7 +613,7 @@ try {
         throw "Diagnostic folder is empty."
     }
     Compress-Archive -LiteralPath $itemsToZip.FullName -DestinationPath $zipPath -Force
-    Write-Host "DiskControl diagnostics package created:"
+    Write-Host "DistControl diagnostics package created:"
     Write-Host $zipPath
 }
 catch {

@@ -1,5 +1,7 @@
 #include "MainWindow.h"
+#include "AuditLogger.h"
 #include "PolicyManager.h"
+#include "UsageStateSync.h"
 
 #include <shellapi.h>
 #include <windows.h>
@@ -13,13 +15,17 @@
 
 namespace {
 #ifdef DISKCONTROL_ADMIN
-constexpr const wchar_t* kAppTitle = L"DiskControl Admin";
+constexpr const wchar_t* kAppTitle = L"DistControl Admin";
 #else
-constexpr const wchar_t* kAppTitle = L"DiskControl";
+constexpr const wchar_t* kAppTitle = L"DistControl";
 #endif
 
 struct CommandLineOptions {
     std::wstring policyPath;
+    bool syncUsage = false;
+    std::wstring sharedUsagePath;
+    std::wstring localUsagePath;
+    std::wstring pipeName;
 };
 
 std::wstring widenAscii(const char* text) {
@@ -86,20 +92,20 @@ std::wstring moduleDirectory() {
     return std::filesystem::current_path().wstring();
 }
 
-std::wstring programDataLogDirectory() {
-    const DWORD needed = GetEnvironmentVariableW(L"ProgramData", nullptr, 0);
+std::wstring localAppDataLogDirectory() {
+    const DWORD needed = GetEnvironmentVariableW(L"LOCALAPPDATA", nullptr, 0);
     if (needed == 0) {
         return {};
     }
 
-    std::wstring programData(needed, L'\0');
-    const DWORD written = GetEnvironmentVariableW(L"ProgramData", programData.data(), needed);
+    std::wstring localAppData(needed, L'\0');
+    const DWORD written = GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData.data(), needed);
     if (written == 0 || written >= needed) {
         return {};
     }
 
-    programData.resize(written);
-    return (std::filesystem::path(programData) / L"DiskControl" / L"logs").wstring();
+    localAppData.resize(written);
+    return (std::filesystem::path(localAppData) / L"DistControl" / L"logs").wstring();
 }
 
 bool tryAppendStartupLog(const std::wstring& directory, const std::wstring& message, std::wstring* writtenPath) {
@@ -134,7 +140,7 @@ bool tryAppendStartupLog(const std::wstring& directory, const std::wstring& mess
 
 std::wstring appendStartupLog(const std::wstring& message) {
     std::wstring path;
-    if (tryAppendStartupLog(programDataLogDirectory(), message, &path)) {
+    if (tryAppendStartupLog(localAppDataLogDirectory(), message, &path)) {
         return path;
     }
     tryAppendStartupLog((std::filesystem::path(moduleDirectory()) / L"logs").wstring(), message, &path);
@@ -176,7 +182,19 @@ CommandLineOptions parseCommandLine() {
     for (int i = 1; i < argc; ++i) {
         const std::wstring arg = argv[i];
         const std::wstring prefix = L"--policy=";
-        if (arg == L"--policy" || arg == L"/policy") {
+        if (arg == L"--sync-usage") {
+            options.syncUsage = true;
+        }
+        else if (arg == L"--shared-usage" && i + 1 < argc) {
+            options.sharedUsagePath = argv[++i];
+        }
+        else if (arg == L"--local-usage" && i + 1 < argc) {
+            options.localUsagePath = argv[++i];
+        }
+        else if (arg == L"--pipe" && i + 1 < argc) {
+            options.pipeName = argv[++i];
+        }
+        else if (arg == L"--policy" || arg == L"/policy") {
             if (i + 1 < argc) {
                 options.policyPath = argv[++i];
             }
@@ -192,18 +210,35 @@ CommandLineOptions parseCommandLine() {
 
 int runApplication(HINSTANCE instance, int showCommand) {
     const CommandLineOptions options = parseCommandLine();
+    if (options.syncUsage) {
+        return UsageStateSync::runBackgroundSync(
+            options.sharedUsagePath, options.localUsagePath, options.pipeName);
+    }
+    const std::wstring startupOperation = AuditLogger::createOperationId(L"APP");
+    AuditLogger::trace(startupOperation,
+        std::wstring(L"Запуск приложения «") + kAppTitle + L"». Командная строка: " + GetCommandLineW());
     if (!options.policyPath.empty()) {
         PolicyManager::setConfigPathOverride(options.policyPath);
+        AuditLogger::trace(startupOperation,
+            L"Используется явно указанный файл конфигурации: " + options.policyPath + L".");
+    }
+    else {
+        AuditLogger::trace(startupOperation,
+            L"Используется основной файл конфигурации из %LOCALAPPDATA%\\DistControl\\allow.json.");
     }
 
     appendStartupLog(std::wstring(kAppTitle) + L" start. CommandLine=" + GetCommandLineW());
 
     MainWindow window;
     if (!window.create(instance, showCommand)) {
+        AuditLogger::trace(startupOperation,
+            L"Главное окно создать не удалось. GetLastError=" + std::to_wstring(GetLastError()) + L".");
         const std::wstring logPath = appendStartupLog(std::wstring(kAppTitle) + L" failed to create main window. GetLastError=" + std::to_wstring(GetLastError()));
-        showFatalError(L"Не удалось открыть окно DiskControl. Перезапустите приложение, а если ошибка повторится, отправьте администратору файл журнала.", logPath);
+        showFatalError(L"Не удалось открыть окно DistControl. Перезапустите приложение, а если ошибка повторится, отправьте администратору файл журнала.", logPath);
         return 1;
     }
+    AuditLogger::trace(startupOperation,
+        L"Главное окно создано. Запущена первичная загрузка списка токенов.");
 
     MSG message{};
     while (GetMessageW(&message, nullptr, 0, 0) > 0) {
@@ -211,7 +246,10 @@ int runApplication(HINSTANCE instance, int showCommand) {
         DispatchMessageW(&message);
     }
 
-    return static_cast<int>(message.wParam);
+    const int exitCode = static_cast<int>(message.wParam);
+    AuditLogger::trace(startupOperation,
+        L"Приложение завершает работу. Код выхода: " + std::to_wstring(exitCode) + L".");
+    return exitCode;
 }
 }
 
@@ -228,13 +266,13 @@ int APIENTRY wWinMain(
     catch (const std::exception& error) {
         const std::wstring message = std::wstring(kAppTitle) + L" fatal error: " + widenAscii(error.what());
         const std::wstring logPath = appendStartupLog(message);
-        showFatalError(L"DiskControl не смог запуститься. Попробуйте запустить приложение ещё раз или переустановить DiskControl.\n\nТехническая причина: " + widenAscii(error.what()), logPath);
+        showFatalError(L"DistControl не смог запуститься. Попробуйте запустить приложение ещё раз или переустановить DistControl.\n\nТехническая причина: " + widenAscii(error.what()), logPath);
         return 1;
     }
     catch (...) {
         const std::wstring message = std::wstring(kAppTitle) + L" fatal error: unknown exception";
         const std::wstring logPath = appendStartupLog(message);
-        showFatalError(L"DiskControl не смог запуститься из-за неизвестной ошибки. Отправьте администратору файл журнала.", logPath);
+        showFatalError(L"DistControl не смог запуститься из-за неизвестной ошибки. Отправьте администратору файл журнала.", logPath);
         return 1;
     }
 }

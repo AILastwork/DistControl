@@ -8,6 +8,8 @@ struct ParsedDevice {
     std::wstring nickname;
     std::wstring product;
     std::wstring inUseBy;
+    // Trimmed LIST line, including usage markers; empty when not read from LIST.
+    std::wstring listLine;
 };
 
 struct DeviceUsageInfo {

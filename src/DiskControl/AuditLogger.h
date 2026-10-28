@@ -21,6 +21,8 @@ public:
         const DeviceViewModel& device,
         const std::wstring& result,
         const std::wstring& details);
+    static std::wstring createOperationId(const std::wstring& prefix);
+    static void trace(const std::wstring& operationId, const std::wstring& message);
 
     static std::string csvEscapeForTest(const std::wstring& value);
 
@@ -28,4 +30,8 @@ private:
     static std::wstring defaultLogDirectory();
     static std::wstring fallbackLogDirectory();
     static bool tryWrite(const std::wstring& directory, const AuditEvent& event);
+    static bool tryWriteTrace(
+        const std::wstring& directory,
+        const std::wstring& operationId,
+        const std::wstring& message);
 };

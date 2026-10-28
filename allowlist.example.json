@@ -1,0 +1,49 @@
+{
+  "pipeName": "dkclient",
+  "refreshSeconds": 5,
+  "usageStatePath": "C:\\Users\\user\\AppData\\Local\\DistControl\\state\\usage.json",
+  "vpnProfiles": [
+    {
+      "id": "direct-office",
+      "name": "Без VPN",
+      "mode": "direct",
+      "enabled": true
+    }
+  ],
+  "userAssignments": [
+    {
+      "users": [
+        "DOMAIN\\ivanov"
+      ],
+      "groups": [],
+      "allowedDevices": [
+        {
+          "endpoint": "OFFICE-HUB-Gr-1.3",
+          "nickname": "BANK-KEY-01",
+          "product": "Rutoken lite",
+          "vpnProfile": "direct-office"
+        },
+        {
+          "endpoint": "OFFICE-HUB-Gr-2.4",
+          "nickname": "REPORT-KEY-01",
+          "product": "Rutoken lite",
+          "vpnProfile": "direct-office"
+        }
+      ]
+    },
+    {
+      "users": [],
+      "groups": [
+        "DOMAIN\\Accounting"
+      ],
+      "allowedDevices": [
+        {
+          "endpoint": "OFFICE-HUB-Gr-3.1",
+          "nickname": "ACCOUNTING-KEY-01",
+          "product": "",
+          "vpnProfile": "direct-office"
+        }
+      ]
+    }
+  ]
+}

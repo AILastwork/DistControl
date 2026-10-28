@@ -4,6 +4,8 @@
 #include "IpcClient.h"
 #include "PolicyManager.h"
 #include "UsageStateStore.h"
+#include "UsageStateSync.h"
+#include "VpnManager.h"
 
 #include <windows.h>
 
@@ -25,6 +27,17 @@ void require(bool condition, const char* message) {
     }
 }
 
+class StubbedNetworkOperationsGuard {
+public:
+    StubbedNetworkOperationsGuard() {
+        VpnManager::setNetworkOperationsStubbedForTests(true);
+    }
+
+    ~StubbedNetworkOperationsGuard() {
+        VpnManager::setNetworkOperationsStubbedForTests(false);
+    }
+};
+
 bool removeFirstMatch(const char* pattern) {
     WIN32_FIND_DATAA data{};
     HANDLE find = FindFirstFileA(pattern, &data);
@@ -42,7 +55,7 @@ bool removeFirstMatch(const char* pattern) {
 }
 
 std::wstring testPipeName(const wchar_t* suffix) {
-    return L"DiskControl.Tests." + std::to_wstring(GetCurrentProcessId()) + L"." + suffix;
+    return L"DistControl.Tests." + std::to_wstring(GetCurrentProcessId()) + L"." + suffix;
 }
 
 std::string narrowAscii(const std::wstring& value) {
@@ -133,6 +146,167 @@ void testIpcReadTimeout() {
     require(timedOut, "Named pipe read timeout should cancel the pending operation.");
 }
 
+void testIpcRetriesBusyPipe() {
+    const std::wstring pipeName = testPipeName(L"busy-retry");
+    HANDLE pipe = createTestPipe(pipeName);
+    require(pipe != INVALID_HANDLE_VALUE, "Busy retry test named pipe could not be created.");
+
+    HANDLE blocker = CreateFileW(
+        (L"\\\\.\\pipe\\" + pipeName).c_str(),
+        GENERIC_READ | GENERIC_WRITE,
+        0,
+        nullptr,
+        OPEN_EXISTING,
+        0,
+        nullptr);
+    require(blocker != INVALID_HANDLE_VALUE, "Busy retry test could not occupy the pipe instance.");
+
+    std::atomic_bool serverOk = false;
+    std::thread server([pipe, &serverOk]() {
+        connectTestPipe(pipe);
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+        DisconnectNamedPipe(pipe);
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+
+        char request[64]{};
+        DWORD read = 0;
+        if (connectTestPipe(pipe) && ReadFile(pipe, request, sizeof(request), &read, nullptr)) {
+            const std::string response = "OK";
+            DWORD written = 0;
+            serverOk = std::string(request, request + read) == "LIST" &&
+                WriteFile(pipe, response.data(), static_cast<DWORD>(response.size()), &written, nullptr) &&
+                written == response.size();
+            FlushFileBuffers(pipe);
+        }
+        DisconnectNamedPipe(pipe);
+        CloseHandle(pipe);
+    });
+
+    std::wstring response;
+    try {
+        response = IpcClient(pipeName).issueCommand(L"LIST", 2000);
+    }
+    catch (...) {
+        CloseHandle(blocker);
+        server.join();
+        throw;
+    }
+    CloseHandle(blocker);
+    server.join();
+    require(serverOk && response == L"OK", "IPC client should retry while every pipe instance is busy.");
+}
+
+void testDeviceInfoErrorKeepsAllowedListEntry() {
+    const char* policyFile = "policy-info-error-list-test.json";
+    const std::wstring pipeName = testPipeName(L"info-error-list");
+    std::remove(policyFile);
+    {
+        std::ofstream stream(policyFile, std::ios::binary);
+        stream << "{\n"
+            << "  \"pipeName\": \"" << narrowAscii(pipeName) << "\",\n"
+            << "  \"usageStatePath\": \"usage-info-error-list-test.json\",\n"
+            << "  \"userAssignments\": [{\"users\": [\""
+            << narrowAscii(PolicyManager::currentUserSid())
+            << "\"], \"groups\": [], \"allowedDevices\": [{\"endpoint\": \"OFFICE-HUB-Gr-1.3\", "
+            << "\"nickname\": \"Allowed Key\", \"product\": \"Rutoken\"}]}]\n"
+            << "}\n";
+    }
+
+    HANDLE pipe = createTestPipe(pipeName);
+    require(pipe != INVALID_HANDLE_VALUE, "DEVICE INFO error test pipe could not be created.");
+    std::atomic_bool serverOk = true;
+    std::thread server([pipe, &serverOk]() {
+        for (int requestIndex = 0; requestIndex < 2; ++requestIndex) {
+            char request[256]{};
+            DWORD read = 0;
+            if (!connectTestPipe(pipe) || !ReadFile(pipe, request, sizeof(request), &read, nullptr)) {
+                serverOk = false;
+                break;
+            }
+            const std::string command(request, request + read);
+            const std::string response = command == "LIST"
+                ? "--> Allowed Key (OFFICE-HUB-Gr-1.3)\n"
+                : "ERROR: Invalid address";
+            if (command != "LIST" && command != "DEVICE INFO,OFFICE-HUB-Gr-1.3") {
+                serverOk = false;
+            }
+            DWORD written = 0;
+            if (!WriteFile(pipe, response.data(), static_cast<DWORD>(response.size()), &written, nullptr) ||
+                written != response.size()) {
+                serverOk = false;
+            }
+            FlushFileBuffers(pipe);
+            DisconnectNamedPipe(pipe);
+        }
+        CloseHandle(pipe);
+    });
+
+    try {
+        PolicyManager::setConfigPathOverride(L"policy-info-error-list-test.json");
+        std::vector<std::pair<size_t, size_t>> progressUpdates;
+        const std::vector<DeviceViewModel> devices = DeviceAccessService().listVisibleDevices(
+            [&progressUpdates](size_t processed, size_t total) {
+                progressUpdates.emplace_back(processed, total);
+            });
+        require(devices.size() == 1 && devices[0].endpoint == L"OFFICE-HUB-Gr-1.3",
+            "A transient DEVICE INFO error must not hide an allowed LIST entry.");
+        require(progressUpdates.size() == 2 && progressUpdates.front() == std::pair<size_t, size_t>{0, 1} &&
+                progressUpdates.back() == std::pair<size_t, size_t>{1, 1},
+            "Device list progress should report the catalog size and every processed device.");
+    }
+    catch (...) {
+        server.join();
+        PolicyManager::setConfigPathOverride(L"");
+        std::remove(policyFile);
+        throw;
+    }
+    server.join();
+    PolicyManager::setConfigPathOverride(L"");
+    require(serverOk, "DEVICE INFO error test pipe server failed.");
+    std::remove(policyFile);
+}
+
+void testEmptyDeviceCatalogIsTransientError() {
+    const char* policyFile = "policy-empty-list-test.json";
+    const std::wstring pipeName = testPipeName(L"empty-list");
+    std::remove(policyFile);
+    {
+        std::ofstream stream(policyFile, std::ios::binary);
+        stream << "{\n"
+            << "  \"pipeName\": \"" << narrowAscii(pipeName) << "\",\n"
+            << "  \"userAssignments\": []\n"
+            << "}\n";
+    }
+
+    HANDLE pipe = createTestPipe(pipeName);
+    require(pipe != INVALID_HANDLE_VALUE, "Empty LIST test pipe could not be created.");
+    std::thread server([pipe]() {
+        char request[64]{};
+        DWORD read = 0;
+        if (connectTestPipe(pipe) && ReadFile(pipe, request, sizeof(request), &read, nullptr)) {
+            const std::string response = "DistKontrolUSB Client IPC, below are the available devices:\n";
+            DWORD written = 0;
+            WriteFile(pipe, response.data(), static_cast<DWORD>(response.size()), &written, nullptr);
+            FlushFileBuffers(pipe);
+        }
+        DisconnectNamedPipe(pipe);
+        CloseHandle(pipe);
+    });
+
+    bool rejected = false;
+    try {
+        PolicyManager::setConfigPathOverride(L"policy-empty-list-test.json");
+        DeviceAccessService().listVisibleDevices();
+    }
+    catch (const std::exception& error) {
+        rejected = std::string(error.what()).find("temporarily empty") != std::string::npos;
+    }
+    server.join();
+    PolicyManager::setConfigPathOverride(L"");
+    std::remove(policyFile);
+    require(rejected, "An empty DistKontrol catalog must be reported as a transient error.");
+}
+
 void testUseDeviceAllowsSlowUseResponse() {
     const char* policyFile = "policy-slow-use-test.json";
     const char* usageFile = "usage-slow-use-test.json";
@@ -147,12 +321,14 @@ void testUseDeviceAllowsSlowUseResponse() {
         stream << "{\n"
             << "  \"pipeName\": \"" << narrowAscii(pipeName) << "\",\n"
             << "  \"usageStatePath\": \"" << usageFile << "\",\n"
+            << "  \"vpnProfiles\": [{\"id\": \"test-direct\", \"mode\": \"direct\", \"enabled\": true}],\n"
             << "  \"userAssignments\": [\n"
             << "    {\n"
             << "      \"users\": [\"" << narrowAscii(PolicyManager::currentUserSid()) << "\"],\n"
             << "      \"groups\": [],\n"
             << "      \"allowedDevices\": [\n"
-            << "        { \"endpoint\": \"OFFICE-HUB-Gr-1.3\", \"nickname\": \"Slow Key\", \"product\": \"Rutoken\" }\n"
+            << "        { \"endpoint\": \"OFFICE-HUB-Gr-1.3\", \"nickname\": \"Slow Key\", "
+            << "\"product\": \"Rutoken\", \"vpnProfile\": \"test-direct\" }\n"
             << "      ]\n"
             << "    }\n"
             << "  ]\n"
@@ -165,7 +341,8 @@ void testUseDeviceAllowsSlowUseResponse() {
     std::vector<std::string> commands;
     std::atomic_bool serverOk = true;
     std::thread server([pipe, &commands, &serverOk]() {
-        for (int requestIndex = 0; requestIndex < 2; ++requestIndex) {
+        bool useReceived = false;
+        for (int requestIndex = 0; requestIndex < 7; ++requestIndex) {
             char request[256]{};
             DWORD read = 0;
             if (!connectTestPipe(pipe) || !ReadFile(pipe, request, sizeof(request), &read, nullptr)) {
@@ -177,10 +354,19 @@ void testUseDeviceAllowsSlowUseResponse() {
             commands.push_back(command);
             std::string response;
             if (command == "DEVICE INFO,OFFICE-HUB-Gr-1.3") {
-                response = "NICKNAME: Slow Key\r\nPRODUCT: Rutoken\r\nIN USE BY: NO ONE\r\n";
+                response = useReceived
+                    ? "NICKNAME: Slow Key\r\nPRODUCT: Rutoken\r\nIN USE BY: YOU\r\n"
+                    : "NICKNAME: Slow Key\r\nPRODUCT: Rutoken\r\nIN USE BY: NO ONE\r\n";
+            }
+            else if (command == "LIST") {
+                response = "--> Slow Key (OFFICE-HUB-Gr-1.3)\n";
+            }
+            else if (command == "SERVER INFO,OFFICE-HUB-Gr-1") {
+                response = "STATE: Logged in\r\n";
             }
             else if (command == "USE,OFFICE-HUB-Gr-1.3") {
                 std::this_thread::sleep_for(std::chrono::milliseconds(150));
+                useReceived = true;
                 response = "OK";
             }
             else {
@@ -201,6 +387,7 @@ void testUseDeviceAllowsSlowUseResponse() {
 
     try {
         PolicyManager::setConfigPathOverride(L"policy-slow-use-test.json");
+        StubbedNetworkOperationsGuard networkGuard;
         DeviceAccessService service;
         DeviceViewModel device;
         device.endpoint = L"OFFICE-HUB-Gr-1.3";
@@ -209,7 +396,8 @@ void testUseDeviceAllowsSlowUseResponse() {
         device.inUseBy = L"NO ONE";
         device.allowed = true;
 
-        require(service.useDevice(device) == L"OK", "Slow USE response should be accepted.");
+        require(service.useDevice(device).find(L"Токен подключён") != std::wstring::npos,
+            "Slow USE response should be accepted.");
     }
     catch (...) {
         server.join();
@@ -224,9 +412,17 @@ void testUseDeviceAllowsSlowUseResponse() {
     server.join();
     PolicyManager::setConfigPathOverride(L"");
     require(serverOk, "Slow USE test pipe server failed.");
-    require(commands.size() == 2 && commands[0] == "DEVICE INFO,OFFICE-HUB-Gr-1.3" &&
-        commands[1] == "USE,OFFICE-HUB-Gr-1.3",
-        "Slow USE test should issue DEVICE INFO before USE.");
+    const std::vector<std::string> expectedCommands{
+        "DEVICE INFO,OFFICE-HUB-Gr-1.3",
+        "LIST",
+        "LIST",
+        "SERVER INFO,OFFICE-HUB-Gr-1",
+        "DEVICE INFO,OFFICE-HUB-Gr-1.3",
+        "USE,OFFICE-HUB-Gr-1.3",
+        "DEVICE INFO,OFFICE-HUB-Gr-1.3"
+    };
+    require(commands == expectedCommands,
+        "Slow USE test should prepare the network and verify ownership before and after USE.");
 
     std::remove(policyFile);
     std::remove(usageFile);
@@ -248,12 +444,14 @@ void testUseDeviceFailedResponseIsError() {
         stream << "{\n"
             << "  \"pipeName\": \"" << narrowAscii(pipeName) << "\",\n"
             << "  \"usageStatePath\": \"" << usageFile << "\",\n"
+            << "  \"vpnProfiles\": [{\"id\": \"test-direct\", \"mode\": \"direct\", \"enabled\": true}],\n"
             << "  \"userAssignments\": [\n"
             << "    {\n"
             << "      \"users\": [\"" << narrowAscii(PolicyManager::currentUserSid()) << "\"],\n"
             << "      \"groups\": [],\n"
             << "      \"allowedDevices\": [\n"
-            << "        { \"endpoint\": \"OFFICE-HUB-Gr-1.3\", \"nickname\": \"Failed Key\", \"product\": \"Rutoken\" }\n"
+            << "        { \"endpoint\": \"OFFICE-HUB-Gr-1.3\", \"nickname\": \"Failed Key\", "
+            << "\"product\": \"Rutoken\", \"vpnProfile\": \"test-direct\" }\n"
             << "      ]\n"
             << "    }\n"
             << "  ]\n"
@@ -265,7 +463,9 @@ void testUseDeviceFailedResponseIsError() {
 
     std::atomic_bool serverOk = true;
     std::thread server([pipe, &serverOk]() {
-        for (int requestIndex = 0; requestIndex < 2; ++requestIndex) {
+        // One preparation cycle, four USE attempts with recovery between them,
+        // and one final DEVICE INFO confirmation.
+        for (int requestIndex = 0; requestIndex < 19; ++requestIndex) {
             char request[256]{};
             DWORD read = 0;
             if (!connectTestPipe(pipe) || !ReadFile(pipe, request, sizeof(request), &read, nullptr)) {
@@ -277,6 +477,12 @@ void testUseDeviceFailedResponseIsError() {
             std::string response;
             if (command == "DEVICE INFO,OFFICE-HUB-Gr-1.3") {
                 response = "NICKNAME: Failed Key\r\nPRODUCT: Rutoken\r\nIN USE BY: NO ONE\r\n";
+            }
+            else if (command == "LIST") {
+                response = "--> Failed Key (OFFICE-HUB-Gr-1.3)\n";
+            }
+            else if (command == "SERVER INFO,OFFICE-HUB-Gr-1") {
+                response = "STATE: Logged in\r\n";
             }
             else if (command == "USE,OFFICE-HUB-Gr-1.3") {
                 response = "FAILED";
@@ -300,6 +506,7 @@ void testUseDeviceFailedResponseIsError() {
     bool failed = false;
     try {
         PolicyManager::setConfigPathOverride(L"policy-failed-use-test.json");
+        StubbedNetworkOperationsGuard networkGuard;
         DeviceAccessService service;
         DeviceViewModel device;
         device.endpoint = L"OFFICE-HUB-Gr-1.3";
@@ -325,6 +532,125 @@ void testUseDeviceFailedResponseIsError() {
     std::remove(usageFile);
     std::remove("usage-failed-use-test.json.lock");
     removeFirstMatch("usage-failed-use-test.json.tmp-*");
+}
+
+void testUseDeviceRecoversWhenTokenConnectsAfterFailure() {
+    const char* policyFile = "policy-late-use-test.json";
+    const char* usageFile = "usage-late-use-test.json";
+    std::remove(policyFile);
+    std::remove(usageFile);
+
+    const std::wstring pipeName = testPipeName(L"late-use");
+    {
+        std::ofstream stream(policyFile, std::ios::binary);
+        stream << "{\n"
+            << "  \"pipeName\": \"" << narrowAscii(pipeName) << "\",\n"
+            << "  \"usageStatePath\": \"" << usageFile << "\",\n"
+            << "  \"vpnProfiles\": [{\"id\": \"test-direct\", \"mode\": \"direct\", \"enabled\": true}],\n"
+            << "  \"userAssignments\": [\n"
+            << "    {\n"
+            << "      \"users\": [\"" << narrowAscii(PolicyManager::currentUserSid()) << "\"],\n"
+            << "      \"groups\": [],\n"
+            << "      \"allowedDevices\": [\n"
+            << "        { \"endpoint\": \"OFFICE-HUB-Gr-1.4\", \"nickname\": \"Late Key\", "
+            << "\"product\": \"Rutoken\", \"vpnProfile\": \"test-direct\" }\n"
+            << "      ]\n"
+            << "    }\n"
+            << "  ]\n"
+            << "}\n";
+    }
+
+    HANDLE pipe = createTestPipe(pipeName);
+    require(pipe != INVALID_HANDLE_VALUE, "Late USE test named pipe could not be created.");
+
+    // Every USE answers FAILED. After the last attempt the first DEVICE INFO
+    // still shows the token as free and the next one shows it connected.
+    std::atomic_bool serverOk = true;
+    std::thread server([pipe, &serverOk]() {
+        int useCount = 0;
+        int infoAfterLastUse = 0;
+        while (true) {
+            char request[256]{};
+            DWORD read = 0;
+            if (!connectTestPipe(pipe) || !ReadFile(pipe, request, sizeof(request), &read, nullptr)) {
+                serverOk = false;
+                break;
+            }
+            const std::string command(request, request + read);
+            if (command == "QUIT") {
+                DisconnectNamedPipe(pipe);
+                break;
+            }
+            std::string response;
+            if (command == "DEVICE INFO,OFFICE-HUB-Gr-1.4") {
+                const bool connected = useCount >= 4 && ++infoAfterLastUse >= 2;
+                response = connected
+                    ? "NICKNAME: Late Key\r\nPRODUCT: Rutoken\r\nIN USE BY: YOU\r\n"
+                    : "NICKNAME: Late Key\r\nPRODUCT: Rutoken\r\nIN USE BY: NO ONE\r\n";
+            }
+            else if (command == "LIST") {
+                response = "Late Key (OFFICE-HUB-Gr-1.4)\n";
+            }
+            else if (command == "SERVER INFO,OFFICE-HUB-Gr-1") {
+                response = "STATE: Logged in\r\n";
+            }
+            else if (command == "USE,OFFICE-HUB-Gr-1.4") {
+                ++useCount;
+                response = "FAILED";
+            }
+            else {
+                serverOk = false;
+                response = "ERROR";
+            }
+            DWORD written = 0;
+            if (!WriteFile(pipe, response.data(), static_cast<DWORD>(response.size()), &written, nullptr) ||
+                written != response.size()) {
+                serverOk = false;
+            }
+            FlushFileBuffers(pipe);
+            DisconnectNamedPipe(pipe);
+        }
+        CloseHandle(pipe);
+    });
+
+    std::wstring message;
+    std::string failure;
+    try {
+        PolicyManager::setConfigPathOverride(L"policy-late-use-test.json");
+        StubbedNetworkOperationsGuard networkGuard;
+        DeviceAccessService service;
+        DeviceViewModel device;
+        device.endpoint = L"OFFICE-HUB-Gr-1.4";
+        device.nickname = L"Late Key";
+        device.product = L"Rutoken";
+        device.inUseBy = L"NO ONE";
+        device.allowed = true;
+        message = service.useDevice(device);
+    }
+    catch (const std::exception& error) {
+        failure = error.what();
+    }
+    try {
+        IpcClient(pipeName).issueCommand(L"QUIT", 1000);
+    }
+    catch (const std::exception&) {
+    }
+    server.join();
+
+    size_t pending = 0;
+    try {
+        pending = UsageStateSync(L"usage-late-use-test.json").pendingCount();
+    }
+    catch (const std::exception&) {
+    }
+    PolicyManager::setConfigPathOverride(L"");
+    require(serverOk, "Late USE test pipe server failed.");
+    require(failure.empty(), ("A token connected after a FAILED answer must not be reported as an error: " + failure).c_str());
+    require(message.rfind(L"Токен подключён", 0) == 0, "A late connection must be reported as success.");
+    require(pending == 1, "A late connection must start the usage timer like a normal one.");
+
+    std::remove(policyFile);
+    std::remove(usageFile);
 }
 
 void testRevokedActiveTokenCanBeStopped() {
@@ -354,7 +680,7 @@ void testRevokedActiveTokenCanBeStopped() {
     std::vector<std::string> commands;
     std::atomic_bool serverOk = true;
     std::thread server([pipe, &commands, &serverOk]() {
-        for (int requestIndex = 0; requestIndex < 4; ++requestIndex) {
+        for (int requestIndex = 0; requestIndex < 5; ++requestIndex) {
             char request[256]{};
             DWORD read = 0;
             if (!connectTestPipe(pipe) || !ReadFile(pipe, request, sizeof(request), &read, nullptr)) {
@@ -369,7 +695,9 @@ void testRevokedActiveTokenCanBeStopped() {
                 response = "--> Revoked Key (OFFICE-HUB-Gr-1.3) (In-use by:YOU)\n";
             }
             else if (command == "DEVICE INFO,OFFICE-HUB-Gr-1.3") {
-                response = "NICKNAME: Revoked Key\r\nPRODUCT: Rutoken\r\nIN USE BY: YOU\r\n";
+                response = requestIndex < 4
+                    ? "NICKNAME: Revoked Key\r\nPRODUCT: Rutoken\r\nIN USE BY: YOU\r\n"
+                    : "NICKNAME: Revoked Key\r\nPRODUCT: Rutoken\r\nIN USE BY: NO ONE\r\n";
             }
             else if (command == "STOP USING,OFFICE-HUB-Gr-1.3") {
                 response = "OK";
@@ -413,8 +741,9 @@ void testRevokedActiveTokenCanBeStopped() {
     server.join();
     PolicyManager::setConfigPathOverride(L"");
     require(serverOk, "Revoked token test pipe server failed.");
-    require(commands.size() == 4 && commands.back() == "STOP USING,OFFICE-HUB-Gr-1.3",
-        "Revoked token cleanup must send STOP USING after ownership verification.");
+    require(commands.size() == 5 && commands[3] == "STOP USING,OFFICE-HUB-Gr-1.3" &&
+        commands.back() == "DEVICE INFO,OFFICE-HUB-Gr-1.3",
+        "Revoked token cleanup must verify release after STOP USING.");
     std::remove(policyFile);
     std::remove(usageFile);
     std::remove("usage-revoked-active-test.json.lock");
@@ -598,10 +927,344 @@ void testUsageStateStore() {
     removeFirstMatch("usage-state-test.json.tmp-*");
 }
 
+class UsageSyncFixture {
+public:
+    explicit UsageSyncFixture(const wchar_t* name)
+        : sharedPath(L"usage-sync-case-" + std::to_wstring(GetCurrentProcessId()) + L"-" + name + L"-shared.json"),
+          localPath(L"usage-sync-case-" + std::to_wstring(GetCurrentProcessId()) + L"-" + name + L"-local.json"),
+          sync(sharedPath, localPath), shared(sharedPath) {
+        cleanup();
+    }
+    ~UsageSyncFixture() { cleanup(); }
+    std::wstring sharedPath;
+    std::wstring localPath;
+    UsageStateSync sync;
+    UsageStateStore shared;
+    ParsedDevice device{L"SYNC-HUB-Gr-1.1", L"Тестовый токен", L"Rutoken", L"YOU"};
+    std::wstring user = L"DOMAIN\\test";
+private:
+    void cleanup() {
+        for (const std::wstring& path : {sharedPath, localPath}) {
+            DeleteFileW(path.c_str());
+            DeleteFileW((path + L".lock").c_str());
+            DeleteFileW((path + L".sync.lock").c_str());
+            removeFirstMatch((narrowAscii(path) + ".tmp-*").c_str());
+            removeFirstMatch((narrowAscii(path) + ".corrupt-*").c_str());
+        }
+    }
+};
+
+void testUsageSyncOfflinePersistenceAndMetadata() {
+    UsageSyncFixture f(L"metadata");
+    const UsageStateRecord original = f.sync.markUsed(f.device, f.user, L"203.0.113.10",
+        L"vpn-one", L"VPN - Компания", L"CONNECT-TEST");
+    require(f.shared.snapshot().empty(), "Connecting must not synchronously write the shared file.");
+    require(f.sync.pendingCount() == 1, "Connecting must durably queue one change.");
+    UsageStateSync reopened(f.sharedPath, f.localPath);
+    require(reopened.snapshot().size() == 1 && reopened.pendingCount() == 1,
+        "The queue and local timer must survive restarting the application.");
+    require(reopened.synchronize([](const UsageStateRecord&) { return true; }), "Synchronization should succeed.");
+    const UsageStateRecord sent = f.shared.snapshot().at(0);
+    require(sent.updatedAt == original.updatedAt && sent.eventFileTime == original.eventFileTime &&
+        sent.publicIp == original.publicIp && sent.vpnProfileId == original.vpnProfileId &&
+        sent.vpnProfileName == original.vpnProfileName && sent.connectionId == original.connectionId &&
+        sent.operationId == original.operationId, "Synchronization must preserve the original time, IP and session.");
+    require(reopened.pendingCount() == 0, "A synchronized change must leave the queue.");
+    const UsageStateRecord extended = reopened.markUsed(f.device, f.user, {}, {}, {}, L"EXTEND", true);
+    require(extended.connectionId == original.connectionId && extended.publicIp == original.publicIp &&
+        extended.vpnProfileName == original.vpnProfileName, "Extending the timer must preserve its IP and session.");
+    reopened.markReleased(f.device, f.user, L"DISCONNECT-TEST");
+    require(reopened.snapshot().empty(), "A local release must hide the old cached timer immediately.");
+    require(reopened.synchronize([](const UsageStateRecord&) { return false; }), "Release should synchronize.");
+    require(f.shared.snapshot().empty() && reopened.snapshot().empty() && reopened.pendingCount() == 0,
+        "A released timer must disappear from both the shared file and local cache.");
+}
+
+void testUsageSyncSharedFileUnavailable() {
+    UsageSyncFixture f(L"offline");
+    f.sync.markUsed(f.device, f.user);
+    require(f.sync.synchronize([](const UsageStateRecord&) { return true; }), "Initial synchronization should succeed.");
+    HANDLE unavailable = CreateFileW(f.sharedPath.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+    require(unavailable != INVALID_HANDLE_VALUE, "Test must exclusively hold the shared file.");
+    bool fast = false;
+    bool retryable = false;
+    try {
+        const ULONGLONG started = GetTickCount64();
+        f.sync.markUsed(f.device, f.user, L"203.0.113.20");
+        fast = f.sync.snapshot().at(0).publicIp == L"203.0.113.20" && GetTickCount64() - started < 1000;
+        retryable = !f.sync.synchronize([](const UsageStateRecord&) { return true; }) && f.sync.pendingCount() == 1;
+    }
+    catch (...) {
+        CloseHandle(unavailable);
+        throw;
+    }
+    CloseHandle(unavailable);
+    require(fast, "Local writes and reads must remain fast when the shared file is inaccessible.");
+    require(retryable, "An inaccessible shared file must leave the change queued, not erase shared records.");
+    require(f.sync.synchronize([](const UsageStateRecord&) { return true; }) &&
+        f.shared.snapshot().at(0).publicIp == L"203.0.113.20", "Retry must send the queued original IP.");
+}
+
+void testUsageSyncCoalescingAndStaleRelease() {
+    UsageSyncFixture f(L"stale");
+    UsageStateRecord old = f.sync.markUsed(f.device, f.user, L"203.0.113.1");
+    f.sync.markReleased(f.device, f.user);
+    const UsageStateRecord current = f.sync.markUsed(f.device, f.user, L"203.0.113.2");
+    require(f.sync.pendingCount() == 1 && current.connectionId != old.connectionId,
+        "Fast reconnects should keep only the latest state with a new session ID.");
+    require(f.sync.synchronize([](const UsageStateRecord&) { return true; }), "Latest session should synchronize.");
+    old.eventFileTime = current.eventFileTime + 100;
+    f.shared.applyReleasedRecord(old);
+    require(f.shared.snapshot().at(0).connectionId == current.connectionId,
+        "An old session release must not delete a newer session, even with a later timestamp.");
+    f.sync.markReleased(f.device, f.user);
+    UsageStateRecord other = current;
+    other.user = L"DOMAIN\\other";
+    other.computer = L"OTHER-PC";
+    other.connectionId = L"OTHER-SESSION";
+    other.eventFileTime += 1000;
+    f.shared.applyUsedRecord(other);
+    require(f.sync.synchronize([](const UsageStateRecord&) { return false; }) &&
+        f.shared.snapshot().at(0).user == other.user, "A queued release must not delete another user's timer.");
+    f.shared.applyUsedRecord(current);
+    require(f.shared.snapshot().at(0).user == other.user, "A delayed old use must not replace a newer shared record.");
+}
+
+void testUsageSyncConcurrentChangesRemainQueued() {
+    UsageSyncFixture f(L"concurrent");
+    f.sync.markUsed(f.device, f.user, L"203.0.113.1");
+    std::atomic_bool waiting = false;
+    std::atomic_bool proceed = false;
+    bool result = false;
+    int checks = 0;
+    std::thread background([&]() {
+        result = f.sync.synchronize([&](const UsageStateRecord&) {
+            if (++checks == 2) {
+                waiting = true;
+                while (!proceed) Sleep(1);
+            }
+            return true;
+        });
+    });
+    const ULONGLONG started = GetTickCount64();
+    while (!waiting && GetTickCount64() - started < 2000) Sleep(1);
+    const bool didWait = waiting;
+    UsageStateRecord latest;
+    bool localStayedFast = false;
+    try {
+        const ULONGLONG beforeWrite = GetTickCount64();
+        f.sync.markReleased(f.device, f.user);
+        latest = f.sync.markUsed(f.device, f.user, L"203.0.113.2");
+        localStayedFast = GetTickCount64() - beforeWrite < 1000;
+    }
+    catch (...) {
+        proceed = true;
+        background.join();
+        throw;
+    }
+    proceed = true;
+    background.join();
+    require(didWait && result && localStayedFast, "A background service/network wait must not hold the local journal lock.");
+    require(f.sync.pendingCount() == 1 && f.sync.snapshot().at(0).connectionId == latest.connectionId,
+        "Acknowledging an older change must not discard a concurrent reconnect.");
+    require(f.sync.synchronize([](const UsageStateRecord&) { return true; }) &&
+        f.shared.snapshot().at(0).publicIp == L"203.0.113.2", "The next run must synchronize the newest session.");
+}
+
+void testUsageSyncReconciliationAndInvalidFiles() {
+    UsageSyncFixture f(L"recovery");
+    f.sync.markUsed(f.device, f.user);
+    require(f.sync.synchronize([](const UsageStateRecord&) { return true; }), "Initial timer should synchronize.");
+    UsageStateSync restarted(f.sharedPath, f.localPath);
+    require(restarted.synchronize([](const UsageStateRecord&) { return false; }) &&
+        restarted.snapshot().empty() && f.shared.snapshot().empty(),
+        "Restart recovery must reconcile a token that was released while the application was closed.");
+    f.sync.markUsed(f.device, f.user);
+    {
+        std::ofstream stream(narrowAscii(f.sharedPath), std::ios::binary);
+        stream << "{broken shared state";
+    }
+    require(!f.sync.synchronize([](const UsageStateRecord&) { return true; }) && f.sync.pendingCount() == 1,
+        "Invalid shared JSON must not be overwritten or acknowledged.");
+    {
+        std::ifstream stream(narrowAscii(f.sharedPath), std::ios::binary);
+        const std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+        require(text == "{broken shared state", "Invalid shared contents must remain intact.");
+    }
+    {
+        std::ofstream stream(narrowAscii(f.localPath), std::ios::binary);
+        stream << "{broken local state";
+    }
+    f.sync.markReleased(f.device, f.user);
+    WIN32_FIND_DATAA quarantined{};
+    HANDLE find = FindFirstFileA((narrowAscii(f.localPath) + ".corrupt-*").c_str(), &quarantined);
+    require(find != INVALID_HANDLE_VALUE, "A damaged local timer file must be kept aside for investigation.");
+    FindClose(find);
+    {
+        std::ifstream stream(quarantined.cFileName, std::ios::binary);
+        const std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+        require(text == "{broken local state", "The set-aside file must keep the damaged contents unchanged.");
+    }
+    require(f.sync.pendingCount() == 1,
+        "After recovery the timer must keep working with a new local queue.");
+}
+
+void testUsageElapsedUsesUtcAndLegacyText() {
+    FILETIME nowFileTime{};
+    GetSystemTimeAsFileTime(&nowFileTime);
+    ULARGE_INTEGER now{};
+    now.LowPart = nowFileTime.dwLowDateTime;
+    now.HighPart = nowFileTime.dwHighDateTime;
+
+    unsigned long long elapsed = 0;
+    require(usageElapsedMs(L"", now.QuadPart - 90ULL * 10000000ULL, now.QuadPart, elapsed) && elapsed == 90000,
+        "Usage time must be measured from the UTC event time.");
+    require(usageElapsedMs(L"2000-01-01T00:00:00", now.QuadPart - 5ULL * 10000000ULL, now.QuadPart, elapsed) &&
+        elapsed == 5000, "The UTC event time must win over the local text.");
+    require(usageElapsedMs(L"", now.QuadPart + 10000000ULL, now.QuadPart, elapsed) && elapsed == 0,
+        "A start time slightly in the future must not underflow.");
+
+    SYSTEMTIME local{};
+    GetLocalTime(&local);
+    wchar_t text[32]{};
+    swprintf_s(text, L"%04u-%02u-%02uT%02u:%02u:%02u",
+        local.wYear, local.wMonth, local.wDay, local.wHour, local.wMinute, local.wSecond);
+    require(usageElapsedMs(text, 0, now.QuadPart, elapsed) && elapsed < 3000,
+        "Records of older versions must still be read from local time text.");
+    require(!usageElapsedMs(L"not a time", 0, now.QuadPart, elapsed) && !usageElapsedMs(L"", 0, now.QuadPart, elapsed),
+        "Unknown start time must be reported as unknown.");
+}
+
+void testBackgroundSyncSchedule() {
+    require(UsageStateSync::isBackgroundSyncDue(0, 1000, 0), "The first synchronization must start at once.");
+    require(!UsageStateSync::isBackgroundSyncDue(0, 20000, 1000),
+        "Without own changes other timers are refreshed only every 30 seconds.");
+    require(UsageStateSync::isBackgroundSyncDue(0, 31000, 1000), "Periodic refresh must start after 30 seconds.");
+    require(UsageStateSync::isBackgroundSyncDue(2, 6000, 1000), "Unsent own changes must be retried after 5 seconds.");
+    require(!UsageStateSync::isBackgroundSyncDue(2, 3000, 1000), "Retries must not start more often than every 5 seconds.");
+}
+
+void testSharedVpnDetection() {
+    std::vector<VpnProfile> profiles(4);
+    profiles[0].id = L"vpn-facility";
+    profiles[0].name = L"VPN - Фасилити менеджмент АО";
+    profiles[1].id = L"vpn-facility-2";
+    profiles[1].name = L"vpn - фасилити менеджмент ао";
+    profiles[2].id = L"vpn-salut";
+    profiles[2].name = L"VPN - Салют УК ООО";
+    profiles[3].id = L"direct";
+    profiles[3].name = L"Без VPN";
+    profiles[3].mode = VpnProfileMode::Direct;
+
+    require(usesSameVpn(L"vpn-facility", L"VPN-FACILITY", profiles),
+        "Tokens with the same network profile share one VPN.");
+    require(usesSameVpn(L"vpn-facility", L"vpn-facility-2", profiles),
+        "Profiles that point to the same Windows VPN must be treated as one VPN.");
+    require(!usesSameVpn(L"vpn-facility", L"vpn-salut", profiles),
+        "Different Windows VPN connections must not keep each other alive.");
+    require(!usesSameVpn(L"vpn-facility", L"", profiles) && !usesSameVpn(L"", L"", profiles),
+        "Tokens without a network profile never share a VPN.");
+    require(!usesSameVpn(L"direct", L"vpn-facility", profiles),
+        "The direct mode is not a VPN.");
+}
+
+void testQuickRefreshReusesUnchangedDeviceInfo() {
+    const auto devices = DeviceParser::parseList(
+        L"Key One (OFFICE-HUB-Gr-1.3)\n"
+        L"--> Key Two (OFFICE-HUB-Gr-1.4)\n");
+    require(devices.size() == 2 && devices[1].listLine == L"--> Key Two (OFFICE-HUB-Gr-1.4)",
+        "LIST lines must be kept to detect changes.");
+
+    DeviceViewModel previous;
+    previous.endpoint = L"OFFICE-HUB-Gr-1.3";
+    previous.listLine = L"Key One (OFFICE-HUB-Gr-1.3)";
+    require(canReuseDeviceInfo(devices[0], previous), "An unchanged LIST line must reuse DEVICE INFO.");
+
+    previous.listLine = L"--> Key One (OFFICE-HUB-Gr-1.3)";
+    require(!canReuseDeviceInfo(devices[0], previous), "A changed usage marker must trigger DEVICE INFO.");
+
+    previous.listLine.clear();
+    require(!canReuseDeviceInfo(devices[0], previous),
+        "A token whose DEVICE INFO was not loaded before must be read again.");
+
+    previous.endpoint = L"OFFICE-HUB-Gr-1.4";
+    previous.listLine = devices[1].listLine;
+    require(!canReuseDeviceInfo(devices[0], previous), "Data of another token must never be reused.");
+    require(canReuseDeviceInfo(devices[1], previous), "Matching token with unchanged line must be reused.");
+}
+
+void testUsageSyncProductionOwnerValidation() {
+    UsageSyncFixture f(L"owner");
+    f.sync.markUsed(f.device, f.user, L"203.0.113.10");
+    const std::wstring pipeName = testPipeName(L"usage-sync");
+    HANDLE pipe = createTestPipe(pipeName);
+    require(pipe != INVALID_HANDLE_VALUE, "Usage sync test pipe must be created.");
+    bool serverOk = true;
+    std::thread server([&]() {
+        for (int i = 0; i < 2; ++i) {
+            char request[4096]{};
+            DWORD read = 0;
+            if (!connectTestPipe(pipe) || !ReadFile(pipe, request, sizeof(request), &read, nullptr)) {
+                serverOk = false;
+                break;
+            }
+            serverOk = serverOk && std::string(request, read) == "DEVICE INFO,SYNC-HUB-Gr-1.1";
+            const std::string response = "IN USE BY: DOMAIN\\test AT 10.14.32.100 (" +
+                narrowAscii(UsageStateStore::currentComputerName()) + ")\r\n";
+            DWORD written = 0;
+            serverOk = serverOk && WriteFile(pipe, response.data(), static_cast<DWORD>(response.size()), &written, nullptr);
+            FlushFileBuffers(pipe);
+            DisconnectNamedPipe(pipe);
+        }
+        CloseHandle(pipe);
+    });
+    const int result = UsageStateSync::runBackgroundSync(f.sharedPath, f.localPath, pipeName);
+    server.join();
+    require(serverOk && result == 0 && f.shared.snapshot().size() == 1,
+        "Background owner validation must recognize the workstation in an IP (COMPUTER) location.");
+    f.sync.markUsed(f.device, f.user);
+    pipe = createTestPipe(pipeName);
+    require(pipe != INVALID_HANDLE_VALUE, "Invalid owner test pipe must be created.");
+    std::thread invalidServer([pipe]() {
+        char request[4096]{};
+        DWORD read = 0;
+        if (connectTestPipe(pipe) && ReadFile(pipe, request, sizeof(request), &read, nullptr)) {
+            const char* response = "NICKNAME: incomplete response\r\n";
+            DWORD written = 0;
+            WriteFile(pipe, response, static_cast<DWORD>(strlen(response)), &written, nullptr);
+            FlushFileBuffers(pipe);
+        }
+        DisconnectNamedPipe(pipe);
+        CloseHandle(pipe);
+    });
+    const int invalidResult = UsageStateSync::runBackgroundSync(f.sharedPath, f.localPath, pipeName);
+    invalidServer.join();
+    require(invalidResult == 1 && f.sync.pendingCount() == 1 && f.sync.snapshot().size() == 1,
+        "An incomplete owner response must retain the queue, not treat a token as released.");
+}
+
+void testUsageSyncLargeQueueAndEscaping() {
+    UsageSyncFixture f(L"large");
+    f.device.nickname = L"Токен «Компания» \\\"\n" + std::wstring(1, L'\x01');
+    for (int i = 0; i < 150; ++i) {
+        f.device.endpoint = L"SYNC-HUB-Gr-1." + std::to_wstring(i);
+        f.sync.markUsed(f.device, f.user);
+    }
+    for (int i = 0; i < 20; ++i) f.sync.markUsed(f.device, f.user);
+    require(f.sync.pendingCount() == 150 && f.sync.snapshot().size() == 150,
+        "Offline repeated operations must coalesce instead of growing the queue indefinitely.");
+    require(f.sync.snapshot().at(0).nickname == f.device.nickname, "Russian names and JSON escapes must round-trip.");
+}
+
 void testAuditCsvEscaping() {
     require(AuditLogger::csvEscapeForTest(L"plain") == "plain", "Plain CSV value should not be quoted.");
     require(AuditLogger::csvEscapeForTest(L"a,b") == "\"a,b\"", "Comma CSV value should be quoted.");
     require(AuditLogger::csvEscapeForTest(L"a\"b") == "\"a\"\"b\"", "Quote CSV value should be escaped.");
+
+    const std::wstring firstOperation = AuditLogger::createOperationId(L"TEST");
+    const std::wstring secondOperation = AuditLogger::createOperationId(L"TEST");
+    require(firstOperation.rfind(L"TEST-", 0) == 0, "Operation ID should contain the requested prefix.");
+    require(firstOperation != secondOperation, "Operation IDs should be unique within the process.");
 }
 
 void testAssignDeviceToUser() {
@@ -700,6 +1363,51 @@ void testSetDevicesForUser() {
     std::remove(fileName);
 }
 
+void testPolicyPatchPreservesUnseenDevicesAndRejectsStaleRevision() {
+    const char* fileName = "policy-patch-test.json";
+    std::remove(fileName);
+    {
+        std::ofstream stream(fileName, std::ios::binary);
+        stream << "{\n"
+            << "  \"pipeName\": \"dkclient\",\n"
+            << "  \"vpnProfiles\": [],\n"
+            << "  \"userAssignments\": [{\n"
+            << "    \"users\": [\"DOMAIN\\\\petrov\"],\n"
+            << "    \"groups\": [],\n"
+            << "    \"allowedDevices\": [\n"
+            << "      {\"endpoint\": \"HUB-Gr-1.1\", \"nickname\": \"VISIBLE\", \"product\": \"Rutoken\"},\n"
+            << "      {\"endpoint\": \"HUB-Gr-9.9\", \"nickname\": \"OFFLINE\", \"product\": \"Rutoken\", \"vpnProfile\": \"legacy\"}\n"
+            << "    ]\n"
+            << "  }]\n"
+            << "}\n";
+    }
+
+    ParsedDevice visible{ L"HUB-Gr-1.1", L"VISIBLE", L"Rutoken", L"NO ONE" };
+    ParsedDevice offline{ L"HUB-Gr-9.9", L"OFFLINE", L"Rutoken", L"NO ONE" };
+    ParsedDevice added{ L"HUB-Gr-2.2", L"ADDED", L"Rutoken", L"NO ONE" };
+    PolicyManager policy(L"policy-patch-test.json");
+    const std::wstring originalRevision = policy.revision();
+    const std::wstring updatedRevision = policy.applyDeviceAccessChanges(
+        { added }, { visible }, L"petrov", originalRevision);
+
+    require(updatedRevision != originalRevision, "Policy patch should change the revision.");
+    PolicyManager updated(L"policy-patch-test.json");
+    require(!updated.isAllowedForUser(visible, L"petrov"), "Explicitly removed device should be revoked.");
+    require(updated.isAllowedForUser(added, L"petrov"), "Explicitly added device should be allowed.");
+    require(updated.isAllowedForUser(offline, L"petrov"),
+        "A policy-only device missing from the live catalog must be preserved.");
+
+    bool conflictDetected = false;
+    try {
+        policy.applyDeviceAccessChanges({ visible }, {}, L"petrov", originalRevision);
+    }
+    catch (const std::exception& error) {
+        conflictDetected = std::string(error.what()).find("Policy changed since it was loaded") != std::string::npos;
+    }
+    require(conflictDetected, "A stale policy revision must be rejected.");
+    std::remove(fileName);
+}
+
 void testPolicyWriteReportsAccessDenied() {
     const char* fileName = "policy-readonly-test.json";
     std::remove(fileName);
@@ -735,7 +1443,7 @@ void testPolicyWriteReportsAccessDenied() {
     require(caught, "Read-only policy write should fail.");
 }
 
-void testRepairInvalidPolicyFile() {
+void testInvalidPolicyFileIsNotOverwritten() {
     const char* fileName = "policy-invalid-test.json";
     std::remove(fileName);
     removeFirstMatch("policy-invalid-test.json.invalid-*.bak");
@@ -745,18 +1453,23 @@ void testRepairInvalidPolicyFile() {
         stream << "{ broken json";
     }
 
-    const bool repaired = PolicyManager::ensureEditableConfig(L"policy-invalid-test.json");
-    require(repaired, "Invalid policy file should be repaired.");
+    bool rejected = false;
+    try {
+        PolicyManager::ensureEditableConfig(L"policy-invalid-test.json");
+    }
+    catch (const std::exception&) {
+        rejected = true;
+    }
+    require(rejected, "Invalid policy file should be rejected.");
 
     {
         std::ifstream stream(fileName, std::ios::binary);
         const std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
-        require(text.find("\"pipeName\"") != std::string::npos, "Repaired policy should contain pipeName.");
-        require(text.find("\"userAssignments\"") != std::string::npos, "Repaired policy should contain userAssignments.");
-        require(text.find("[]") != std::string::npos, "Repaired policy should contain empty assignments.");
+        require(text == "{ broken json", "Invalid policy file must remain unchanged.");
     }
 
-    require(removeFirstMatch("policy-invalid-test.json.invalid-*.bak"), "Invalid policy backup should be created.");
+    require(!removeFirstMatch("policy-invalid-test.json.invalid-*.bak"),
+        "Reading an invalid policy should not create a replacement backup.");
     std::remove(fileName);
 }
 
@@ -779,28 +1492,409 @@ void testPolicyUsageStatePath() {
 
     std::remove(fileName);
 }
+
+void testVpnPolicyRoundTrip() {
+    const char* fileName = "policy-vpn-test.json";
+    std::remove(fileName);
+
+    {
+        std::ofstream stream(fileName, std::ios::binary);
+        stream << "{\n"
+            << "  \"pipeName\": \"dkclient\",\n"
+            << "  \"vpnProfiles\": [\n"
+            << "    {\"id\": \"salut\", \"name\": \"Salut\", \"serverAddress\": \"89.108.64.96\", "
+            << "\"tunnelType\": \"L2TP\", "
+            << "\"ipCheckUrl\": \"https://api.ipify.org\", \"mode\": \"windowsVpn\", "
+            << "\"phonebookScope\": \"allUsers\", \"fullTunnel\": false, \"enabled\": true},\n"
+            << "    {\"id\": \"backup\", \"name\": \"Direct network\", \"mode\": \"direct\", "
+            << "\"ipCheckUrl\": \"https://api.ipify.org\", \"enabled\": true}\n"
+            << "  ],\n"
+            << "  \"userAssignments\": [\n"
+            << "    {\"users\": [\"" << narrowAscii(PolicyManager::currentUserSid()) << "\"], \"groups\": [], "
+            << "\"allowedDevices\": [{\"endpoint\": \"OFFICE-HUB-Gr-1.3\", \"nickname\": \"VPN Key\", "
+            << "\"product\": \"Rutoken\", \"vpnProfile\": \"salut\"}, "
+            << "{\"endpoint\": \"OFFICE-HUB-Gr-2.4\", \"nickname\": \"Backup Key\", "
+            << "\"product\": \"Rutoken\", \"vpnProfile\": \"backup\"}]}\n"
+            << "  ]\n"
+            << "}\n";
+    }
+
+    ParsedDevice device{ L"OFFICE-HUB-Gr-1.3", L"VPN Key", L"Rutoken", L"NO ONE" };
+    ParsedDevice backupDevice{ L"OFFICE-HUB-Gr-2.4", L"Backup Key", L"Rutoken", L"NO ONE" };
+    {
+        PolicyManager policy(L"policy-vpn-test.json");
+        require(policy.vpnProfiles().size() == 2, "Multiple VPN profiles should be parsed.");
+        const VpnProfile& profile = policy.vpnProfiles()[0];
+        require(profile.id == L"salut" && profile.name == L"Salut", "VPN profile identity mismatch.");
+        require(profile.mode == VpnProfileMode::WindowsVpn &&
+            profile.phonebookScope == VpnPhonebookScope::AllUsers,
+            "Windows VPN mode and phonebook scope should be parsed.");
+        require(profile.serverAddress == L"89.108.64.96", "VPN server should be parsed.");
+        require(profile.enabled, "VPN enabled setting should be parsed.");
+
+        VpnProfile matched;
+        require(policy.tryGetVpnProfileForDevice(device, matched), "Token should resolve its VPN profile.");
+        require(matched.id == L"salut", "Resolved VPN profile mismatch.");
+        require(policy.tryGetVpnProfileForDevice(backupDevice, matched),
+            "A second token should resolve its independent VPN profile.");
+        require(matched.id == L"backup" && matched.mode == VpnProfileMode::Direct,
+            "Direct network profile mapping mismatch.");
+
+        policy.setDevicesForUser({ device, backupDevice }, PolicyManager::currentUserSid());
+    }
+
+    {
+        PolicyManager policy(L"policy-vpn-test.json");
+        VpnProfile matched;
+        require(policy.tryGetVpnProfileForDevice(device, matched),
+            "Saving the user token list must preserve its VPN mapping.");
+
+        VpnProfile updated = policy.vpnProfiles()[0];
+        updated.enabled = false;
+        policy.upsertVpnProfile(updated);
+    }
+
+    {
+        PolicyManager policy(L"policy-vpn-test.json");
+        require(policy.vpnProfiles().size() == 2 &&
+            !policy.vpnProfiles()[0].enabled,
+            "A VPN profile without an allowed IP list should be written and updated.");
+        {
+            std::ifstream stream(fileName, std::ios::binary);
+            const std::string saved((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+            require(saved.find("fullTunnel") == std::string::npos,
+                "Legacy fullTunnel setting should be removed when VPN policy is saved.");
+            require(saved.find("expectedPublicIps") == std::string::npos,
+                "The removed allowed IP setting should not be written.");
+            require(saved.find("\"mode\": \"windowsVpn\"") != std::string::npos &&
+                saved.find("\"mode\": \"direct\"") != std::string::npos &&
+                saved.find("\"phonebookScope\": \"allUsers\"") != std::string::npos,
+                "Network mode and Windows phonebook scope should be persisted.");
+        }
+        policy.removeVpnProfile(L"salut");
+    }
+
+    {
+        PolicyManager policy(L"policy-vpn-test.json");
+        VpnProfile matched;
+        require(policy.vpnProfiles().size() == 1 && policy.vpnProfiles()[0].id == L"backup",
+            "Removing one VPN profile must preserve other profiles.");
+        require(!policy.tryGetVpnProfileForDevice(device, matched),
+            "Removing a VPN profile must remove token references to it.");
+        require(policy.tryGetVpnProfileForDevice(backupDevice, matched) && matched.id == L"backup",
+            "Removing one VPN profile must preserve other token mappings.");
+    }
+
+    std::remove(fileName);
+}
+
+void testAtomicVpnAssignmentForMultipleDevices() {
+    const char* fileName = "policy-vpn-atomic-test.json";
+    const std::wstring currentUser = PolicyManager::currentUserSid();
+    std::remove(fileName);
+    {
+        std::ofstream stream(fileName, std::ios::binary);
+        stream << "{\n"
+            << "  \"pipeName\": \"dkclient\",\n"
+            << "  \"vpnProfiles\": [],\n"
+            << "  \"userAssignments\": [{\n"
+            << "    \"users\": [\"" << narrowAscii(currentUser) << "\"],\n"
+            << "    \"groups\": [],\n"
+            << "    \"allowedDevices\": [\n"
+            << "      {\"endpoint\": \"HUB-Gr-1.1\", \"nickname\": \"ONE\", \"product\": \"Rutoken\"},\n"
+            << "      {\"endpoint\": \"HUB-Gr-1.2\", \"nickname\": \"TWO\", \"product\": \"Rutoken\"}\n"
+            << "    ]\n"
+            << "  }]\n"
+            << "}\n";
+    }
+
+    ParsedDevice first{ L"HUB-Gr-1.1", L"ONE", L"Rutoken", L"NO ONE" };
+    ParsedDevice second{ L"HUB-Gr-1.2", L"TWO", L"Rutoken", L"NO ONE" };
+    VpnProfile profile;
+    profile.id = L"windows-user:VPN Test";
+    profile.name = L"VPN Test";
+    profile.serverAddress = L"192.0.2.10";
+
+    PolicyManager policy(L"policy-vpn-atomic-test.json");
+    const std::wstring revision = policy.saveVpnProfileForDevices(
+        profile, { first, second }, currentUser, policy.revision());
+    require(!revision.empty(), "Atomic VPN assignment should return the new revision.");
+
+    PolicyManager updated(L"policy-vpn-atomic-test.json");
+    VpnProfile resolved;
+    require(updated.tryGetVpnProfileForDevice(first, resolved) && resolved.id == profile.id,
+        "The first token should receive the VPN profile.");
+    require(updated.tryGetVpnProfileForDevice(second, resolved) && resolved.id == profile.id,
+        "The second token should receive the VPN profile in the same write.");
+
+    const std::wstring clearedRevision = updated.clearVpnProfileForDevices(
+        { first, second }, currentUser, updated.revision());
+    PolicyManager cleared(L"policy-vpn-atomic-test.json");
+    require(!clearedRevision.empty() && !cleared.tryGetVpnProfileForDevice(first, resolved) &&
+        !cleared.tryGetVpnProfileForDevice(second, resolved),
+        "Bulk VPN unassignment should clear both token mappings.");
+    std::remove(fileName);
+}
+
+void testAtomicDifferentVpnMappingsForMultipleDevices() {
+    const char* fileName = "policy-vpn-mappings-test.json";
+    const std::wstring currentUser = PolicyManager::currentUserSid();
+    std::remove(fileName);
+    {
+        std::ofstream stream(fileName, std::ios::binary);
+        stream << "{\n"
+            << "  \"pipeName\": \"dkclient\",\n"
+            << "  \"vpnProfiles\": [],\n"
+            << "  \"userAssignments\": [{\n"
+            << "    \"users\": [\"" << narrowAscii(currentUser) << "\"],\n"
+            << "    \"groups\": [],\n"
+            << "    \"allowedDevices\": [\n"
+            << "      {\"endpoint\": \"HUB-Gr-2.1\", \"nickname\": \"ALPHA\", \"product\": \"Rutoken\"},\n"
+            << "      {\"endpoint\": \"HUB-Gr-2.2\", \"nickname\": \"BETA\", \"product\": \"Rutoken\"}\n"
+            << "    ]\n"
+            << "  }]\n"
+            << "}\n";
+    }
+
+    VpnProfile alphaProfile;
+    alphaProfile.id = L"windows-user:VPN Alpha";
+    alphaProfile.name = L"VPN Alpha";
+    VpnProfile betaProfile;
+    betaProfile.id = L"windows-user:VPN Beta";
+    betaProfile.name = L"VPN Beta";
+
+    DeviceRule alpha;
+    alpha.endpoint = L"HUB-Gr-2.1";
+    alpha.vpnProfileId = alphaProfile.id;
+    DeviceRule beta;
+    beta.endpoint = L"HUB-Gr-2.2";
+    beta.vpnProfileId = betaProfile.id;
+
+    PolicyManager policy(L"policy-vpn-mappings-test.json");
+    const std::wstring revision = policy.saveVpnAssignmentsForDevices(
+        { alphaProfile, betaProfile }, { alpha, beta }, currentUser, policy.revision());
+    require(!revision.empty(), "Bulk VPN mapping should return the new revision.");
+
+    PolicyManager updated(L"policy-vpn-mappings-test.json");
+    VpnProfile resolved;
+    ParsedDevice alphaDevice{ L"HUB-Gr-2.1", L"ALPHA", L"Rutoken", L"NO ONE" };
+    ParsedDevice betaDevice{ L"HUB-Gr-2.2", L"BETA", L"Rutoken", L"NO ONE" };
+    require(updated.tryGetVpnProfileForDevice(alphaDevice, resolved) &&
+        resolved.id == alphaProfile.id,
+        "Bulk mapping should assign the first VPN to the first token.");
+    require(updated.tryGetVpnProfileForDevice(betaDevice, resolved) &&
+        resolved.id == betaProfile.id,
+        "Bulk mapping should assign the second VPN to the second token.");
+
+    alpha.vpnProfileId.clear();
+    updated.saveVpnAssignmentsForDevices(
+        updated.vpnProfiles(), { alpha, beta }, currentUser, updated.revision());
+    PolicyManager cleared(L"policy-vpn-mappings-test.json");
+    require(!cleared.tryGetVpnProfileForDevice(alphaDevice, resolved),
+        "Bulk mapping should clear an individual token mapping.");
+    require(cleared.tryGetVpnProfileForDevice(betaDevice, resolved) &&
+        resolved.id == betaProfile.id,
+        "Clearing one bulk mapping should preserve the other token mapping.");
+    std::remove(fileName);
+}
+
+void testNetworkStateReportParsing() {
+    require(VpnManager::isValidPublicIp(L"89.108.64.96") &&
+        VpnManager::isValidPublicIp(L"2001:db8::10") &&
+        !VpnManager::isValidPublicIp(L"89.108.64.999"),
+        "Network policy should accept only valid IPv4 or IPv6 addresses.");
+    const char* fileName = "network-state-test.json";
+    std::remove(fileName);
+    {
+        std::ofstream stream(fileName, std::ios::binary);
+        stream << "{\n"
+            << "  \"schemaVersion\": 1,\n"
+            << "  \"computerName\": \"WRK-406\",\n"
+            << "  \"userName\": \"OSNOVA\\\\a.nikitin\",\n"
+            << "  \"publicIp\": \"89.108.64.96\",\n"
+            << "  \"activeVpnNames\": [\"Salut\"],\n"
+            << "  \"updatedAtFileTime\": \"134000000000000000\"\n"
+            << "}\n";
+    }
+
+    NetworkStateSnapshot state;
+    std::wstring error;
+    require(PolicyManager::tryReadNetworkState(L"network-state-test.json", state, &error),
+        "A valid network state report should be parsed.");
+    require(state.computerName == L"WRK-406" && state.userName == L"OSNOVA\\a.nikitin" &&
+        state.publicIp == L"89.108.64.96" && state.activeVpnNames.size() == 1 &&
+        state.activeVpnNames[0] == L"Salut" && state.updatedAtFileTime == 134000000000000000ULL,
+        "Network state report fields mismatch.");
+
+    {
+        std::ofstream stream(fileName, std::ios::binary | std::ios::trunc);
+        stream << "{\"publicIp\":\"89.108.64.96\",\"activeVpnNames\":[]}";
+    }
+    require(!PolicyManager::tryReadNetworkState(L"network-state-test.json", state, &error) && !error.empty(),
+        "A network state report without a timestamp must be rejected.");
+    std::remove(fileName);
+}
+
+void testUnknownVpnMappingFailsClosed() {
+    const char* fileName = "policy-vpn-missing-profile-test.json";
+    std::remove(fileName);
+    {
+        std::ofstream stream(fileName, std::ios::binary);
+        stream << "{\n"
+            << "  \"pipeName\": \"dkclient\",\n"
+            << "  \"vpnProfiles\": [],\n"
+            << "  \"userAssignments\": [{\"users\": [\""
+            << narrowAscii(PolicyManager::currentUserSid())
+            << "\"], \"groups\": [], \"allowedDevices\": [{\"endpoint\": \"OFFICE-HUB-Gr-1.3\", "
+            << "\"nickname\": \"VPN Key\", \"product\": \"Rutoken\", \"vpnProfile\": \"missing\"}]}]\n"
+            << "}\n";
+    }
+
+    bool rejected = false;
+    try {
+        PolicyManager policy(L"policy-vpn-missing-profile-test.json");
+        ParsedDevice device{ L"OFFICE-HUB-Gr-1.3", L"VPN Key", L"Rutoken", L"NO ONE" };
+        VpnProfile profile;
+        policy.tryGetVpnProfileForDevice(device, profile);
+    }
+    catch (const std::exception& error) {
+        rejected = std::string(error.what()).find("unknown profile") != std::string::npos;
+    }
+    require(rejected, "A token mapped to a missing VPN profile must fail closed.");
+    std::remove(fileName);
+}
+
+void testVpnWatchdogRejectsUnmappedToken() {
+    const char* fileName = "policy-vpn-unmapped-watchdog-test.json";
+    std::remove(fileName);
+    {
+        std::ofstream stream(fileName, std::ios::binary);
+        stream << "{\n"
+            << "  \"pipeName\": \"dkclient\",\n"
+            << "  \"vpnProfiles\": [],\n"
+            << "  \"userAssignments\": [{\"users\": [\""
+            << narrowAscii(PolicyManager::currentUserSid())
+            << "\"], \"groups\": [], \"allowedDevices\": [{\"endpoint\": \"OFFICE-HUB-Gr-1.3\", "
+            << "\"nickname\": \"Unmapped Key\", \"product\": \"Rutoken\"}]}]\n"
+            << "}\n";
+    }
+
+    bool rejected = false;
+    try {
+        PolicyManager::setConfigPathOverride(L"policy-vpn-unmapped-watchdog-test.json");
+        DeviceViewModel device;
+        device.endpoint = L"OFFICE-HUB-Gr-1.3";
+        device.nickname = L"Unmapped Key";
+        device.product = L"Rutoken";
+        DeviceAccessService().verifyVpnForDevice(device);
+    }
+    catch (const std::exception& error) {
+        rejected = std::string(error.what()).find("not assigned") != std::string::npos;
+    }
+    PolicyManager::setConfigPathOverride(L"");
+    std::remove(fileName);
+    require(rejected, "VPN watchdog must reject an active token without a network mapping.");
+}
+
+void testLocalRouteInspection() {
+    const size_t routeCount = VpnManager::localPhysicalRouteCount();
+    (void)routeCount;
+}
+
+void testVpnChoiceNameMatching() {
+    const std::vector<std::wstring> names = {
+        L"Не назначен",
+        L"БЕЗ VPN",
+        L"VPN - Фасилити менеджмент АО [пользователь]",
+        L"VPN - Салют УК ООО [все пользователи]",
+        L"VPN - Салют УК ООО [пользователь]",
+        L"VPN - Илария ООО [пользователь]"
+    };
+
+    VpnNameMatch match = matchVpnChoiceName(names, L"  vpn -  фасилити МЕНЕДЖМЕНТ ао ");
+    require(match.kind == VpnNameMatchKind::Exact && match.index == 2,
+        "Pasted VPN name must match exactly ignoring case and extra spaces.");
+
+    match = matchVpnChoiceName(names, L"«VPN - Илария ООО»");
+    require(match.kind == VpnNameMatchKind::Exact && match.index == 5,
+        "Quotes around a pasted VPN name must be ignored.");
+
+    match = matchVpnChoiceName(names, L"Фасилити");
+    require(match.kind == VpnNameMatchKind::Unique && match.index == 2,
+        "A fragment contained in a single VPN name must be a unique match.");
+
+    match = matchVpnChoiceName(names, L"VPN - Салют УК ООО");
+    require(match.kind == VpnNameMatchKind::Ambiguous && match.candidates.size() == 2,
+        "The same VPN name in two phonebooks must not be chosen silently.");
+
+    match = matchVpnChoiceName(names, L"VPN - Салют УК ООО [все пользователи]");
+    require(match.kind == VpnNameMatchKind::Exact && match.index == 3,
+        "A pasted name with its phonebook suffix must pick that entry.");
+
+    match = matchVpnChoiceName(names, L"без vpn");
+    require(match.kind == VpnNameMatchKind::Exact && match.index == 1,
+        "The direct option must stay selectable by text.");
+
+    match = matchVpnChoiceName(names, L"ООО");
+    require(match.kind == VpnNameMatchKind::Ambiguous && match.candidates.size() == 3,
+        "A common fragment must list every candidate.");
+
+    match = matchVpnChoiceName(names, L"Неизвестная сеть");
+    require(match.kind == VpnNameMatchKind::None && match.candidates.empty(),
+        "Unknown VPN text must not match anything.");
+
+    match = matchVpnChoiceName(names, L"   ");
+    require(match.kind == VpnNameMatchKind::None && match.candidates.size() == names.size(),
+        "Empty text must keep the full list.");
+}
 }
 
 int main() {
     try {
+        removeFirstMatch("usage-sync-test-*");
         testIpcRoundTrip();
         testIpcReadTimeout();
+        testIpcRetriesBusyPipe();
+        testDeviceInfoErrorKeepsAllowedListEntry();
+        testEmptyDeviceCatalogIsTransientError();
         testUseDeviceAllowsSlowUseResponse();
         testUseDeviceFailedResponseIsError();
+        testUseDeviceRecoversWhenTokenConnectsAfterFailure();
         testRevokedActiveTokenCanBeStopped();
         testParseList();
         testApplyDeviceInfo();
         testPolicyMatching();
         testUsageParsing();
         testUsageStateStore();
+        testUsageSyncOfflinePersistenceAndMetadata();
+        testUsageSyncSharedFileUnavailable();
+        testUsageSyncCoalescingAndStaleRelease();
+        testUsageSyncConcurrentChangesRemainQueued();
+        testUsageSyncReconciliationAndInvalidFiles();
+        testUsageSyncProductionOwnerValidation();
+        testUsageSyncLargeQueueAndEscaping();
         testAuditCsvEscaping();
         testAssignDeviceToUser();
         testRemoveDeviceFromUser();
         testSetDevicesForUser();
+        testPolicyPatchPreservesUnseenDevicesAndRejectsStaleRevision();
         testPolicyWriteReportsAccessDenied();
-        testRepairInvalidPolicyFile();
+        testInvalidPolicyFileIsNotOverwritten();
         testPolicyUsageStatePath();
-        std::cout << "All DiskControl C++ tests passed.\n";
+        testVpnPolicyRoundTrip();
+        testAtomicVpnAssignmentForMultipleDevices();
+        testAtomicDifferentVpnMappingsForMultipleDevices();
+        testUnknownVpnMappingFailsClosed();
+        testVpnWatchdogRejectsUnmappedToken();
+        testNetworkStateReportParsing();
+        testLocalRouteInspection();
+        testVpnChoiceNameMatching();
+        testUsageElapsedUsesUtcAndLegacyText();
+        testBackgroundSyncSchedule();
+        testQuickRefreshReusesUnchangedDeviceInfo();
+        testSharedVpnDetection();
+        removeFirstMatch("usage-sync-test-*");
+        std::cout << "All DistControl C++ tests passed.\n";
         return 0;
     }
     catch (const std::exception& error) {

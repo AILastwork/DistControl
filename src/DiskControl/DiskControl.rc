@@ -1,3 +1,24 @@
+#pragma code_page(65001)
+
 #include "resource.h"
+#include <windows.h>
 
 IDI_DISKCONTROL ICON "res\\DiskControl.ico"
+
+IDD_VPN_BULK DIALOGEX 0, 0, 620, 374
+STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "DistControl Admin - сопоставление токенов и VPN"
+FONT 9, "Segoe UI"
+BEGIN
+    LTEXT           "Пользователь:", -1, 10, 10, 70, 10
+    LTEXT           "", IDC_VPN_BULK_USER, 82, 10, 528, 10
+    LTEXT           "Поиск:", -1, 10, 32, 48, 10
+    EDITTEXT        IDC_VPN_BULK_SEARCH, 60, 28, 330, 16, ES_AUTOHSCROLL
+    PUSHBUTTON      "Сброс", IDC_VPN_BULK_CLEAR_SEARCH, 398, 27, 64, 18
+    LTEXT           "", IDC_VPN_BULK_COUNT, 470, 32, 140, 10, SS_RIGHT
+    CONTROL         "", IDC_VPN_BULK_LIST, "SysListView32", LVS_REPORT | LVS_SHOWSELALWAYS | WS_BORDER | WS_TABSTOP, 10, 51, 600, 268
+    LTEXT           "Нажмите значение в столбце VPN: выберите из списка или вставьте скопированное название (Ctrl+V) и нажмите Enter.", IDC_VPN_BULK_HINT, 10, 323, 600, 18
+    PUSHBUTTON      "Автосопоставить", IDC_VPN_BULK_AUTO_MATCH, 10, 346, 104, 18
+    DEFPUSHBUTTON   "Сохранить", IDC_VPN_BULK_SAVE, 430, 346, 84, 18
+    PUSHBUTTON      "Закрыть", IDCANCEL, 522, 346, 88, 18
+END

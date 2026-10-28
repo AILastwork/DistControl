@@ -1,0 +1,712 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DistControl — инструкция</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f5f7fb;
+      --panel: #ffffff;
+      --ink: #18202d;
+      --muted: #5c6678;
+      --line: #d8deea;
+      --accent: #155ab6;
+      --accent-soft: #e8f0ff;
+      --ok: #17693b;
+      --warn: #a45b00;
+      --bad: #a32020;
+      --code: #111827;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font: 15px/1.55 "Segoe UI", Arial, sans-serif;
+    }
+
+    header {
+      background: #10233f;
+      color: #fff;
+      padding: 34px 28px 28px;
+      border-bottom: 4px solid #2c7be5;
+    }
+
+    header h1 {
+      margin: 0 0 8px;
+      font-size: 32px;
+      line-height: 1.15;
+      letter-spacing: 0;
+    }
+
+    header p {
+      margin: 0;
+      color: #d9e6fb;
+      max-width: 980px;
+    }
+
+    main {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    nav {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 18px 20px;
+      margin-bottom: 20px;
+    }
+
+    nav h2 {
+      margin-top: 0;
+    }
+
+    nav a {
+      display: inline-block;
+      margin: 4px 14px 4px 0;
+      color: var(--accent);
+      text-decoration: none;
+      font-weight: 600;
+    }
+
+    section {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 22px;
+      margin: 18px 0;
+    }
+
+    h2 {
+      margin: 0 0 12px;
+      font-size: 22px;
+      line-height: 1.25;
+    }
+
+    h3 {
+      margin: 22px 0 8px;
+      font-size: 17px;
+    }
+
+    p {
+      margin: 8px 0 12px;
+    }
+
+    ul, ol {
+      margin: 8px 0 14px 22px;
+      padding: 0;
+    }
+
+    li {
+      margin: 5px 0;
+    }
+
+    code {
+      background: #eef2f7;
+      color: var(--code);
+      padding: 1px 5px;
+      border-radius: 4px;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 0.95em;
+    }
+
+    pre {
+      margin: 12px 0;
+      padding: 14px 16px;
+      overflow: auto;
+      background: #101827;
+      color: #eff6ff;
+      border-radius: 8px;
+      font: 13px/1.45 Consolas, "Courier New", monospace;
+    }
+
+    pre code {
+      background: transparent;
+      color: inherit;
+      padding: 0;
+      border-radius: 0;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 12px 0;
+      background: #fff;
+    }
+
+    th, td {
+      border: 1px solid var(--line);
+      padding: 9px 10px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: #edf3fb;
+      font-weight: 700;
+    }
+
+    .note {
+      border-left: 4px solid var(--accent);
+      background: var(--accent-soft);
+      padding: 12px 14px;
+      margin: 14px 0;
+      border-radius: 0 8px 8px 0;
+    }
+
+    .warn {
+      border-left-color: var(--warn);
+      background: #fff6e7;
+    }
+
+    .ok {
+      border-left-color: var(--ok);
+      background: #eaf7ef;
+    }
+
+    .bad {
+      border-left-color: var(--bad);
+      background: #fff0f0;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+      gap: 12px;
+    }
+
+    .mini {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      background: #fbfcff;
+    }
+
+    .mini strong {
+      display: block;
+      margin-bottom: 4px;
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>DistControl</h1>
+    <p>Инструкция по текущей версии: пользовательская утилита, админская утилита, защита подключений через VPN, файл доступа <code>allow.json</code>, служба <code>dkclient</code> и корректное отображение пользователя в DistKontrolUSB.</p>
+  </header>
+
+  <main>
+    <nav>
+      <h2>Содержание</h2>
+      <a href="#purpose">Назначение</a>
+      <a href="#parts">Состав</a>
+      <a href="#install">Установка</a>
+      <a href="#service-account">Служба под пользователем</a>
+      <a href="#user-app">Пользовательская утилита</a>
+      <a href="#admin-app">Админка</a>
+      <a href="#vpn">VPN-защита токенов</a>
+      <a href="#policy">allow.json</a>
+      <a href="#files">Файлы</a>
+      <a href="#diagnostics">Диагностика</a>
+      <a href="#build">Сборка</a>
+      <a href="#limits">Ограничения</a>
+    </nav>
+
+    <section id="purpose">
+      <h2>1. Назначение</h2>
+      <p><strong>DistControl</strong> — это C++/Win32-утилита поверх штатного клиента DistKontrolUSB. Она показывает пользователю только разрешенные USB-токены, подключает и отключает их через локальный канал <code>\\.\pipe\dkclient</code>, а администратору дает удобный интерфейс для формирования файла доступа.</p>
+
+      <div class="note ok">
+        <strong>Ключевой проверенный вывод:</strong> чтобы в родном окне DistKontrolUSB занятый токен отображался не как <code>СИСТЕМА</code>, процесс <code>dkcl64.exe</code> должен быть запущен службой под пользовательской учетной записью. Мы это проверили вручную: после запуска службы под доменным пользователем DistKontrolUSB начал показывать логин пользователя.
+      </div>
+
+      <p>PowerShell-скрипты в проекте сейчас остаются как установочные, диагностические и прототипные инструменты. Основной рабочий путь — C++ приложения:</p>
+      <ul>
+        <li><code>DistControl.exe</code> — обычная пользовательская утилита.</li>
+        <li><code>DistControl.Admin.exe</code> — админская утилита для настройки доступа.</li>
+        <li><code>dkcl64.exe</code> — штатный клиент DistKontrolUSB, установленный как служба <code>dkclient</code>.</li>
+      </ul>
+    </section>
+
+    <section id="parts">
+      <h2>2. Как это устроено</h2>
+      <div class="grid">
+        <div class="mini">
+          <strong>DistControl.exe</strong>
+          Пользователь видит текущего пользователя сверху, список разрешенных токенов, кнопки <code>Обновить</code>, <code>Подключить</code>, <code>Отключить</code>. Политика читается из <code>allow.json</code>.
+        </div>
+        <div class="mini">
+          <strong>DistControl.Admin.exe</strong>
+          Администратор видит все токены, ищет по endpoint/имени/продукту, отмечает галочками доступ для выбранного пользователя и сохраняет конфигурацию.
+        </div>
+        <div class="mini">
+          <strong>dkcl64.exe</strong>
+          Штатный клиент DistKontrolUSB. В нашей схеме запускается как Windows-служба <code>dkclient</code> под учеткой пользователя установки.
+        </div>
+        <div class="mini">
+          <strong>allow.json</strong>
+          Основной файл политики доступа. По умолчанию лежит в <code>%LOCALAPPDATA%\DistControl\allow.json</code>. Пользователи читают, администраторы изменяют.
+        </div>
+      </div>
+
+      <h3>Поток работы</h3>
+      <ol>
+        <li>Служба <code>dkclient</code> запускает <code>dkcl64.exe -n --config="%LOCALAPPDATA%\Programs\DistControl\dkcl.ini"</code> из профиля выбранного при установке пользователя.</li>
+        <li><code>dkcl64.exe</code> поднимает локальный канал <code>\\.\pipe\dkclient</code>.</li>
+        <li><code>DistControl.exe</code> читает <code>allow.json</code> и показывает только разрешенные текущему Windows-пользователю токены.</li>
+        <li>При подключении сначала выполняются проверка владельца, VPN и локальных маршрутов; только затем отправляется <code>USE,&lt;endpoint&gt;</code>.</li>
+        <li>При отключении проверяется текущий владелец, отправляется <code>STOP USING,&lt;endpoint&gt;</code>, удаляется таймер и при отсутствии других токенов на том же профиле отключается VPN.</li>
+        <li>Родной DistKontrolUSB видит, что токен занят учеткой, под которой работает служба <code>dkclient</code>.</li>
+      </ol>
+    </section>
+
+    <section id="install">
+      <h2>3. Установка</h2>
+      <p>Обычный вариант для рабочего места — запустить установщик:</p>
+      <pre><code>dist\DistControl-Setup.exe</code></pre>
+
+      <p>При запуске установщик запрашивает права администратора через UAC, затем показывает выбранную учетную запись, пароль и папку общего состояния таймеров. По умолчанию подставляется учетная запись активного сеанса Windows. Ее можно оставить или заменить на нужный формат, например:</p>
+      <pre><code>OSNOVA\a.nikitin
+a.s.nikitin@osnova.local</code></pre>
+
+      <div class="note warn">
+        Пароль нужен не DistControl как приложению, а Windows Service Control Manager: без пароля Windows не создаст службу под обычной пользовательской учеткой. Установщик передает пароль в Windows при создании службы. В командную строку пароль не записывается.
+      </div>
+
+      <div class="note">
+        Установка выполняется только для выбранной учетной записи. Даже если UAC подтверждает другой администратор, установщик использует заранее определенные SID и путь профиля выбранного пользователя. Служба <code>dkclient</code> при этом остается одной системной службой на весь компьютер.
+      </div>
+
+      <p>В поле папки таймеров рекомендуется указать один UNC-путь для всех рабочих мест, например <code>\\SERVER\DistControlState</code>. У пользователей должны быть права чтения, создания и изменения файлов в этой папке. Если поле оставить пустым, используется локальный <code>%LOCALAPPDATA%\DistControl\state\usage.json</code>, и общий таймер между компьютерами работать не будет.</p>
+
+      <h3>VPN-профили Windows</h3>
+      <p>Установщик не создаёт и не изменяет VPN-подключения. На новой установке список <code>vpnProfiles</code> пуст. Сначала создайте нужные VPN штатными средствами Windows, затем назначьте существующие подключения токенам в <code>DistControl.Admin.exe</code>.</p>
+      <p>Можно также назначить режим <code>Без VPN</code>. Общие ключи L2TP остаются в Windows и не записываются в <code>allow.json</code> или журналы DistControl.</p>
+
+      <h3>Что делает установщик</h3>
+      <ul>
+        <li>Копирует <code>DistControl.exe</code>, <code>DistControl.Admin.exe</code>, <code>dkcl64.exe</code>, <code>dkcl.ini</code> и документацию в <code>%LOCALAPPDATA%\Programs\DistControl</code> выбранного пользователя.</li>
+        <li>Создает в его профиле <code>%LOCALAPPDATA%\DistControl</code>, пустой безопасный <code>allow.json</code> и папку <code>logs</code>. Демонстрационный <code>allowlist.example.json</code> никогда не назначается как рабочая политика.</li>
+        <li>Подготавливает <code>%APPDATA%\dkcl.ini</code> и <code>%APPDATA%\dkcl64.ini</code> для выбранной учетной записи, поэтому предварительно запускать <code>dkcl64.exe</code> вручную не требуется.</li>
+        <li>Создает или проверяет <code>usage.json</code> в выбранной локальной либо общей сетевой папке и записывает его путь в <code>allow.json</code>.</li>
+        <li>Не создаёт и не изменяет VPN-профили Windows; их назначение выполняется после установки в админской утилите.</li>
+        <li>Для каждого IPv4-адреса из <code>ManualHubs</code> в <code>dkcl.ini</code> создаёт постоянный маршрут <code>/32</code> через текущий физический LAN/Wi-Fi-шлюз. Благодаря этому полный VPN-туннель не забирает соединения службы <code>dkclient</code> с USB-хабами. Список созданных маршрутов хранится в <code>%LOCALAPPDATA%\DistControl\managed-hub-routes.json</code> и удаляется деинсталлятором.</li>
+        <li>Настраивает ACL: выбранная учетная запись запускает клиентскую часть и читает <code>allow.json</code>, но не изменяет политику; администраторы могут ее редактировать.</li>
+        <li>Отдельно ограничивает запуск <code>dkcl64.exe</code>: SYSTEM и администраторы получают полный доступ, выбранная учетная запись службы получает чтение/запуск, группа Users не получает общий запуск этого EXE.</li>
+        <li>Выдает выбранной учетной записи право <code>Log on as a service</code>.</li>
+        <li>Создает службу <code>dkclient</code> под выбранной учетной записью.</li>
+        <li>Запускает службу и проверяет реальный ответ на запрос списка токенов, если не указан режим <code>-NoStartService</code>.</li>
+        <li>Создает ярлыки в меню Пуск и на рабочем столе только выбранного пользователя.</li>
+        <li>Регистрирует удаление через Windows “Программы и компоненты” только для выбранного пользователя.</li>
+      </ul>
+
+      <h3>Ручная установка из консоли</h3>
+      <p>Если нужен запасной путь без графического EXE, можно открыть PowerShell/Command Prompt от администратора и выполнить:</p>
+      <pre><code>install.cmd</code></pre>
+      <p>Скрипт спросит пароль для учетной записи службы. Дополнительные варианты:</p>
+      <pre><code>install.cmd -NoStartService
+install.cmd -NoDesktopShortcut
+install.cmd -SkipBuild</code></pre>
+    </section>
+
+    <section id="service-account">
+      <h2>4. Почему служба должна работать под пользователем</h2>
+      <p>Мы проверили поведение DistKontrolUSB: кто запускает <code>dkcl64.exe</code>, тот и отображается как владелец занятого токена. Если <code>dkcl64.exe</code> работает как <code>LocalSystem</code>, родной клиент на других компьютерах показывает <code>СИСТЕМА</code>. Если служба работает под <code>OSNOVA\a.nikitin</code> или UPN-учеткой, отображается логин пользователя.</p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Как запущен dkcl64.exe</th>
+            <th>Что увидит DistKontrolUSB</th>
+            <th>Вывод</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>LocalSystem</code></td>
+            <td><code>СИСТЕМА</code></td>
+            <td>Не подходит для понятного учета занятости.</td>
+          </tr>
+          <tr>
+            <td>Пользовательская учетная запись</td>
+            <td>Логин пользователя</td>
+            <td>Нужный режим для рабочих мест.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>Проверка</h3>
+      <pre><code>sc.exe qc dkclient
+sc.exe query dkclient</code></pre>
+      <p>В <code>sc.exe qc dkclient</code> важны поля:</p>
+      <ul>
+        <li><code>SERVICE_START_NAME</code> — должна быть пользовательская учетная запись, не <code>LocalSystem</code>.</li>
+        <li><code>BINARY_PATH_NAME</code> — должен указывать на <code>%LOCALAPPDATA%\Programs\DistControl\dkcl64.exe</code> выбранного пользователя с параметром <code>--config</code>.</li>
+      </ul>
+
+      <div class="note warn">
+        Если на одном компьютере работают разные люди по очереди, служба все равно стартует под одной выбранной учеткой. Для динамической смены пользователя нужен отдельный следующий этап: брокер/служба DistControl, которая умеет запускать клиент в пользовательской сессии или официально менять clientId, если это поддерживается API производителя.
+      </div>
+      <div class="note">
+        Для <code>dkcl64.exe</code> используется SID службы <code>NT SERVICE\dkclient</code>. Поэтому процесс службы получает чтение и запуск, а обычный интерактивный сеанс той же пользовательской учетной записи этого права не получает.
+      </div>
+    </section>
+
+    <section id="user-app">
+      <h2>5. Пользовательская утилита</h2>
+      <p><code>DistControl.exe</code> запускается обычным пользователем. Вверху показывается текущий Windows-пользователь. Ниже отображается дерево токенов в стиле DistKontrolUSB: сначала группа <code>...-Gr-XX</code>, внутри разрешенные пользователю токены из <code>allow.json</code>.</p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Действие</th>
+            <th>Назначение</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>Обновить</code></td>
+            <td>Перечитать список токенов из <code>dkclient</code> и заново применить политику. Во время загрузки показываются полоса прогресса, процент и количество обработанных устройств.</td>
+          </tr>
+          <tr>
+            <td>Двойной клик по свободному токену</td>
+            <td>Проверяет политику, подключает назначенный VPN, проверяет локальную сеть и только после успешной проверки отправляет <code>USE,&lt;endpoint&gt;</code>.</td>
+          </tr>
+          <tr>
+            <td>Двойной клик по токену, подключенному вами</td>
+            <td>Проверяет владельца, отправляет <code>STOP USING,&lt;endpoint&gt;</code>, удаляет запись таймера и перечитывает список. Если этот VPN больше не нужен другим токенам пользователя, профиль отключается.</td>
+          </tr>
+          <tr>
+            <td>Двойной клик по токену, занятому другим пользователем</td>
+            <td>Не отключает чужой токен, а показывает в строке статуса, кем он занят.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>При сворачивании окно остаётся на панели задач: режим трея отключён. При закрытии программы все токены, подключённые текущим пользователем через клиент, автоматически освобождаются.</p>
+      <p>Для каждого подключённого токена отображается обратный таймер 20 минут. После его окончания появляется вопрос о продолжении. Ответ «Да» запускает следующие 20 минут, ответ «Нет» освобождает токен. Если ответа нет одну минуту, токен освобождается автоматически.</p>
+      <p>Подтверждённое подключение и таймер сначала записываются на компьютере в <code>%LOCALAPPDATA%\DistControl\state\usage-sync-&lt;идентификатор&gt;.json</code>. Общая папка обновляется скрытым процессом в фоне: её временная недоступность больше не задерживает завершение подключения. При следующем запуске оставшаяся очередь возобновляется.</p>
+      <p>Надпись <code>Общий таймер: ожидает синхронизации</code> в заголовке означает, что локальные изменения ещё не переданы в общую папку. Передаются исходное время подключения, проверенный IP и VPN-профиль, а не время поздней отправки. Старое отключение не удаляет таймер нового подключения или другого пользователя. Сведения о других пользователях из общей папки могут временно отставать; владелец перед командами проверяется через службу.</p>
+      <p>Для токена с назначенным VPN клиент каждые 30 секунд в фоне проверяет, что нужное подключение активно и локальная сеть доступна. При разрыве VPN или ошибке проверки токен автоматически освобождается.</p>
+    </section>
+
+    <section id="admin-app">
+      <h2>6. Админская утилита</h2>
+      <p><code>DistControl.Admin.exe</code> запускается с правами администратора. Она нужна для формирования и редактирования <code>allow.json</code>.</p>
+
+      <h3>Основной сценарий</h3>
+      <ol>
+        <li>Запустить <code>DistControl Admin</code>.</li>
+        <li>В поле <code>Пользователь</code> указать логин, например <code>OSNOVA\a.nikitin</code>.</li>
+        <li>Нажать <code>Обновить</code>, чтобы увидеть слева разрешённые токены, а справа токены, которые можно добавить.</li>
+        <li>Двойным кликом перенести нужные токены из правой части в левую. Двойной клик по токену слева убирает его из доступа.</li>
+        <li>Нажать <code>Сохранить доступ</code>.</li>
+      </ol>
+
+      <p>Левая часть окна становится списком <code>allowedDevices</code> выбранного пользователя. Перемещение между частями меняет только подготовленный список; запись в файл выполняется кнопкой <code>Сохранить доступ</code>. В файл записываются только явные добавления и удаления, поэтому временно отсутствующие в выдаче службы токены не теряют доступ.</p>
+      <p>До успешной загрузки выбранного пользователя сохранение заблокировано. Несохранённые изменения отмечаются в заголовке. При смене пользователя, компьютера, конфигурации или закрытии окна админка спрашивает, можно ли отменить подготовленные изменения. Перед записью также проверяется, не изменил ли <code>allow.json</code> другой администратор.</p>
+
+      <h3>Поиск</h3>
+      <p>Поле <code>Поиск</code> фильтрует список по:</p>
+      <ul>
+        <li><code>Endpoint</code>, например <code>distkontrolusb64-1-Gr-01.1124</code>;</li>
+        <li>имени токена, например <code>ИНТЕГРАЛ</code>;</li>
+        <li>продукту, например <code>Rutoken lite</code>;</li>
+        <li>VPN-профилю, состоянию, владельцу или адресу подключения.</li>
+      </ul>
+
+      <h3>Открытие другого конфига</h3>
+      <p>Кнопка <code>Открыть конфиг</code> позволяет выбрать другой JSON-файл. Если внутри некорректный JSON, админка показывает понятную ошибку и не изменяет файл автоматически.</p>
+
+      <h3>Сортировка</h3>
+      <p>Клик по заголовку столбца сортирует таблицу по этому столбцу. Повторный клик меняет направление сортировки. Столбцы можно перетаскивать мышью и менять по ширине; выбранное расположение сохраняется отдельно от <code>allow.json</code> в <code>%LOCALAPPDATA%\DistControl\admin-ui.ini</code>.</p>
+
+      <h3>Удалённый компьютер</h3>
+      <p>В поле <code>Компьютер</code> можно указать имя рабочего места и загрузить его профили пользователей. Админка определяет учётную запись и реальный каталог профиля по SID Windows, поэтому выбор, например, <code>OSNOVA\a.s.nikitin</code> ведёт именно к её файлу <code>AppData\Local\DistControl\allow.json</code>. Нужны административные права и доступ к шару <code>C$</code>.</p>
+
+      <h3>Токены → VPN</h3>
+      <p>Кнопка <code>Токены → VPN</code> открывает общую таблицу для выбранного пользователя. Напротив каждого токена в столбце <code>VPN</code> выбирается вариант <code>Не назначен</code>, <code>БЕЗ VPN</code> или существующий профиль Windows. Для большого списка предусмотрены поиск по токену, endpoint и назначению, ввод названия VPN с клавиатуры и автоматическое сопоставление одинаковых названий. Автосопоставление заполняет только токены без настройки.</p>
+      <p>Пропавшее подключение отображается как <code>Профиль недоступен</code>; прежнее назначение сохраняется до ручной замены. Все подготовленные связи записываются в <code>allow.json</code> одной операцией кнопкой <code>Сохранить</code>.</p>
+      <p>Для локального компьютера админка читает подключения текущего пользователя и общесистемную телефонную книгу RAS. Для удалённого компьютера она читает те же данные через <code>C$</code>. Системные VPN-подключения при этом не создаются и не изменяются.</p>
+      <p>Клиент раз в 30 секунд записывает внешний IP и активные VPN Windows в <code>%LOCALAPPDATA%\DistControl\state\network-state.json</code>. Внешний IP используется для журнала и удалённой диагностики, но не ограничивает подключение токена.</p>
+
+      <h3>Экспорт Excel</h3>
+      <p>Экспорт создаёт HTML-таблицу, открываемую Excel, и включает столбец VPN. Это выгрузка для сверки, а не конфигурация доступа; рабочим источником остаётся <code>allow.json</code>.</p>
+    </section>
+
+    <section id="vpn">
+      <h2>VPN-защита токенов</h2>
+      <ol>
+        <li>Администратор создаёт нужные VPN-профили штатными средствами Windows.</li>
+        <li>В админке существующий VPN или режим «Без VPN» назначается конкретному разрешённому токену и пользователю.</li>
+        <li>Используются логин и пароль, уже сохранённые в Windows RAS. Клиент не предлагает их вводить; если данные не настроены или отклонены VPN, он просит обратиться к администратору. В админку новый редактор паролей не добавляется.</li>
+        <li>Перед переключением канала DistControl подтверждённо освобождает предыдущие токены пользователя на другом сетевом режиме, затем отключает активные VPN Windows.</li>
+        <li>DistControl подключает нужный профиль. Фактический внешний IP по возможности записывается в журнал и не блокирует работу.</li>
+        <li>До и после подключения проверяются локальные маршруты физических LAN/Wi-Fi интерфейсов.</li>
+        <li>После изменения сети клиент до 60 секунд дожидается, пока <code>dkclient</code> снова подтвердит подключение нужного хаба через <code>SERVER INFO</code>, а адрес токена через <code>LIST</code> и <code>DEVICE INFO</code>. Переходные ответы <code>FAILED</code> и <code>Invalid address</code> повторяются ограниченное число раз.</li>
+        <li>Во время работы watchdog проверяет выбранный VPN и локальные маршруты и освобождает токен при нарушении.</li>
+        <li>После успешного <code>STOP USING</code> VPN отключается, если у пользователя не осталось другого активного токена с тем же профилем.</li>
+      </ol>
+      <div class="note warn">Токен без поля <code>vpnProfile</code> отображается в списке, но подключить его нельзя. Сначала назначьте ему VPN Windows или режим «Без VPN».</div>
+      <div class="note ok">Если служба временно возвращает пустой каталог после подключения VPN, DistControl оставляет на экране последний рабочий список и повторяет обновление автоматически.</div>
+      <div class="note warn">Админка удалённо меняет только политику и назначение профилей. Системные VPN и общие ключи настраиваются средствами Windows; секреты по <code>C$</code> не передаются и в JSON не хранятся.</div>
+      <div class="note ok">DistControl не изменяет конфигурацию и маршруты сторонних VPN-клиентов, включая Amnezia. Маршруты установщика ограничены адресами USB-хабов из <code>dkcl.ini</code>.</div>
+    </section>
+
+    <section id="policy">
+      <h2>7. Файл allow.json</h2>
+      <p>Основной файл политики лежит здесь:</p>
+      <pre><code>%LOCALAPPDATA%\DistControl\allow.json</code></pre>
+
+      <p>Пример структуры:</p>
+      <pre><code>{
+  "pipeName": "dkclient",
+  "refreshSeconds": 5,
+  "usageStatePath": "C:\\Users\\user\\AppData\\Local\\DistControl\\state\\usage.json",
+  "vpnProfiles": [
+    {
+      "id": "office-a",
+      "name": "Рабочий VPN A",
+      "serverAddress": "203.0.113.10",
+      "tunnelType": "L2TP",
+      "mode": "windowsVpn",
+      "phonebookScope": "currentUser",
+      "enabled": true
+    }
+  ],
+  "userAssignments": [
+    {
+      "users": [
+        "OSNOVA\\a.nikitin"
+      ],
+      "groups": [],
+      "allowedDevices": [
+        {
+          "endpoint": "distkontrolusb64-1-Gr-01.1124",
+          "nickname": "ИНТЕГРАЛ УК ООО",
+          "product": "Rutoken lite",
+          "vpnProfile": "office-a"
+        }
+      ]
+    }
+  ]
+}</code></pre>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Поле</th>
+            <th>Что означает</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>pipeName</code></td>
+            <td>Имя локального канала DistKontrolUSB. Сейчас используется <code>dkclient</code>.</td>
+          </tr>
+          <tr>
+            <td><code>refreshSeconds</code></td>
+            <td>Период автообновления, если используется в интерфейсе.</td>
+          </tr>
+          <tr>
+            <td><code>usageStatePath</code></td>
+            <td>Единственный источник начала 20-минутного интервала и владельца токена для всех экземпляров DistControl. Для общей работы на разных компьютерах здесь должен быть один и тот же UNC-путь.</td>
+          </tr>
+          <tr>
+            <td><code>vpnProfiles</code></td>
+            <td>Список сетевых режимов. <code>mode: windowsVpn</code> ссылается на существующее подключение Windows, <code>mode: direct</code> означает работу без VPN. Для VPN также хранится <code>phonebookScope</code>: <code>currentUser</code> или <code>allUsers</code>.</td>
+          </tr>
+          <tr>
+            <td><code>userAssignments</code></td>
+            <td>Список назначений: пользователи/группы и разрешенные им токены.</td>
+          </tr>
+          <tr>
+            <td><code>users</code></td>
+            <td>Логины Windows: <code>DOMAIN\user</code>, короткое имя или SID.</td>
+          </tr>
+          <tr>
+            <td><code>groups</code></td>
+            <td>Группы Windows. Можно оставить пустым массивом.</td>
+          </tr>
+          <tr>
+            <td><code>allowedDevices</code></td>
+            <td>Токены, которые пользователь увидит и сможет подключать через DistControl.</td>
+          </tr>
+          <tr>
+            <td><code>endpoint</code></td>
+            <td>Главный идентификатор токена из DistKontrolUSB.</td>
+          </tr>
+          <tr>
+            <td><code>nickname</code></td>
+            <td>Имя токена. Если заполнено, используется как дополнительная проверка.</td>
+          </tr>
+          <tr>
+            <td><code>product</code></td>
+            <td>Продукт, например <code>Rutoken lite</code>. Если заполнено, тоже проверяется.</td>
+          </tr>
+          <tr>
+            <td><code>vpnProfile</code></td>
+            <td>Внутренняя ссылка на выбранный сетевой режим. Админка заполняет её автоматически; без назначения токен виден, но подключение запрещено.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="note">
+        Поля <code>clientExecutable</code> больше нет в плане и в новой политике. Путь к <code>dkcl64.exe</code> находится в настройке службы Windows, а не в <code>allow.json</code>.
+      </div>
+    </section>
+
+    <section id="files">
+      <h2>8. Где лежат файлы</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Путь</th>
+            <th>Назначение</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>%LOCALAPPDATA%\Programs\DistControl\DistControl.exe</code></td>
+            <td>Пользовательская утилита.</td>
+          </tr>
+          <tr>
+            <td><code>%LOCALAPPDATA%\Programs\DistControl\DistControl.Admin.exe</code></td>
+            <td>Админская утилита.</td>
+          </tr>
+          <tr>
+            <td><code>%LOCALAPPDATA%\Programs\DistControl\dkcl64.exe</code></td>
+            <td>Штатный клиент DistKontrolUSB, запускается службой <code>dkclient</code>. Запуск ограничен ACL: не для всей группы Users, а для администраторов, SYSTEM и учетной записи службы.</td>
+          </tr>
+          <tr>
+            <td><code>%LOCALAPPDATA%\Programs\DistControl\dkcl.ini</code></td>
+            <td>Конфиг штатного клиента <code>dkcl64.exe</code>. Наша политика доступа хранится отдельно.</td>
+          </tr>
+          <tr>
+            <td><code>%LOCALAPPDATA%\DistControl\allow.json</code></td>
+            <td>Основной файл доступа.</td>
+          </tr>
+          <tr>
+            <td><code>usage.json</code> по пути из <code>usageStatePath</code></td>
+            <td>Общее состояние владельцев и таймеров. Может находиться в <code>%LOCALAPPDATA%\DistControl</code> или в общей сетевой папке.</td>
+          </tr>
+          <tr>
+            <td><code>%LOCALAPPDATA%\DistControl\logs</code></td>
+            <td>Логи запуска, действий, установки и диагностики.</td>
+          </tr>
+          <tr>
+            <td><code>%APPDATA%\dkcl.ini</code> и <code>%APPDATA%\dkcl64.ini</code></td>
+            <td>Пользовательские файлы инициализации штатного клиента, которые установщик подготавливает вместо обязательного первого ручного запуска.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="diagnostics">
+      <h2>9. Диагностика</h2>
+      <p>Отдельная диагностическая утилита больше не добавляется при установке. Для проверки состояния используем логи DistControl и стандартные команды Windows.</p>
+
+      <p>Быстрая ручная проверка:</p>
+      <pre><code>sc.exe query dkclient
+sc.exe qc dkclient
+dir %LOCALAPPDATA%\DistControl\logs</code></pre>
+
+      <h3>Если DistKontrolUSB снова показывает “СИСТЕМА”</h3>
+      <ol>
+        <li>Проверить <code>sc.exe qc dkclient</code>.</li>
+        <li>Убедиться, что <code>SERVICE_START_NAME</code> не <code>LocalSystem</code>, а нужный пользователь.</li>
+        <li>Остановить старые процессы <code>dkcl64.exe</code>, если они запущены не от службы.</li>
+        <li>Перезапустить службу <code>dkclient</code>.</li>
+      </ol>
+
+      <h3>Если служба не запускается</h3>
+      <ul>
+        <li>Проверить пароль учетной записи службы.</li>
+        <li>Проверить, не заблокирована ли учетная запись и не истек ли пароль.</li>
+        <li>Проверить право <code>Log on as a service</code>.</li>
+        <li>Проверить, что путь к <code>dkcl64.exe</code> и <code>dkcl.ini</code> существует.</li>
+      </ul>
+
+      <h3>Если админка или пользовательская утилита сразу закрывается</h3>
+      <ul>
+        <li>Открыть <code>%LOCALAPPDATA%\DistControl\logs</code>.</li>
+        <li>Найти свежий <code>startup-YYYYMMDD.log</code>.</li>
+        <li>Проверить, не запускается ли старый EXE из старой папки.</li>
+        <li>Проверить, не блокирует ли запуск антивирус/AppLocker/SmartScreen.</li>
+      </ul>
+
+      <h3>Если токен долго подключается или подключается не с первого раза</h3>
+      <ol>
+        <li>Воспроизвести проблему один раз и запомнить примерное время попытки.</li>
+        <li>Открыть <code>%LOCALAPPDATA%\DistControl\logs</code>.</li>
+        <li>Передать администратору свежие <code>trace-YYYYMMDD.log</code>, <code>audit-YYYYMMDD.csv</code> и <code>startup-YYYYMMDD.log</code>.</li>
+      </ol>
+      <p><code>trace-YYYYMMDD.log</code> написан на русском языке. У каждой попытки есть единый номер
+      вида <code>CONNECT-1234-000007</code>, а у каждого этапа указано прошедшее время. Журнал показывает
+      проверку политики, VPN и локальной сети, восстановление каталога DistKontrolUSB, команды
+      <code>DEVICE INFO</code>, <code>USE</code>, <code>STOP USING</code> и обновление окна. Пароли и общие
+      ключи VPN в него не записываются.</p>
+    </section>
+
+    <section id="build">
+      <h2>10. Сборка и пакет</h2>
+      <p>Сборка приложений:</p>
+      <pre><code>build-vs.cmd Debug
+build-vs.cmd Release</code></pre>
+
+      <p>Тесты:</p>
+      <pre><code>test-vs.cmd</code></pre>
+
+      <p>Сборка установщика и переносимого архива:</p>
+      <pre><code>build-installer.cmd</code></pre>
+
+      <p>Результаты:</p>
+      <pre><code>dist\DistControl-Setup.exe
+dist\DistControl-Installer.zip</code></pre>
+
+      <h3>SmartScreen</h3>
+      <p>Если Windows показывает “Система Windows защитила ваш компьютер”, это не ошибка кода. SmartScreen не доверяет неподписанному или новому EXE. Для нормального распространения нужен сертификат подписи кода и накопление репутации у Microsoft.</p>
+      <pre><code>build-installer.cmd -CertificateThumbprint "THUMBPRINT"</code></pre>
+      <pre><code>build-installer.cmd -CertificatePath "C:\Certs\company-code-signing.pfx" -CertificatePassword "PASSWORD"</code></pre>
+    </section>
+
+    <section id="uninstall">
+      <h2>11. Удаление</h2>
+      <p>Удалить DistControl можно через Windows “Приложения”, через ярлык <code>Uninstall DistControl</code> в меню Пуск или командой:</p>
+      <pre><code>uninstall.cmd</code></pre>
+
+      <p>По умолчанию папка <code>%LOCALAPPDATA%\DistControl</code> сохраняется, чтобы не потерять <code>allow.json</code> и логи. Если нужно удалить и данные:</p>
+      <pre><code>uninstall.cmd -RemoveData</code></pre>
+    </section>
+
+    <section id="limits">
+      <h2>12. Текущие ограничения и следующий этап</h2>
+      <ul>
+        <li>Установщик включает SID <code>NT SERVICE\dkclient</code>. Файлы <code>dkcl64.exe</code> и <code>dkcl.ini</code> доступны службе, но не запускаются вручную обычным пользователем.</li>
+        <li>Служба <code>dkclient</code> работает под одной учетной записью. Это хорошо для рабочего места, закрепленного за пользователем. Для терминального сценария с несколькими пользователями нужна отдельная архитектура.</li>
+        <li><code>usage.json</code> помогает нашей утилите показывать владельца, но родной DistKontrolUSB ориентируется на учетку процесса <code>dkcl64.exe</code>.</li>
+        <li>Установщик без подписи может предупреждаться SmartScreen.</li>
+      </ul>
+
+      <h3>Что делать дальше</h3>
+      <ol>
+        <li>Проверить новый установщик на тестовом компьютере.</li>
+        <li>Убедиться, что служба создалась под нужным пользователем и DistKontrolUSB показывает логин.</li>
+        <li>Проверить сценарий админки: поиск, галочки, сохранение доступа, повторное открытие <code>allow.json</code>.</li>
+        <li>После стабилизации решить вопрос строгой защиты от обхода и подписи установщика.</li>
+      </ol>
+    </section>
+  </main>
+</body>
+</html>

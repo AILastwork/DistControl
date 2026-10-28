@@ -1,9 +1,13 @@
 ﻿#Requires -Version 5.1
 [CmdletBinding()]
 param(
-    [string]$InstallDir = (Join-Path $env:ProgramFiles "DiskControl"),
-    [string]$ProgramDataDir = (Join-Path $env:ProgramData "DiskControl"),
+    [string]$InstallDir = (Join-Path $env:LOCALAPPDATA "Programs\DistControl"),
+    [Alias("DataDir")]
+    [string]$ProgramDataDir = (Join-Path $env:LOCALAPPDATA "DistControl"),
     [string]$ServiceName = "dkclient",
+    [string]$TargetUserSid,
+    [string]$UserStartMenuDir = (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\DistControl"),
+    [string]$UserDesktopDir = ([Environment]::GetFolderPath("DesktopDirectory")),
     [switch]$RemoveData,
     [switch]$DryRun
 )
@@ -16,9 +20,11 @@ try {
 }
 catch {
 }
-$UninstallRegistryPath = "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\DiskControl"
-$ClientStartupShortcut = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\Startup\DiskControl dkclient.lnk"
+$EffectiveTargetUserSid = if ([string]::IsNullOrWhiteSpace($TargetUserSid)) { [Security.Principal.WindowsIdentity]::GetCurrent().User.Value } else { $TargetUserSid.Trim() }
+$UninstallRegistryPath = "Registry::HKEY_USERS\$EffectiveTargetUserSid\Software\Microsoft\Windows\CurrentVersion\Uninstall\DistControl"
+$ClientStartupShortcut = Join-Path (Split-Path -Parent $UserStartMenuDir) "Startup\DistControl dkclient.lnk"
 $LogsDir = Join-Path $ProgramDataDir "logs"
+$ManagedHubRoutesPath = Join-Path $ProgramDataDir "managed-hub-routes.json"
 $script:UninstallLogPath = $null
 
 function Write-UninstallLogLine([string]$Message) {
@@ -35,8 +41,8 @@ function Write-UninstallLogLine([string]$Message) {
 }
 
 function Write-Step([string]$Message) {
-    Write-Host "[DiskControl] $Message"
-    Write-UninstallLogLine "[DiskControl] $Message"
+    Write-Host "[DistControl] $Message"
+    Write-UninstallLogLine "[DistControl] $Message"
 }
 
 function Start-UninstallLog {
@@ -45,14 +51,14 @@ function Start-UninstallLog {
     }
 
     try {
-        $root = if ($RemoveData) { Join-Path ([System.IO.Path]::GetTempPath()) "DiskControl-logs" } else { $LogsDir }
+        $root = if ($RemoveData) { Join-Path ([System.IO.Path]::GetTempPath()) "DistControl-logs" } else { $LogsDir }
         New-Item -ItemType Directory -Path $root -Force | Out-Null
         $script:UninstallLogPath = Join-Path $root ("uninstall-{0}.log" -f (Get-Date -Format "yyyyMMdd-HHmmss"))
         [System.IO.File]::WriteAllText($script:UninstallLogPath, "", $script:Utf8NoBomEncoding)
         Write-Step "Uninstall log: $script:UninstallLogPath"
     }
     catch {
-        Write-Host "[DiskControl] WARNING: Cannot start uninstall log: $($_.Exception.Message)"
+        Write-Host "[DistControl] WARNING: Cannot start uninstall log: $($_.Exception.Message)"
     }
 }
 
@@ -66,7 +72,7 @@ function Convert-UninstallErrorToHuman([string]$Message) {
     }
     if ($lower.Contains("dkcl64.exe is still running") -or
         $lower.Contains("stop dkcl64.exe")) {
-        return "Процесс dkcl64.exe продолжает работать. Закройте DiskControl, остановите службу dkclient или перезагрузите компьютер."
+        return "Процесс dkcl64.exe продолжает работать. Закройте DistControl, остановите службу dkclient или перезагрузите компьютер."
     }
     if ($lower.Contains("service") -or
         $lower.Contains("sc.exe")) {
@@ -83,20 +89,20 @@ function Convert-UninstallErrorToHuman([string]$Message) {
 function Write-UninstallErrorDetails([object]$Record) {
     $message = if ($Record -and $Record.Exception) { $Record.Exception.Message } else { "$Record" }
     $human = Convert-UninstallErrorToHuman $message
-    Write-Host "[DiskControl] USER-ERROR: $human"
-    Write-Host "[DiskControl] ERROR: $message"
-    Write-UninstallLogLine "[DiskControl] USER-ERROR: $human"
-    Write-UninstallLogLine "[DiskControl] ERROR: $message"
+    Write-Host "[DistControl] USER-ERROR: $human"
+    Write-Host "[DistControl] ERROR: $message"
+    Write-UninstallLogLine "[DistControl] USER-ERROR: $human"
+    Write-UninstallLogLine "[DistControl] ERROR: $message"
     if ($Record -and $Record.Exception) {
-        Write-UninstallLogLine "[DiskControl] ERROR TYPE: $($Record.Exception.GetType().FullName)"
+        Write-UninstallLogLine "[DistControl] ERROR TYPE: $($Record.Exception.GetType().FullName)"
     }
     if ($Record -and $Record.InvocationInfo) {
-        Write-UninstallLogLine "[DiskControl] ERROR SCRIPT: $($Record.InvocationInfo.ScriptName)"
-        Write-UninstallLogLine "[DiskControl] ERROR LINE: $($Record.InvocationInfo.ScriptLineNumber)"
-        Write-UninstallLogLine "[DiskControl] ERROR COMMAND: $($Record.InvocationInfo.Line)"
+        Write-UninstallLogLine "[DistControl] ERROR SCRIPT: $($Record.InvocationInfo.ScriptName)"
+        Write-UninstallLogLine "[DistControl] ERROR LINE: $($Record.InvocationInfo.ScriptLineNumber)"
+        Write-UninstallLogLine "[DistControl] ERROR COMMAND: $($Record.InvocationInfo.Line)"
     }
     if ($Record -and $Record.ScriptStackTrace) {
-        Write-UninstallLogLine "[DiskControl] ERROR STACK: $($Record.ScriptStackTrace)"
+        Write-UninstallLogLine "[DistControl] ERROR STACK: $($Record.ScriptStackTrace)"
     }
 }
 
@@ -107,7 +113,7 @@ function Write-UninstallEnvironmentSummary {
     catch {
         $identity = "<unknown>"
     }
-    Write-Step "Environment: computer=$env:COMPUTERNAME; processUser=$identity; installDir=$InstallDir; programDataDir=$ProgramDataDir; service=$ServiceName; removeData=$RemoveData"
+    Write-Step "Environment: computer=$env:COMPUTERNAME; processUser=$identity; targetUserSid=$EffectiveTargetUserSid; installDir=$InstallDir; dataDir=$ProgramDataDir; service=$ServiceName; removeData=$RemoveData"
 }
 
 trap {
@@ -207,6 +213,45 @@ function Remove-UninstallEntry {
     }
 }
 
+function Remove-ManagedHubRoutes {
+    if (-not (Test-Path -LiteralPath $ManagedHubRoutesPath)) {
+        return
+    }
+
+    Write-Step "Remove routes managed for DistKontrolUSB hubs"
+    try {
+        $manifest = Get-Content -LiteralPath $ManagedHubRoutesPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        foreach ($route in @($manifest.routes)) {
+            $destination = [string]$route.destination
+            $gateway = [string]$route.gateway
+            $interfaceIndex = [int]$route.interfaceIndex
+            if ([string]::IsNullOrWhiteSpace($destination) -or
+                [string]::IsNullOrWhiteSpace($gateway) -or
+                $interfaceIndex -le 0) {
+                continue
+            }
+
+            Write-Step "Remove managed route: $destination/32 via $gateway if $interfaceIndex"
+            if (-not $DryRun) {
+                $existing = @(Get-NetRoute -AddressFamily IPv4 -DestinationPrefix "$destination/32" -ErrorAction SilentlyContinue |
+                    Where-Object { $_.NextHop -eq $gateway -and $_.ifIndex -eq $interfaceIndex })
+                if ($existing.Count -gt 0) {
+                    Invoke-ExternalOptional "route.exe" @(
+                        "delete", $destination, "mask", "255.255.255.255", $gateway, "if", "$interfaceIndex"
+                    ) "Cannot remove the managed route to DistKontrolUSB hub $destination"
+                }
+            }
+        }
+    }
+    catch {
+        Write-Step "WARNING: Cannot read or remove managed hub routes: $($_.Exception.Message)"
+    }
+
+    if (-not $DryRun) {
+        Remove-Item -LiteralPath $ManagedHubRoutesPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Stop-InstalledDkClientProcess {
     $exePath = Join-Path $InstallDir "dkcl64.exe"
     if ($DryRun) {
@@ -245,6 +290,15 @@ else {
     Write-UninstallEnvironmentSummary
 }
 
+if ($EffectiveTargetUserSid -notmatch '^S-1-(\d+-)+\d+$') {
+    throw "TargetUserSid has an invalid value: $EffectiveTargetUserSid"
+}
+foreach ($path in @($InstallDir, $ProgramDataDir, $UserStartMenuDir, $UserDesktopDir)) {
+    if ([string]::IsNullOrWhiteSpace($path) -or -not [System.IO.Path]::IsPathRooted($path)) {
+        throw "Uninstall path must be absolute: $path"
+    }
+}
+
 $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 if ($service) {
     Write-Step "Stop service $ServiceName"
@@ -266,13 +320,12 @@ if ($service) {
 
 Stop-InstalledDkClientProcess
 
+Remove-ManagedHubRoutes
+
 Remove-PathSafe $ClientStartupShortcut
 
-$startMenu = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\DiskControl"
-Remove-PathSafe $startMenu
-
-$publicDesktop = [Environment]::GetFolderPath("CommonDesktopDirectory")
-Remove-PathSafe (Join-Path $publicDesktop "DiskControl.lnk")
+Remove-PathSafe $UserStartMenuDir
+Remove-PathSafe (Join-Path $UserDesktopDir "DistControl.lnk")
 
 Remove-UninstallEntry
 Stop-InstalledDkClientProcess

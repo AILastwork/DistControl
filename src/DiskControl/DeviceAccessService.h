@@ -1,7 +1,14 @@
 #pragma once
 
+#include "PolicyManager.h"
+
+#include <functional>
 #include <string>
 #include <vector>
+
+using DeviceListProgressCallback = std::function<void(size_t processed, size_t total)>;
+using TokenActionProgressCallback =
+    std::function<void(size_t step, size_t total, const std::wstring& message)>;
 
 struct DeviceViewModel {
     std::wstring endpoint;
@@ -12,27 +19,92 @@ struct DeviceViewModel {
     std::wstring usedBy;
     std::wstring usedAt;
     std::wstring usageStartedAt;
+    std::wstring vpnProfileId;
+    std::wstring vpnProfileDisplay;
     bool allowed = false;
+    // Raw LIST line and DEVICE INFO owner from the last full read. A quick
+    // refresh reuses DEVICE INFO data while the LIST line stays unchanged.
+    std::wstring listLine;
+    std::wstring infoInUseBy;
+    // UTC start of the current usage period (FILETIME ticks), 0 when unknown.
+    unsigned long long usageStartedFileTime = 0;
 };
+
+// True when the token's LIST line is identical to the one previously read
+// together with DEVICE INFO, so that DEVICE INFO does not need to be repeated.
+bool canReuseDeviceInfo(const ParsedDevice& fromList, const DeviceViewModel& previous);
+
+// True when two network profile ids lead to the same network: the same id, or
+// Windows VPN profiles with the same connection name. Several tokens can share
+// one VPN, and it must stay connected while any of them is in use.
+bool usesSameVpn(const std::wstring& leftId, const std::wstring& rightId,
+    const std::vector<VpnProfile>& profiles);
 
 class DeviceAccessService {
 public:
-    std::vector<DeviceViewModel> listVisibleDevices() const;
-    std::vector<DeviceViewModel> listAllDevices() const;
-    std::vector<DeviceViewModel> listAllDevicesForUser(const std::wstring& userName) const;
-    std::wstring useDevice(const DeviceViewModel& device) const;
+    std::vector<DeviceViewModel> listVisibleDevices(const DeviceListProgressCallback& progress = {}) const;
+    std::vector<DeviceViewModel> listVisibleDevicesQuick(const std::vector<DeviceViewModel>& previous) const;
+    std::vector<DeviceViewModel> listAllDevices(const DeviceListProgressCallback& progress = {}) const;
+    std::vector<DeviceViewModel> listAllDevicesForUser(
+        const std::wstring& userName,
+        const DeviceListProgressCallback& progress = {},
+        std::wstring* policyRevision = nullptr) const;
+    std::wstring useDevice(
+        const DeviceViewModel& device,
+        const std::wstring& operationId = {},
+        const TokenActionProgressCallback& progress = {}) const;
     std::wstring stopUsingDevice(const DeviceViewModel& device) const;
-    std::wstring stopUsingOwnedDevice(const DeviceViewModel& device) const;
+    std::wstring stopUsingOwnedDevice(
+        const DeviceViewModel& device,
+        const std::wstring& operationId = {},
+        const TokenActionProgressCallback& progress = {}) const;
     void refreshUsageTimer(const DeviceViewModel& device) const;
+    void requestUsageStateSync() const;
+    size_t pendingUsageSyncCount() const;
+    std::wstring verifyVpnForDevice(const DeviceViewModel& device) const;
     std::wstring assignDeviceToCurrentUser(const DeviceViewModel& device) const;
     std::wstring assignDeviceToUser(const DeviceViewModel& device, const std::wstring& userName) const;
     std::wstring removeDeviceFromUser(const DeviceViewModel& device, const std::wstring& userName) const;
     std::wstring setDevicesForUser(const std::vector<DeviceViewModel>& devices, const std::wstring& userName) const;
-    void updateAccessForUser(std::vector<DeviceViewModel>& devices, const std::wstring& userName) const;
+    std::wstring applyDeviceAccessChanges(
+        const std::vector<DeviceViewModel>& addedDevices,
+        const std::vector<DeviceViewModel>& removedDevices,
+        const std::wstring& userName,
+        const std::wstring& expectedRevision) const;
+    std::wstring setVpnProfileForDevice(
+        const DeviceViewModel& device,
+        const std::wstring& userName,
+        const std::wstring& vpnProfileId) const;
+    std::vector<VpnProfile> vpnProfiles() const;
+    std::wstring saveVpnProfileForDevices(
+        const VpnProfile& profile,
+        const std::vector<DeviceViewModel>& devices,
+        const std::wstring& userName,
+        const std::wstring& expectedRevision) const;
+    std::wstring clearVpnProfileForDevices(
+        const std::vector<DeviceViewModel>& devices,
+        const std::wstring& userName,
+        const std::wstring& expectedRevision) const;
+    std::wstring saveVpnAssignmentsForDevices(
+        const std::vector<VpnProfile>& profiles,
+        const std::vector<DeviceViewModel>& devices,
+        const std::wstring& userName,
+        const std::wstring& expectedRevision) const;
+    void upsertVpnProfile(const VpnProfile& profile) const;
+    void removeVpnProfile(const std::wstring& profileId) const;
+    std::wstring removeVpnProfileChecked(
+        const std::wstring& profileId,
+        const std::wstring& expectedRevision) const;
+    std::wstring updateAccessForUser(std::vector<DeviceViewModel>& devices, const std::wstring& userName) const;
     std::wstring currentUserSummary() const;
     std::wstring currentPolicyPath() const;
 
 private:
-    std::vector<DeviceViewModel> listDevices(bool includeDenied, const std::wstring& policyUser) const;
+    std::vector<DeviceViewModel> listDevices(
+        bool includeDenied,
+        const std::wstring& policyUser,
+        const DeviceListProgressCallback& progress,
+        std::wstring* policyRevision = nullptr,
+        const std::vector<DeviceViewModel>* previous = nullptr) const;
     DeviceViewModel enrichAndVerify(const DeviceViewModel& device) const;
 };
