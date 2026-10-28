@@ -80,6 +80,8 @@ private:
     void updateStatus(const wchar_t* text, COLORREF color = CLR_DEFAULT);
     void createFonts();
     void updateActionButton();
+    void updateAdminMoveButtons(bool controlsEnabled);
+    void drawSelectedTreeLabel(const NMTVCUSTOMDRAW* draw);
     LRESULT customDrawTree(NMTVCUSTOMDRAW* draw);
     void updateRefreshProgress();
     void showRefreshProgress();
@@ -101,6 +103,7 @@ private:
     HIMAGELIST treeImageList_ = nullptr;
     HFONT uiFont_ = nullptr;
     HFONT treeFont_ = nullptr;
+    HFONT treeSelectedFont_ = nullptr;
     HFONT statusFont_ = nullptr;
     COLORREF statusColor_ = CLR_DEFAULT;
     HWND refreshButton_ = nullptr;

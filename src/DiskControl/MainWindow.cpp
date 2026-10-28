@@ -632,13 +632,21 @@ void showBulkVpnEditor(
     SendMessageW(combo, CB_SETCURSEL, selectedItem, 0);
     data.filteringEditor = false;
     data.lastEditorText = rawControlText(combo);
-    SetWindowPos(combo, HWND_TOP, cell.left - 1, cell.top - 1,
-        (std::max)(static_cast<int>(cell.right - cell.left + 2), 260), 320,
-        SWP_SHOWWINDOW);
+    // Keep the whole editor, including its drop-down button, inside the
+    // visible part of the list even when the VPN column is partly scrolled out.
+    RECT listClient{};
+    GetClientRect(list, &listClient);
+    MapWindowPoints(list, dialog, reinterpret_cast<POINT*>(&listClient), 2);
+    const int editorRight = (std::min)(static_cast<int>(cell.right), static_cast<int>(listClient.right));
+    const int editorLeft = (std::max)(static_cast<int>(listClient.left),
+        (std::min)(static_cast<int>(cell.left), editorRight - 200));
+    SendMessageW(combo, CB_SETDROPPEDWIDTH, 420, 0);
+    SetWindowPos(combo, HWND_TOP, editorLeft, cell.top - 1,
+        editorRight - editorLeft, 320, SWP_SHOWWINDOW);
     SetFocus(combo);
     SendMessageW(combo, CB_SETEDITSEL, 0, MAKELPARAM(0, -1));
     SetDlgItemTextW(dialog, IDC_VPN_BULK_HINT,
-        L"Выберите VPN из списка (F4) или вставьте скопированное название (Ctrl+V) и нажмите Enter. "
+        L"Откройте список кнопкой ▼ (или F4) либо вставьте скопированное название (Ctrl+V) и нажмите Enter. "
         L"Esc — отмена.");
 }
 
@@ -769,12 +777,14 @@ INT_PTR CALLBACK vpnBulkDialogProc(HWND dialog, UINT message, WPARAM wParam, LPA
         addColumn(list, 2, 250, L"VPN");
         loadListColumnLayout(list, 3, L"VpnMappings");
         data->editorCombo = CreateWindowExW(
-            WS_EX_CLIENTEDGE, WC_COMBOBOXW, L"",
-            WS_CHILD | WS_VSCROLL | CBS_DROPDOWN | CBS_AUTOHSCROLL,
+            0, WC_COMBOBOXW, L"",
+            WS_CHILD | WS_VSCROLL | WS_TABSTOP | CBS_DROPDOWN | CBS_AUTOHSCROLL,
             0, 0, 0, 0, dialog,
             reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_VPN_BULK_EDITOR)),
             reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(dialog, GWLP_HINSTANCE)), nullptr);
         SendMessageW(data->editorCombo, CB_SETMINVISIBLE, 20, 0);
+        SendMessageW(data->editorCombo, WM_SETFONT,
+            SendMessageW(dialog, WM_GETFONT, 0, 0), FALSE);
         populateBulkVpnList(dialog, *data);
         return TRUE;
     }
@@ -1820,13 +1830,17 @@ std::wstring usageSuffix(const DeviceViewModel& device) {
     return L" (Занят)";
 }
 
-std::wstring treeDeviceText(const DeviceViewModel& device) {
+// The network part is shown only for the selected token so that the list
+// stays compact and the selected row stands out.
+std::wstring treeDeviceText(const DeviceViewModel& device, bool withNetwork = false) {
     std::wstring text = displayDeviceName(device);
-    if (!device.vpnProfileId.empty()) {
-        text += L" [Сеть: " + networkProfileText(device) + L"]";
-    }
-    else {
-        text += L" [сеть не настроена]";
+    if (withNetwork) {
+        if (!device.vpnProfileId.empty()) {
+            text += L" [Сеть: " + networkProfileText(device) + L"]";
+        }
+        else {
+            text += L" [сеть не настроена]";
+        }
     }
     return text + usageSuffix(device);
 }
@@ -2050,6 +2064,13 @@ LRESULT MainWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                 removeSelectedDeviceFromUser();
                 return 0;
             }
+            if (kAdminBuild && header->code == LVN_ITEMCHANGED) {
+                const auto* change = reinterpret_cast<NMLISTVIEW*>(lParam);
+                if ((change->uChanged & LVIF_STATE) != 0 &&
+                    ((change->uOldState ^ change->uNewState) & LVIS_SELECTED) != 0) {
+                    updateAdminMoveButtons(IsWindowEnabled(refreshButton_) != FALSE);
+                }
+            }
         }
         if (availableListView_ && reinterpret_cast<NMHDR*>(lParam)->hwndFrom == availableListView_) {
             const auto* header = reinterpret_cast<NMHDR*>(lParam);
@@ -2062,6 +2083,13 @@ LRESULT MainWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                 assignSelectedDeviceToUser();
                 return 0;
             }
+            if (kAdminBuild && header->code == LVN_ITEMCHANGED) {
+                const auto* change = reinterpret_cast<NMLISTVIEW*>(lParam);
+                if ((change->uChanged & LVIF_STATE) != 0 &&
+                    ((change->uOldState ^ change->uNewState) & LVIS_SELECTED) != 0) {
+                    updateAdminMoveButtons(IsWindowEnabled(refreshButton_) != FALSE);
+                }
+            }
         }
         if (treeView_ && reinterpret_cast<NMHDR*>(lParam)->hwndFrom == treeView_) {
             const auto* header = reinterpret_cast<NMHDR*>(lParam);
@@ -2070,6 +2098,14 @@ LRESULT MainWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             }
             if (header->code == TVN_SELCHANGEDW) {
                 const auto* change = reinterpret_cast<NMTREEVIEWW*>(lParam);
+                // The selected label is drawn wider than the tree knows, so
+                // repaint whole rows of the old and new selection.
+                for (HTREEITEM changed : { change->itemOld.hItem, change->itemNew.hItem }) {
+                    RECT row{};
+                    if (changed && TreeView_GetItemRect(treeView_, changed, &row, FALSE)) {
+                        InvalidateRect(treeView_, &row, TRUE);
+                    }
+                }
                 updateActionButton();
                 const DeviceViewModel* device = selectedDevice();
                 if (device && change->action != TVC_UNKNOWN && !tokenActionRunning_ && !refreshing_) {
@@ -2245,7 +2281,7 @@ LRESULT MainWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             ImageList_Destroy(treeImageList_);
             treeImageList_ = nullptr;
         }
-        for (HFONT* font : { &uiFont_, &treeFont_, &statusFont_ }) {
+        for (HFONT* font : { &uiFont_, &treeFont_, &treeSelectedFont_, &statusFont_ }) {
             if (*font) {
                 DeleteObject(*font);
                 *font = nullptr;
@@ -2335,9 +2371,9 @@ void MainWindow::createControls() {
     computerProgressBar_ = CreateWindowExW(0, PROGRESS_CLASSW, nullptr,
         adminActionStyle | PBS_MARQUEE, 0, 0, 0, 0, hwnd_, nullptr, instance_, nullptr);
     ShowWindow(computerProgressBar_, SW_HIDE);
-    assignUserButton_ = CreateWindowW(L"BUTTON", L"Добавить →", adminActionStyle, 0, 0, 0, 0,
+    assignUserButton_ = CreateWindowW(L"BUTTON", L"← Добавить выбранные", adminActionStyle, 0, 0, 0, 0,
         hwnd_, controlId(IDC_ASSIGN_USER), instance_, nullptr);
-    removeUserButton_ = CreateWindowW(L"BUTTON", L"← Убрать", adminActionStyle, 0, 0, 0, 0,
+    removeUserButton_ = CreateWindowW(L"BUTTON", L"Убрать выбранные →", adminActionStyle, 0, 0, 0, 0,
         hwnd_, controlId(IDC_REMOVE_USER), instance_, nullptr);
     openPolicyButton_ = CreateWindowW(L"BUTTON", L"Открыть конфиг", adminActionStyle, 0, 0, 0, 0,
         hwnd_, controlId(IDC_OPEN_POLICY), instance_, nullptr);
@@ -2391,7 +2427,8 @@ void MainWindow::createFonts() {
     };
     uiFont_ = makeFont(10, FW_NORMAL);
     statusFont_ = makeFont(10, FW_SEMIBOLD);
-    treeFont_ = makeFont(11, FW_SEMIBOLD);
+    treeFont_ = makeFont(10, FW_NORMAL);
+    treeSelectedFont_ = makeFont(11, FW_BOLD);
 
     if (uiFont_) {
         EnumChildWindows(hwnd_, applyFontToChild, reinterpret_cast<LPARAM>(uiFont_));
@@ -2406,12 +2443,13 @@ void MainWindow::createFonts() {
         SendMessageW(treeView_, WM_SETFONT, reinterpret_cast<WPARAM>(treeFont_), TRUE);
         HDC dc = GetDC(treeView_);
         if (dc) {
-            HGDIOBJ old = SelectObject(dc, treeFont_);
+            // Rows are tall enough for the larger bold text of the selected token.
+            HGDIOBJ old = SelectObject(dc, treeSelectedFont_ ? treeSelectedFont_ : treeFont_);
             TEXTMETRICW metrics{};
             GetTextMetricsW(dc, &metrics);
             SelectObject(dc, old);
             ReleaseDC(treeView_, dc);
-            TreeView_SetItemHeight(treeView_, metrics.tmHeight + MulDiv(10, dpi, 96));
+            TreeView_SetItemHeight(treeView_, metrics.tmHeight + MulDiv(4, dpi, 96));
         }
     }
 }
@@ -2474,16 +2512,66 @@ LRESULT MainWindow::customDrawTree(NMTVCUSTOMDRAW* draw) {
         return CDRF_DODEFAULT;
     }
     case CDDS_ITEMPOSTPAINT:
-        if (GetFocus() != treeView_) {
-            RECT label{};
-            if (TreeView_GetItemRect(treeView_, reinterpret_cast<HTREEITEM>(draw->nmcd.dwItemSpec), &label, TRUE)) {
-                DrawFocusRect(draw->nmcd.hdc, &label);
-            }
-        }
+        drawSelectedTreeLabel(draw);
         return CDRF_DODEFAULT;
     default:
         return CDRF_DODEFAULT;
     }
+}
+
+void MainWindow::drawSelectedTreeLabel(const NMTVCUSTOMDRAW* draw) {
+    const HTREEITEM item = reinterpret_cast<HTREEITEM>(draw->nmcd.dwItemSpec);
+    RECT label{};
+    if (!TreeView_GetItemRect(treeView_, item, &label, TRUE)) {
+        return;
+    }
+
+    std::wstring text;
+    const LPARAM param = draw->nmcd.lItemlParam;
+    if (param >= 0 && static_cast<size_t>(param) < devices_.size()) {
+        const DeviceViewModel& device = devices_[static_cast<size_t>(param)];
+        text = treeDeviceText(device, true);
+        const std::wstring duration = activeDurationText(device);
+        if (!duration.empty()) {
+            text += L" [" + duration + L"]";
+        }
+    }
+    else {
+        wchar_t buffer[512]{};
+        TVITEMW info{};
+        info.mask = TVIF_TEXT;
+        info.hItem = item;
+        info.pszText = buffer;
+        info.cchTextMax = static_cast<int>(std::size(buffer));
+        if (TreeView_GetItem(treeView_, &info)) {
+            text = buffer;
+        }
+    }
+
+    HDC dc = draw->nmcd.hdc;
+    HGDIOBJ oldFont = SelectObject(dc, treeSelectedFont_ ? treeSelectedFont_ : treeFont_);
+    RECT measure{ 0, 0, 0, 0 };
+    DrawTextW(dc, text.c_str(), static_cast<int>(text.size()), &measure,
+        DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
+    RECT client{};
+    GetClientRect(treeView_, &client);
+    RECT box = label;
+    box.right = (std::min)((std::max)(label.right, label.left + (measure.right - measure.left) + 8),
+        client.right);
+
+    // Paint over the default label: blue background, white bold text and a
+    // focus frame, kept even when focus is on a button.
+    HBRUSH highlight = GetSysColorBrush(COLOR_HIGHLIGHT);
+    FillRect(dc, &box, highlight);
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, GetSysColor(COLOR_HIGHLIGHTTEXT));
+    RECT textBox = box;
+    textBox.left += 4;
+    DrawTextW(dc, text.c_str(), static_cast<int>(text.size()), &textBox,
+        DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
+    SelectObject(dc, oldFont);
+    SetTextColor(dc, RGB(0, 0, 0));
+    DrawFocusRect(dc, &box);
 }
 
 void MainWindow::layoutControls() {
@@ -2512,15 +2600,23 @@ void MainWindow::layoutControls() {
             listBottom = listTop + 120;
         }
 
-        constexpr int titleHeight = 22;
+        constexpr int titleHeight = 34;
+        constexpr int moveButtonWidth = 230;
+        constexpr int moveButtonHeight = 28;
         const int paneGap = 14;
         const int paneWidth = (width - 2 * margin - paneGap) / 2;
         const int rightPaneX = margin + paneWidth + paneGap;
         const int listY = listTop + titleHeight;
         const int listHeight = listBottom - listY;
+        const int titleWidth = (std::max)(paneWidth - moveButtonWidth - gap, 120);
 
-        MoveWindow(allowedTitleLabel_, margin, listTop, paneWidth, titleHeight, TRUE);
-        MoveWindow(availableTitleLabel_, rightPaneX, listTop, paneWidth, titleHeight, TRUE);
+        MoveWindow(allowedTitleLabel_, margin, listTop + 8, titleWidth, 22, TRUE);
+        MoveWindow(availableTitleLabel_, rightPaneX, listTop + 8, titleWidth, 22, TRUE);
+        // Move buttons sit right above the list they take tokens from.
+        MoveWindow(removeUserButton_, margin + paneWidth - moveButtonWidth, listTop,
+            moveButtonWidth, moveButtonHeight, TRUE);
+        MoveWindow(assignUserButton_, rightPaneX + paneWidth - moveButtonWidth, listTop,
+            moveButtonWidth, moveButtonHeight, TRUE);
         MoveWindow(listView_, margin, listY, paneWidth, listHeight, TRUE);
         MoveWindow(availableListView_, rightPaneX, listY, paneWidth, listHeight, TRUE);
 
@@ -2547,15 +2643,10 @@ void MainWindow::layoutControls() {
         MoveWindow(computerProgressBar_, rowX, computerTop + 7, progressWidth, 18, TRUE);
 
         constexpr int userWidth = 300;
-        constexpr int moveWidth = 120;
         rowX = margin;
         MoveWindow(assignUserLabel_, rowX, userTop + 7, labelWidth, 20, TRUE);
         rowX += labelWidth + gap;
         MoveWindow(assignUserEdit_, rowX, userTop, userWidth, 180, TRUE);
-        rowX += userWidth + gap;
-        MoveWindow(assignUserButton_, rowX, userTop, moveWidth, buttonHeight, TRUE);
-        rowX += moveWidth + gap;
-        MoveWindow(removeUserButton_, rowX, userTop, moveWidth, buttonHeight, TRUE);
 
         int x = margin;
         MoveWindow(refreshButton_, x, buttonTop, buttonWidth, buttonHeight, TRUE);
@@ -2606,11 +2697,16 @@ void MainWindow::setMainControlsEnabled(bool enabled) {
     if (stopButton_) {
         EnableWindow(stopButton_, value);
     }
-    if (assignUserButton_) {
-        EnableWindow(assignUserButton_, value && (!kAdminBuild || adminAccessLoaded_));
+    if (kAdminBuild) {
+        updateAdminMoveButtons(enabled);
     }
-    if (removeUserButton_) {
-        EnableWindow(removeUserButton_, value && (!kAdminBuild || adminAccessLoaded_));
+    else {
+        if (assignUserButton_) {
+            EnableWindow(assignUserButton_, value);
+        }
+        if (removeUserButton_) {
+            EnableWindow(removeUserButton_, value);
+        }
     }
     if (openPolicyButton_) {
         EnableWindow(openPolicyButton_, value);
@@ -3269,6 +3365,30 @@ void MainWindow::populateAdminListViews() {
     const std::wstring rightTitle = L"Можно добавить: " + std::to_wstring(availableDevices_.size());
     SetWindowTextW(allowedTitleLabel_, leftTitle.c_str());
     SetWindowTextW(availableTitleLabel_, rightTitle.c_str());
+    updateAdminMoveButtons(IsWindowEnabled(refreshButton_) != FALSE);
+}
+
+void MainWindow::updateAdminMoveButtons(bool controlsEnabled) {
+    if (!kAdminBuild || !assignUserButton_ || !removeUserButton_) {
+        return;
+    }
+    const UINT toAdd = availableListView_ ? ListView_GetSelectedCount(availableListView_) : 0;
+    const UINT toRemove = listView_ ? ListView_GetSelectedCount(listView_) : 0;
+    const std::wstring addText = toAdd == 0
+        ? L"← Добавить выбранные"
+        : L"← Добавить выбранные (" + std::to_wstring(toAdd) + L")";
+    const std::wstring removeText = toRemove == 0
+        ? L"Убрать выбранные →"
+        : L"Убрать выбранные (" + std::to_wstring(toRemove) + L") →";
+    if (getControlText(assignUserButton_) != addText) {
+        SetWindowTextW(assignUserButton_, addText.c_str());
+    }
+    if (getControlText(removeUserButton_) != removeText) {
+        SetWindowTextW(removeUserButton_, removeText.c_str());
+    }
+    const bool canEdit = controlsEnabled && adminAccessLoaded_;
+    EnableWindow(assignUserButton_, canEdit && toAdd != 0 ? TRUE : FALSE);
+    EnableWindow(removeUserButton_, canEdit && toRemove != 0 ? TRUE : FALSE);
 }
 
 void MainWindow::populateTreeView() {
@@ -3351,6 +3471,11 @@ void MainWindow::updateTreeTimerTextRecursive(HTREEITEM item) {
                     update.iImage = image;
                     update.iSelectedImage = image;
                     TreeView_SetItem(treeView_, &update);
+                    RECT row{};
+                    if (item == TreeView_GetSelection(treeView_) &&
+                        TreeView_GetItemRect(treeView_, item, &row, FALSE)) {
+                        InvalidateRect(treeView_, &row, TRUE);
+                    }
                 }
             }
         }
