@@ -98,6 +98,8 @@ public:
     const std::vector<VpnProfile>& vpnProfiles() const;
     const std::wstring& pipeName() const;
     const std::wstring& usageStatePath() const;
+    // Automatic token list refresh period from "refreshSeconds", 2..300 s.
+    unsigned int refreshSeconds() const;
     const std::wstring& configPath() const;
     const std::wstring& revision() const;
 
@@ -107,6 +109,7 @@ private:
     std::wstring configPath_;
     std::wstring pipeName_ = L"dkclient";
     std::wstring usageStatePath_;
+    unsigned int refreshSeconds_ = 5;
     std::wstring revision_;
     std::vector<DeviceRule> effectiveRules_;
     std::vector<VpnProfile> vpnProfiles_;

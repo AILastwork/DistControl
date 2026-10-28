@@ -157,6 +157,7 @@ std::vector<ParsedDevice> DeviceParser::parseList(const std::wstring& text) {
         }
         device.nickname = nickname;
         device.inUseBy = readListUsage(line);
+        device.listLine = trim(line);
         devices.push_back(device);
     }
 

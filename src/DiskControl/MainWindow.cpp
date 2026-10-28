@@ -3,6 +3,7 @@
 #include "AuditLogger.h"
 #include "DeviceParser.h"
 #include "PolicyManager.h"
+#include "UsageStateStore.h"
 #include "VpnManager.h"
 #include "resource.h"
 
@@ -19,6 +20,7 @@
 #include <fstream>
 #include <iomanip>
 #include <map>
+#include <set>
 #include <sstream>
 #include <string>
 
@@ -44,6 +46,7 @@ constexpr int IDC_VPN_MAPPINGS = 1022;
 constexpr UINT_PTR IDT_DELAYED_REFRESH = 2001;
 constexpr UINT_PTR IDT_USAGE_WATCHDOG = 2002;
 constexpr UINT_PTR IDT_USAGE_SYNC = 2003;
+constexpr UINT_PTR IDT_AUTO_REFRESH = 2004;
 constexpr UINT kRefreshRetryDelayMs = 3000;
 constexpr unsigned int kMaximumAutomaticRefreshRetries = 10;
 constexpr UINT WM_REFRESH_COMPLETE = WM_APP + 1;
@@ -1602,113 +1605,34 @@ std::wstring formatDuration(ULONGLONG elapsedMs) {
     return stream.str();
 }
 
-bool parseFixedNumber(const std::wstring& text, size_t offset, size_t length, WORD& value) {
-    if (offset + length > text.size()) {
+// Usage time comes from the UTC event time of the timer record; records from
+// older versions only carry local "updatedAt" text (see usageElapsedMs).
+bool elapsedMsFromStartIfKnown(const DeviceViewModel& device, ULONGLONG& elapsedMs) {
+    FILETIME nowFileTime{};
+    GetSystemTimeAsFileTime(&nowFileTime);
+    ULARGE_INTEGER now{};
+    now.LowPart = nowFileTime.dwLowDateTime;
+    now.HighPart = nowFileTime.dwHighDateTime;
+    unsigned long long elapsed = 0;
+    if (!usageElapsedMs(device.usageStartedAt, device.usageStartedFileTime, now.QuadPart, elapsed)) {
         return false;
     }
-
-    WORD result = 0;
-    for (size_t i = 0; i < length; ++i) {
-        const wchar_t ch = text[offset + i];
-        if (ch < L'0' || ch > L'9') {
-            return false;
-        }
-        result = static_cast<WORD>(result * 10 + (ch - L'0'));
-    }
-    value = result;
+    elapsedMs = elapsed;
     return true;
 }
 
-ULONGLONG fileTimeToTicks(const FILETIME& fileTime) {
-    ULARGE_INTEGER value{};
-    value.LowPart = fileTime.dwLowDateTime;
-    value.HighPart = fileTime.dwHighDateTime;
-    return value.QuadPart;
-}
-
-bool parseLocalTimestampFileTime(const std::wstring& text, FILETIME& fileTime) {
-    if (text.size() < 19 || text[4] != L'-' || text[7] != L'-' || text[10] != L'T' ||
-        text[13] != L':' || text[16] != L':') {
-        return false;
+std::wstring remainingTextFromStartIfKnown(const DeviceViewModel& device) {
+    ULONGLONG elapsedMs = 0;
+    if (!elapsedMsFromStartIfKnown(device, elapsedMs)) {
+        return {};
     }
-
-    SYSTEMTIME localTime{};
-    if (!parseFixedNumber(text, 0, 4, localTime.wYear) ||
-        !parseFixedNumber(text, 5, 2, localTime.wMonth) ||
-        !parseFixedNumber(text, 8, 2, localTime.wDay) ||
-        !parseFixedNumber(text, 11, 2, localTime.wHour) ||
-        !parseFixedNumber(text, 14, 2, localTime.wMinute) ||
-        !parseFixedNumber(text, 17, 2, localTime.wSecond)) {
-        return false;
-    }
-
-    SYSTEMTIME utcTime{};
-    if (!TzSpecificLocalTimeToSystemTime(nullptr, &localTime, &utcTime)) {
-        return false;
-    }
-    return SystemTimeToFileTime(&utcTime, &fileTime) != FALSE;
-}
-
-std::wstring remainingTextFromStart(const std::wstring& startedAt) {
-    if (startedAt.empty()) {
-        return L"нет данных";
-    }
-
-    FILETIME startFileTime{};
-    if (!parseLocalTimestampFileTime(startedAt, startFileTime)) {
-        return L"нет данных";
-    }
-
-    FILETIME nowFileTime{};
-    GetSystemTimeAsFileTime(&nowFileTime);
-
-    const ULONGLONG startTicks = fileTimeToTicks(startFileTime);
-    const ULONGLONG nowTicks = fileTimeToTicks(nowFileTime);
-    if (nowTicks <= startTicks) {
-        return L"осталось " + formatDuration(kTokenSessionLimitMs);
-    }
-
-    const ULONGLONG elapsedMs = (nowTicks - startTicks) / 10000ULL;
     const ULONGLONG remainingMs = elapsedMs >= kTokenSessionLimitMs ? 0 : kTokenSessionLimitMs - elapsedMs;
     return L"осталось " + formatDuration(remainingMs);
 }
 
-std::wstring remainingTextFromStartIfKnown(const std::wstring& startedAt) {
-    if (startedAt.empty()) {
-        return {};
-    }
-
-    FILETIME startFileTime{};
-    if (!parseLocalTimestampFileTime(startedAt, startFileTime)) {
-        return {};
-    }
-
-    FILETIME nowFileTime{};
-    GetSystemTimeAsFileTime(&nowFileTime);
-
-    const ULONGLONG startTicks = fileTimeToTicks(startFileTime);
-    const ULONGLONG nowTicks = fileTimeToTicks(nowFileTime);
-    if (nowTicks <= startTicks) {
-        return L"осталось " + formatDuration(kTokenSessionLimitMs);
-    }
-
-    const ULONGLONG elapsedMs = (nowTicks - startTicks) / 10000ULL;
-    const ULONGLONG remainingMs = elapsedMs >= kTokenSessionLimitMs ? 0 : kTokenSessionLimitMs - elapsedMs;
-    return L"осталось " + formatDuration(remainingMs);
-}
-
-bool elapsedMsFromStartIfKnown(const std::wstring& startedAt, ULONGLONG& elapsedMs) {
-    FILETIME startFileTime{};
-    if (startedAt.empty() || !parseLocalTimestampFileTime(startedAt, startFileTime)) {
-        return false;
-    }
-
-    FILETIME nowFileTime{};
-    GetSystemTimeAsFileTime(&nowFileTime);
-    const ULONGLONG startTicks = fileTimeToTicks(startFileTime);
-    const ULONGLONG nowTicks = fileTimeToTicks(nowFileTime);
-    elapsedMs = nowTicks <= startTicks ? 0 : (nowTicks - startTicks) / 10000ULL;
-    return true;
+std::wstring remainingTextFromStart(const DeviceViewModel& device) {
+    const std::wstring text = remainingTextFromStartIfKnown(device);
+    return text.empty() ? L"нет данных" : text;
 }
 
 int timedMessageBox(HWND owner, const std::wstring& text, const std::wstring& title, UINT flags, DWORD timeoutMs) {
@@ -1798,7 +1722,7 @@ std::wstring adminRemainingText(const DeviceViewModel& device) {
     if (usage.isFree) {
         return {};
     }
-    return remainingTextFromStart(device.usageStartedAt);
+    return remainingTextFromStart(device);
 }
 
 void updateAdminListTimers(HWND listView, const std::vector<DeviceViewModel>& devices) {
@@ -1830,9 +1754,7 @@ std::wstring usageSuffix(const DeviceViewModel& device) {
     return L" (Занят)";
 }
 
-// The network part is shown only for the selected token so that the list
-// stays compact and the selected row stands out.
-std::wstring treeDeviceText(const DeviceViewModel& device, bool withNetwork = false) {
+std::wstring treeDeviceText(const DeviceViewModel& device, bool withNetwork = true) {
     std::wstring text = displayDeviceName(device);
     if (withNetwork) {
         if (!device.vpnProfileId.empty()) {
@@ -1968,7 +1890,33 @@ LRESULT MainWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         }
         catch (const std::exception&) {
         }
+        applyAutoRefreshInterval();
         refreshDevices();
+        return 0;
+    case WM_QUERYENDSESSION:
+        // Windows is signing out or shutting down: release tokens now, while
+        // the dkclient service still answers, so they are not left occupied.
+        if (!kAdminBuild && !sessionEndReleaseDone_) {
+            ShutdownBlockReasonCreate(hwnd_, L"DistControl отключает токены");
+            closing_ = true;
+            releaseActiveDevices(false);
+            sessionEndReleaseDone_ = true;
+            ShutdownBlockReasonDestroy(hwnd_);
+        }
+        return TRUE;
+    case WM_ENDSESSION:
+        if (wParam && !kAdminBuild && !sessionEndReleaseDone_) {
+            // Forced sign-out may skip WM_QUERYENDSESSION.
+            closing_ = true;
+            releaseActiveDevices(false);
+            sessionEndReleaseDone_ = true;
+        }
+        else if (!wParam) {
+            // Sign-out was cancelled; the program keeps working.
+            closing_ = false;
+            sessionEndReleaseDone_ = false;
+            scheduleDelayedRefresh();
+        }
         return 0;
     case WM_CLOSE:
         if (kAdminBuild && !confirmDiscardAdminChanges()) {
@@ -2022,6 +1970,14 @@ LRESULT MainWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                 catch (const std::exception&) {
                     // Policy errors are shown by the regular device refresh.
                 }
+            }
+            return 0;
+        }
+        if (wParam == IDT_AUTO_REFRESH) {
+            if (!kAdminBuild && !diagnosticsMode_ && !closing_ && !refreshing_ && !tokenActionRunning_ &&
+                !vpnWatchdogRunning_ && !timeoutPromptActive_ && !allDevices_.empty() &&
+                GetTickCount64() >= quietRefreshResumeAt_) {
+                refreshDevices(true);
             }
             return 0;
         }
@@ -2277,6 +2233,7 @@ LRESULT MainWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         KillTimer(hwnd_, IDT_DELAYED_REFRESH);
         KillTimer(hwnd_, IDT_USAGE_WATCHDOG);
         KillTimer(hwnd_, IDT_USAGE_SYNC);
+        KillTimer(hwnd_, IDT_AUTO_REFRESH);
         if (treeImageList_) {
             ImageList_Destroy(treeImageList_);
             treeImageList_ = nullptr;
@@ -2858,6 +2815,12 @@ void MainWindow::startTokenAction(DeviceViewModel device, bool connect) {
         std::wstring(L"Интерфейс принял команду пользователя: ") +
             (connect ? L"подключить" : L"отключить") + L" токен «" + device.nickname +
             L"», endpoint=" + device.endpoint + L".");
+    if (refreshing_ && quietRefresh_) {
+        AuditLogger::trace(operationId, L"Идёт фоновое обновление списка; команда будет выполнена сразу после него.");
+        queuedTokenAction_ = { device, connect, true };
+        updateStatus(L"Обновляем список токенов, команда выполнится через секунду...");
+        return;
+    }
     if (vpnWatchdogRunning_) {
         AuditLogger::trace(operationId, L"Операция не начата: сейчас выполняется фоновая проверка VPN.");
         updateStatus(L"Дождитесь окончания проверки VPN.");
@@ -3016,26 +2979,37 @@ void MainWindow::finishTokenAction() {
     scheduleDelayedRefresh();
 }
 
-void MainWindow::refreshDevices() {
+void MainWindow::refreshDevices(bool quiet) {
     if (vpnWatchdogRunning_) {
-        updateStatus(L"Дождитесь окончания проверки VPN.");
+        if (!quiet) {
+            updateStatus(L"Дождитесь окончания проверки VPN.");
+        }
         return;
     }
     if (tokenActionRunning_) {
-        updateStatus(L"Сейчас выполняется операция с токеном...");
+        if (!quiet) {
+            updateStatus(L"Сейчас выполняется операция с токеном...");
+        }
         return;
     }
 
     bool expected = false;
     if (!refreshing_.compare_exchange_strong(expected, true)) {
-        updateStatus(L"Обновление уже выполняется...");
+        if (!quiet) {
+            updateStatus(L"Обновление уже выполняется...");
+        }
         return;
     }
 
-    KillTimer(hwnd_, IDT_DELAYED_REFRESH);
-    setMainControlsEnabled(false);
-    showRefreshProgress();
-    updateStatus(L"Загрузка списка устройств...");
+    // A quiet refresh runs in the background on a timer: it keeps the buttons,
+    // status line and tree state untouched and only re-reads changed tokens.
+    quietRefresh_ = quiet;
+    if (!quiet) {
+        KillTimer(hwnd_, IDT_DELAYED_REFRESH);
+        setMainControlsEnabled(false);
+        showRefreshProgress();
+        updateStatus(L"Загрузка списка устройств...");
+    }
 
     if (refreshThread_.joinable()) {
         refreshThread_.join();
@@ -3043,7 +3017,11 @@ void MainWindow::refreshDevices() {
 
     const bool includeDenied = kAdminBuild || diagnosticsMode_;
     const std::wstring policyUser = kAdminBuild ? getControlText(assignUserEdit_) : L"";
-    refreshThread_ = std::thread([this, includeDenied, policyUser]() {
+    std::vector<DeviceViewModel> previous;
+    if (quiet) {
+        previous = allDevices_;
+    }
+    refreshThread_ = std::thread([this, includeDenied, policyUser, quiet, previous = std::move(previous)]() {
         std::vector<DeviceViewModel> loadedDevices;
         std::wstring loadedError;
         std::wstring loadedPolicyRevision;
@@ -3055,13 +3033,17 @@ void MainWindow::refreshDevices() {
             }
         };
         try {
-            loadedDevices = kAdminBuild
+            loadedDevices = quiet
+                ? service_.listVisibleDevicesQuick(previous)
+                : kAdminBuild
                 ? service_.listAllDevicesForUser(policyUser, progress, &loadedPolicyRevision)
                 : (includeDenied ? service_.listAllDevices(progress) : service_.listVisibleDevices(progress));
         }
         catch (const std::exception& error) {
             loadedError = L"Не удалось обновить список токенов. " + userFriendlyErrorMessage(error.what());
-            logUiError(L"UI REFRESH ERROR", error.what(), loadedError);
+            if (!quiet) {
+                logUiError(L"UI REFRESH ERROR", error.what(), loadedError);
+            }
         }
 
         {
@@ -3192,6 +3174,22 @@ void MainWindow::finishRefresh() {
         pendingError_.clear();
     }
 
+    const bool quiet = quietRefresh_;
+    quietRefresh_ = false;
+    if (quiet && !loadedError.empty()) {
+        // Keep the current list; back off up to a minute while the service is unavailable.
+        ++quietRefreshFailures_;
+        const ULONGLONG delay = (std::min)(60000ULL,
+            static_cast<ULONGLONG>(autoRefreshSeconds_ == 0 ? 5 : autoRefreshSeconds_) * 1000ULL *
+                (1ULL << (std::min)(quietRefreshFailures_, 4u)));
+        quietRefreshResumeAt_ = GetTickCount64() + delay;
+        refreshing_ = false;
+        runQueuedTokenAction();
+        return;
+    }
+    quietRefreshFailures_ = 0;
+    quietRefreshResumeAt_ = 0;
+
     if (!loadedError.empty()) {
         ++consecutiveRefreshFailures_;
         if (!allDevices_.empty()) {
@@ -3224,10 +3222,60 @@ void MainWindow::finishRefresh() {
     }
 
     updateActiveDeviceTracking();
-    applyDeviceFilter();
-    hideRefreshProgress();
+    applyDeviceFilter(!quiet);
     refreshing_ = false;
-    setMainControlsEnabled(true);
+    if (quiet) {
+        updateActionButton();
+    }
+    else {
+        hideRefreshProgress();
+        setMainControlsEnabled(true);
+        applyAutoRefreshInterval();
+    }
+    runQueuedTokenAction();
+}
+
+void MainWindow::applyAutoRefreshInterval() {
+    if (kAdminBuild) {
+        return;
+    }
+    unsigned int seconds = 5;
+    try {
+        seconds = PolicyManager().refreshSeconds();
+    }
+    catch (const std::exception&) {
+        // The regular refresh reports policy errors.
+    }
+    if (seconds != autoRefreshSeconds_) {
+        autoRefreshSeconds_ = seconds;
+        SetTimer(hwnd_, IDT_AUTO_REFRESH, seconds * 1000U, nullptr);
+    }
+}
+
+void MainWindow::runQueuedTokenAction() {
+    if (!queuedTokenAction_.valid) {
+        return;
+    }
+    const DeviceViewModel requested = queuedTokenAction_.device;
+    const bool connect = queuedTokenAction_.connect;
+    queuedTokenAction_ = {};
+
+    const auto found = std::find_if(devices_.begin(), devices_.end(),
+        [&requested](const DeviceViewModel& device) { return device.endpoint == requested.endpoint; });
+    if (found == devices_.end()) {
+        updateStatus(L"Токен больше не доступен в списке.");
+        return;
+    }
+    const DeviceUsageInfo usage = DeviceParser::parseUsage(found->inUseBy, PolicyManager::currentUserName());
+    if (connect && !usage.isFree) {
+        updateStatus(usage.isUsedByCurrentUser ? L"Токен уже подключён вами." : L"Токен только что занял другой пользователь.");
+        return;
+    }
+    if (!connect && !usage.isUsedByCurrentUser) {
+        updateStatus(L"Токен уже отключён.");
+        return;
+    }
+    startTokenAction(*found, connect);
 }
 
 void MainWindow::exportExcel() {
@@ -3292,7 +3340,7 @@ void MainWindow::exportExcel() {
     updateStatus(status.c_str());
 }
 
-void MainWindow::applyDeviceFilter() {
+void MainWindow::applyDeviceFilter(bool showSummary) {
     const std::wstring query = diagnosticsMode_ ? getControlText(searchEdit_) : L"";
     devices_.clear();
     for (const DeviceViewModel& device : allDevices_) {
@@ -3324,7 +3372,9 @@ void MainWindow::applyDeviceFilter() {
     else {
         status = L"Найдено разрешённых устройств: " + std::to_wstring(devices_.size());
     }
-    updateStatus(status.c_str());
+    if (showSummary) {
+        updateStatus(status.c_str());
+    }
 }
 
 void MainWindow::populateListView() {
@@ -3396,7 +3446,47 @@ void MainWindow::populateTreeView() {
         return;
     }
 
+    std::vector<std::wstring> endpoints;
+    endpoints.reserve(devices_.size());
+    for (const DeviceViewModel& device : devices_) {
+        endpoints.push_back(device.endpoint);
+    }
+    if (!endpoints.empty() && endpoints == treeEndpoints_ && TreeView_GetCount(treeView_) != 0) {
+        // Same tokens in the same order: update texts and icons in place.
+        updateTreeTimerText();
+        return;
+    }
+
+    // Remember what the user sees, keyed by endpoint or group name, because
+    // item handles and indexes change with the rebuild.
+    const auto itemKey = [this](HTREEITEM item) -> std::wstring {
+        wchar_t text[512]{};
+        TVITEMW info{};
+        info.mask = TVIF_PARAM | TVIF_TEXT;
+        info.hItem = item;
+        info.pszText = text;
+        info.cchTextMax = static_cast<int>(std::size(text));
+        if (!item || !TreeView_GetItem(treeView_, &info)) {
+            return {};
+        }
+        if (info.lParam == kTreeGroupParam) {
+            return L"group:" + std::wstring(text);
+        }
+        const size_t index = static_cast<size_t>(info.lParam);
+        return index < treeEndpoints_.size() ? treeEndpoints_[index] : std::wstring{};
+    };
+    const std::wstring selectedKey = itemKey(TreeView_GetSelection(treeView_));
+    const std::wstring firstVisibleKey = itemKey(TreeView_GetFirstVisible(treeView_));
+    std::set<std::wstring> collapsedGroups;
+    for (HTREEITEM group = TreeView_GetRoot(treeView_); group; group = TreeView_GetNextSibling(treeView_, group)) {
+        if ((TreeView_GetItemState(treeView_, group, TVIS_EXPANDED) & TVIS_EXPANDED) == 0) {
+            collapsedGroups.insert(itemKey(group));
+        }
+    }
+
+    SendMessageW(treeView_, WM_SETREDRAW, FALSE, 0);
     TreeView_DeleteAllItems(treeView_);
+    std::map<std::wstring, HTREEITEM> itemsByKey;
     std::map<std::wstring, HTREEITEM> groups;
     for (size_t i = 0; i < devices_.size(); ++i) {
         const DeviceViewModel& device = devices_[i];
@@ -3414,6 +3504,7 @@ void MainWindow::populateTreeView() {
             groupInsert.item.iSelectedImage = 0;
             groupItem = TreeView_InsertItem(treeView_, &groupInsert);
             groups.emplace(groupName, groupItem);
+            itemsByKey[L"group:" + groupName] = groupItem;
         }
         else {
             groupItem = existing->second;
@@ -3432,9 +3523,24 @@ void MainWindow::populateTreeView() {
         itemInsert.item.lParam = static_cast<LPARAM>(i);
         itemInsert.item.iImage = image;
         itemInsert.item.iSelectedImage = image;
-        TreeView_InsertItem(treeView_, &itemInsert);
-        TreeView_Expand(treeView_, groupItem, TVE_EXPAND);
-    }    updateActionButton();
+        itemsByKey[device.endpoint] = TreeView_InsertItem(treeView_, &itemInsert);
+        if (collapsedGroups.count(L"group:" + groupName) == 0) {
+            TreeView_Expand(treeView_, groupItem, TVE_EXPAND);
+        }
+    }
+
+    treeEndpoints_ = std::move(endpoints);
+    const auto restored = itemsByKey.find(selectedKey);
+    if (restored != itemsByKey.end()) {
+        TreeView_SelectItem(treeView_, restored->second);
+    }
+    const auto firstVisible = itemsByKey.find(firstVisibleKey);
+    if (firstVisible != itemsByKey.end()) {
+        TreeView_SelectSetFirstVisible(treeView_, firstVisible->second);
+    }
+    SendMessageW(treeView_, WM_SETREDRAW, TRUE, 0);
+    InvalidateRect(treeView_, nullptr, TRUE);
+    updateActionButton();
 }
 
 void MainWindow::updateTreeTimerText() {
@@ -4389,7 +4495,7 @@ void MainWindow::checkActiveDeviceTimeouts() {
 
         ULONGLONG elapsedMs = now - found->second;
         ULONGLONG sharedElapsedMs = 0;
-        if (elapsedMsFromStartIfKnown(device.usageStartedAt, sharedElapsedMs)) {
+        if (elapsedMsFromStartIfKnown(device, sharedElapsedMs)) {
             elapsedMs = sharedElapsedMs;
         }
         if (elapsedMs < kTokenSessionLimitMs) {
@@ -4446,6 +4552,7 @@ void MainWindow::checkActiveDeviceTimeouts() {
                 for (DeviceViewModel& current : devices) {
                     if (current.endpoint == endpoint) {
                         current.usageStartedAt.clear();
+                        current.usageStartedFileTime = 0;
                     }
                 }
             };
@@ -4550,6 +4657,7 @@ void MainWindow::markDeviceLocallyReleased(const std::wstring& endpoint) {
             device.usedBy.clear();
             device.usedAt.clear();
             device.usageStartedAt.clear();
+            device.usageStartedFileTime = 0;
         }
     };
 
@@ -4573,7 +4681,7 @@ std::wstring MainWindow::activeDurationText(const DeviceViewModel& device) const
         return {};
     }
 
-    const std::wstring sharedDuration = remainingTextFromStartIfKnown(device.usageStartedAt);
+    const std::wstring sharedDuration = remainingTextFromStartIfKnown(device);
     if (!sharedDuration.empty()) {
         return sharedDuration;
     }

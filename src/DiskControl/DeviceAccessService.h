@@ -22,11 +22,22 @@ struct DeviceViewModel {
     std::wstring vpnProfileId;
     std::wstring vpnProfileDisplay;
     bool allowed = false;
+    // Raw LIST line and DEVICE INFO owner from the last full read. A quick
+    // refresh reuses DEVICE INFO data while the LIST line stays unchanged.
+    std::wstring listLine;
+    std::wstring infoInUseBy;
+    // UTC start of the current usage period (FILETIME ticks), 0 when unknown.
+    unsigned long long usageStartedFileTime = 0;
 };
+
+// True when the token's LIST line is identical to the one previously read
+// together with DEVICE INFO, so that DEVICE INFO does not need to be repeated.
+bool canReuseDeviceInfo(const ParsedDevice& fromList, const DeviceViewModel& previous);
 
 class DeviceAccessService {
 public:
     std::vector<DeviceViewModel> listVisibleDevices(const DeviceListProgressCallback& progress = {}) const;
+    std::vector<DeviceViewModel> listVisibleDevicesQuick(const std::vector<DeviceViewModel>& previous) const;
     std::vector<DeviceViewModel> listAllDevices(const DeviceListProgressCallback& progress = {}) const;
     std::vector<DeviceViewModel> listAllDevicesForUser(
         const std::wstring& userName,
@@ -87,6 +98,7 @@ private:
         bool includeDenied,
         const std::wstring& policyUser,
         const DeviceListProgressCallback& progress,
-        std::wstring* policyRevision = nullptr) const;
+        std::wstring* policyRevision = nullptr,
+        const std::vector<DeviceViewModel>* previous = nullptr) const;
     DeviceViewModel enrichAndVerify(const DeviceViewModel& device) const;
 };

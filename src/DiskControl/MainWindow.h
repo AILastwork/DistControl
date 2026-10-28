@@ -31,7 +31,9 @@ private:
 
     void createControls();
     void layoutControls();
-    void refreshDevices();
+    void refreshDevices(bool quiet = false);
+    void applyAutoRefreshInterval();
+    void runQueuedTokenAction();
     void exportExcel();
     void exportJson();
     void assignSelectedDeviceToUser();
@@ -56,7 +58,7 @@ private:
     void updateTokenActionProgress();
     void setMainControlsEnabled(bool enabled);
     void scheduleDelayedRefresh();
-    void applyDeviceFilter();
+    void applyDeviceFilter(bool showSummary = true);
     void populateListView();
     void populateAdminListViews();
     void populateTreeView();
@@ -104,6 +106,17 @@ private:
     HFONT uiFont_ = nullptr;
     HFONT treeFont_ = nullptr;
     HFONT treeSelectedFont_ = nullptr;
+    std::vector<std::wstring> treeEndpoints_;
+    struct QueuedTokenAction {
+        DeviceViewModel device;
+        bool connect = false;
+        bool valid = false;
+    } queuedTokenAction_;
+    bool quietRefresh_ = false;
+    bool sessionEndReleaseDone_ = false;
+    unsigned int autoRefreshSeconds_ = 0;
+    unsigned int quietRefreshFailures_ = 0;
+    ULONGLONG quietRefreshResumeAt_ = 0;
     HFONT statusFont_ = nullptr;
     COLORREF statusColor_ = CLR_DEFAULT;
     HWND refreshButton_ = nullptr;

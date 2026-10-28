@@ -135,12 +135,17 @@ std::wstring humanErrorDescription(const char* error) {
 
 class HumanOperationTrace {
 public:
-    explicit HumanOperationTrace(const wchar_t* prefix, const std::wstring& operationId = {})
+    explicit HumanOperationTrace(const wchar_t* prefix, const std::wstring& operationId = {},
+        bool enabled = true)
         : id_(operationId.empty() ? AuditLogger::createOperationId(prefix) : operationId),
-          startedAt_(GetTickCount64()) {
+          startedAt_(GetTickCount64()),
+          enabled_(enabled) {
     }
 
     void step(const std::wstring& message) const {
+        if (!enabled_) {
+            return;
+        }
         AuditLogger::trace(id_, message + L" Прошло с начала операции: " +
             std::to_wstring(elapsedMs()) + L" мс.");
     }
@@ -156,6 +161,7 @@ public:
 private:
     std::wstring id_;
     ULONGLONG startedAt_ = 0;
+    bool enabled_ = true;
 };
 
 std::wstring trimResponse(const std::wstring& text) {
@@ -736,9 +742,20 @@ std::vector<DeviceViewModel> DeviceAccessService::listVisibleDevices(
     return listDevices(false, L"", progress, nullptr);
 }
 
+std::vector<DeviceViewModel> DeviceAccessService::listVisibleDevicesQuick(
+    const std::vector<DeviceViewModel>& previous) const {
+    return listDevices(false, L"", {}, nullptr, &previous);
+}
+
 std::vector<DeviceViewModel> DeviceAccessService::listAllDevices(
     const DeviceListProgressCallback& progress) const {
     return listDevices(true, L"", progress, nullptr);
+}
+
+bool canReuseDeviceInfo(const ParsedDevice& fromList, const DeviceViewModel& previous) {
+    return !previous.listLine.empty() && !fromList.listLine.empty() &&
+        CompareStringOrdinal(fromList.endpoint.c_str(), -1, previous.endpoint.c_str(), -1, TRUE) == CSTR_EQUAL &&
+        fromList.listLine == previous.listLine;
 }
 
 std::vector<DeviceViewModel> DeviceAccessService::listAllDevicesForUser(
@@ -1071,7 +1088,7 @@ void DeviceAccessService::refreshUsageTimer(const DeviceViewModel& device) const
 
 void DeviceAccessService::requestUsageStateSync() const {
     PolicyManager policy;
-    UsageStateSync(policy.usageStatePath()).requestBackgroundSync(policy.pipeName());
+    UsageStateSync(policy.usageStatePath()).requestBackgroundSync(policy.pipeName(), true);
 }
 
 size_t DeviceAccessService::pendingUsageSyncCount() const {
@@ -1375,8 +1392,12 @@ std::vector<DeviceViewModel> DeviceAccessService::listDevices(
     bool includeDenied,
     const std::wstring& policyUser,
     const DeviceListProgressCallback& progress,
-    std::wstring* policyRevision) const {
-    HumanOperationTrace trace(L"REFRESH");
+    std::wstring* policyRevision,
+    const std::vector<DeviceViewModel>* previous) const {
+    // Quick background refreshes run every few seconds and stay out of the
+    // human-readable trace; errors are still written to the audit log.
+    const bool quick = previous != nullptr;
+    HumanOperationTrace trace(L"REFRESH", {}, !quick);
     trace.step(includeDenied
         ? L"Начато обновление полного списка токенов для админской утилиты."
         : L"Начато обновление разрешённого списка токенов пользователя.");
@@ -1430,7 +1451,22 @@ std::vector<DeviceViewModel> DeviceAccessService::listDevices(
         size_t processed = 0;
         for (ParsedDevice& device : devices) {
             bool deviceInfoLoaded = false;
-            if (GetTickCount64() - enrichmentStartedAt < enrichmentBudgetMs) {
+            const DeviceViewModel* unchanged = nullptr;
+            if (previous) {
+                for (const DeviceViewModel& candidate : *previous) {
+                    if (canReuseDeviceInfo(device, candidate)) {
+                        unchanged = &candidate;
+                        break;
+                    }
+                }
+            }
+            if (unchanged) {
+                device.nickname = unchanged->nickname;
+                device.product = unchanged->product;
+                device.inUseBy = unchanged->infoInUseBy;
+                deviceInfoLoaded = true;
+            }
+            else if (GetTickCount64() - enrichmentStartedAt < enrichmentBudgetMs) {
                 try {
                     const std::wstring infoResponse =
                         ipc.issueCommand(L"DEVICE INFO," + device.endpoint, deviceInfoTimeoutMs);
@@ -1452,12 +1488,15 @@ std::vector<DeviceViewModel> DeviceAccessService::listDevices(
                 enrichmentBudgetWarningLogged = true;
             }
 
+            const std::wstring infoInUseBy = device.inUseBy;
             UsageStateRecord usageRecord;
             std::wstring usageStartedAt;
+            unsigned long long usageStartedFileTime = 0;
             try {
                 usageState.applyRecordedUsage(device, usageRecords);
                 if (usageState.tryGetRecord(device, usageRecord, usageRecords)) {
                     usageStartedAt = usageRecord.updatedAt;
+                    usageStartedFileTime = usageRecord.eventFileTime;
                 }
             }
             catch (const std::exception& error) {
@@ -1470,6 +1509,9 @@ std::vector<DeviceViewModel> DeviceAccessService::listDevices(
                 DeviceParser::parseUsage(device.inUseBy, PolicyManager::currentUserName()).isUsedByCurrentUser;
             if (allowed || includeDenied || connectedByCurrentUser) {
                 DeviceViewModel view = toViewModel(device, allowed, usageStartedAt);
+                view.usageStartedFileTime = usageStartedFileTime;
+                view.listLine = deviceInfoLoaded ? device.listLine : std::wstring{};
+                view.infoInUseBy = infoInUseBy;
                 view.vpnProfileId = vpnProfileIdForDevice(device, activeRules);
                 view.vpnProfileDisplay = vpnProfileDisplayName(view.vpnProfileId, policy.vpnProfiles());
                 result.push_back(std::move(view));
@@ -1485,12 +1527,14 @@ std::vector<DeviceViewModel> DeviceAccessService::listDevices(
             }
         }
 
-        AuditEvent event;
-        event.action = includeDenied ? L"LIST DIAGNOSTICS" : L"LIST";
-        event.result = L"OK";
-        event.details = L"operationId=" + trace.id() + L"; elapsedMs=" + std::to_wstring(trace.elapsedMs()) +
-            L"; visible=" + std::to_wstring(result.size()) + L", total=" + std::to_wstring(devices.size());
-        AuditLogger::log(event);
+        if (!quick) {
+            AuditEvent event;
+            event.action = includeDenied ? L"LIST DIAGNOSTICS" : L"LIST";
+            event.result = L"OK";
+            event.details = L"operationId=" + trace.id() + L"; elapsedMs=" + std::to_wstring(trace.elapsedMs()) +
+                L"; visible=" + std::to_wstring(result.size()) + L", total=" + std::to_wstring(devices.size());
+            AuditLogger::log(event);
+        }
         trace.step(L"Обновление списка завершено успешно. Показано токенов: " +
             std::to_wstring(result.size()) + L" из " + std::to_wstring(devices.size()) + L".");
         return result;

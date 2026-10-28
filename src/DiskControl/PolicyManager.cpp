@@ -1515,6 +1515,10 @@ const std::wstring& PolicyManager::configPath() const {
     return configPath_;
 }
 
+unsigned int PolicyManager::refreshSeconds() const {
+    return refreshSeconds_;
+}
+
 const std::wstring& PolicyManager::revision() const {
     return revision_;
 }
@@ -1530,6 +1534,12 @@ void PolicyManager::load() {
     const std::wstring usageStatePath = stringValue(root.find(L"usageStatePath"));
     if (!usageStatePath.empty()) {
         usageStatePath_ = usageStatePath;
+    }
+
+    const JsonValue* refresh = root.find(L"refreshSeconds");
+    if (refresh && refresh->type == JsonValue::Type::Number) {
+        const double seconds = refresh->numberValue;
+        refreshSeconds_ = seconds < 2 ? 2u : (seconds > 300 ? 300u : static_cast<unsigned int>(seconds));
     }
 
     vpnProfiles_ = vpnProfilesFromJson(root.find(L"vpnProfiles"));

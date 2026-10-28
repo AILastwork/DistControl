@@ -13,7 +13,9 @@
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <memory>
 #include <mutex>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
@@ -211,6 +213,9 @@ void writeUtf8File(const std::wstring& path, const std::wstring& text) {
     }
 }
 
+// Paths whose usage state lock is held by the current thread.
+thread_local std::set<std::wstring> tHeldUsageStateLocks;
+
 class UsageStateFileLock {
 public:
     explicit UsageStateFileLock(const std::wstring& statePath) {
@@ -231,6 +236,8 @@ public:
                 FILE_ATTRIBUTE_NORMAL,
                 nullptr);
             if (handle_ != INVALID_HANDLE_VALUE) {
+                heldPath_ = lowerCopy(statePath);
+                tHeldUsageStateLocks.insert(heldPath_);
                 return;
             }
 
@@ -246,8 +253,13 @@ public:
 
     ~UsageStateFileLock() {
         if (handle_ != INVALID_HANDLE_VALUE) {
+            tHeldUsageStateLocks.erase(heldPath_);
             CloseHandle(handle_);
         }
+    }
+
+    static bool heldByThisThread(const std::wstring& statePath) {
+        return tHeldUsageStateLocks.count(lowerCopy(statePath)) != 0;
     }
 
     UsageStateFileLock(const UsageStateFileLock&) = delete;
@@ -255,6 +267,7 @@ public:
 
 private:
     HANDLE handle_ = INVALID_HANDLE_VALUE;
+    std::wstring heldPath_;
 };
 
 using DistControlJson::JsonValue;
@@ -398,6 +411,46 @@ std::wstring usageText(const UsageStateRecord& record) {
     }
     return text;
 }
+}
+
+bool usageElapsedMs(const std::wstring& startedAtLocal, unsigned long long startedFileTime,
+    unsigned long long nowFileTime, unsigned long long& elapsedMs) {
+    unsigned long long startTicks = startedFileTime;
+    if (startTicks == 0) {
+        const std::wstring& text = startedAtLocal;
+        if (text.size() < 19 || text[4] != L'-' || text[7] != L'-' || text[10] != L'T' ||
+            text[13] != L':' || text[16] != L':') {
+            return false;
+        }
+        SYSTEMTIME localTime{};
+        WORD* const fields[] = { &localTime.wYear, &localTime.wMonth, &localTime.wDay,
+            &localTime.wHour, &localTime.wMinute, &localTime.wSecond };
+        const size_t offsets[] = { 0, 5, 8, 11, 14, 17 };
+        const size_t lengths[] = { 4, 2, 2, 2, 2, 2 };
+        for (size_t index = 0; index < std::size(fields); ++index) {
+            unsigned int value = 0;
+            for (size_t digit = 0; digit < lengths[index]; ++digit) {
+                const wchar_t ch = text[offsets[index] + digit];
+                if (ch < L'0' || ch > L'9') {
+                    return false;
+                }
+                value = value * 10 + static_cast<unsigned int>(ch - L'0');
+            }
+            *fields[index] = static_cast<WORD>(value);
+        }
+        SYSTEMTIME utcTime{};
+        FILETIME fileTime{};
+        if (!TzSpecificLocalTimeToSystemTime(nullptr, &localTime, &utcTime) ||
+            !SystemTimeToFileTime(&utcTime, &fileTime)) {
+            return false;
+        }
+        ULARGE_INTEGER ticks{};
+        ticks.LowPart = fileTime.dwLowDateTime;
+        ticks.HighPart = fileTime.dwHighDateTime;
+        startTicks = ticks.QuadPart;
+    }
+    elapsedMs = nowFileTime <= startTicks ? 0 : (nowFileTime - startTicks) / 10000ULL;
+    return true;
 }
 
 UsageStateStore::UsageStateStore(std::wstring path)
@@ -581,10 +634,9 @@ struct LocalUsageState {
     std::vector<PendingUsageChange> pending;
 };
 
-LocalUsageState readLocalUsageState(const std::wstring& path, const std::wstring& sharedPath) {
+LocalUsageState parseLocalUsageState(const std::wstring& text, const std::wstring& sharedPath) {
     LocalUsageState state;
     state.sharedPath = sharedPath;
-    const std::wstring text = readUtf8FileIfExists(path);
     if (text.empty()) {
         return state;
     }
@@ -609,6 +661,42 @@ LocalUsageState readLocalUsageState(const std::wstring& path, const std::wstring
         state.pending.push_back({ id, action == L"release", recordFromJson(*record) });
     }
     return state;
+}
+
+// Reads the local timer queue. A damaged file is renamed to
+// "<name>.corrupt-<time>" and replaced by an empty queue, so the timer keeps
+// working; read errors (sharing, access) are still reported to the caller.
+LocalUsageState readLocalUsageState(const std::wstring& path, const std::wstring& sharedPath) {
+    std::wstring text = readUtf8FileIfExists(path);
+    try {
+        return parseLocalUsageState(text, sharedPath);
+    }
+    catch (const std::exception& firstError) {
+        std::string reason = firstError.what();
+        std::unique_ptr<UsageStateFileLock> lock;
+        if (!UsageStateFileLock::heldByThisThread(path)) {
+            // Re-read under the lock: a writer may have replaced the file meanwhile.
+            lock = std::make_unique<UsageStateFileLock>(path);
+            text = readUtf8FileIfExists(path);
+            try {
+                return parseLocalUsageState(text, sharedPath);
+            }
+            catch (const std::exception& error) {
+                reason = error.what();
+            }
+        }
+        const std::wstring quarantined = path + L".corrupt-" + timestampForFileName();
+        if (!MoveFileExW(path.c_str(), quarantined.c_str(), MOVEFILE_WRITE_THROUGH)) {
+            throw std::runtime_error("Local usage state is invalid and could not be set aside: " + reason);
+        }
+        AuditLogger::trace(L"USAGE-STATE",
+            L"Локальный файл таймеров повреждён и сохранён как «" + quarantined +
+            L"». Начат новый файл; изменения из повреждённого файла не отправлены в общую папку. Причина: " +
+            utf8ToWide(reason) + L".");
+        LocalUsageState state;
+        state.sharedPath = sharedPath;
+        return state;
+    }
 }
 
 void writeLocalUsageState(const std::wstring& path, const LocalUsageState& state) {
@@ -830,9 +918,19 @@ const std::wstring& UsageStateSync::localPath() const {
     return localPath_;
 }
 
-void UsageStateSync::requestBackgroundSync(const std::wstring& pipeName) const {
+bool UsageStateSync::isBackgroundSyncDue(size_t pendingChanges, unsigned long long nowMs,
+    unsigned long long lastStartedMs) {
+    if (lastStartedMs == 0 || nowMs < lastStartedMs) {
+        return true;
+    }
+    const unsigned long long elapsed = nowMs - lastStartedMs;
+    return elapsed >= (pendingChanges != 0 ? kPendingRetryMs : kPeriodicRefreshMs);
+}
+
+void UsageStateSync::requestBackgroundSync(const std::wstring& pipeName, bool onlyIfDue) const {
 #ifdef DISKCONTROL_TESTING
     (void)pipeName;
+    (void)onlyIfDue;
     return;
 #else
     if (sharedPath_.empty()) {
@@ -848,7 +946,20 @@ void UsageStateSync::requestBackgroundSync(const std::wstring& pipeName) const {
         entry.process = nullptr;
     }
     const ULONGLONG now = GetTickCount64();
-    if (entry.lastStartedAt != 0 && now - entry.lastStartedAt < 5000) {
+    if (onlyIfDue) {
+        size_t pending = 1;
+        try {
+            pending = pendingCount();
+        }
+        catch (const std::exception&) {
+        }
+        if (!isBackgroundSyncDue(pending, now, entry.lastStartedAt)) {
+            return;
+        }
+    }
+    else if (entry.lastStartedAt != 0 && now - entry.lastStartedAt < 1000) {
+        // A change requested right after another start is picked up by the
+        // running helper or by the next periodic check for unsent changes.
         return;
     }
     entry.lastStartedAt = now;

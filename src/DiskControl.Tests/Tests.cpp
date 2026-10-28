@@ -830,6 +830,7 @@ private:
             DeleteFileW((path + L".lock").c_str());
             DeleteFileW((path + L".sync.lock").c_str());
             removeFirstMatch((narrowAscii(path) + ".tmp-*").c_str());
+            removeFirstMatch((narrowAscii(path) + ".corrupt-*").c_str());
         }
     }
 };
@@ -975,10 +976,78 @@ void testUsageSyncReconciliationAndInvalidFiles() {
         std::ofstream stream(narrowAscii(f.localPath), std::ios::binary);
         stream << "{broken local state";
     }
-    bool rejected = false;
-    try { f.sync.markReleased(f.device, f.user); }
-    catch (const std::exception&) { rejected = true; }
-    require(rejected, "Invalid local JSON must not be silently replaced with an empty queue.");
+    f.sync.markReleased(f.device, f.user);
+    WIN32_FIND_DATAA quarantined{};
+    HANDLE find = FindFirstFileA((narrowAscii(f.localPath) + ".corrupt-*").c_str(), &quarantined);
+    require(find != INVALID_HANDLE_VALUE, "A damaged local timer file must be kept aside for investigation.");
+    FindClose(find);
+    {
+        std::ifstream stream(quarantined.cFileName, std::ios::binary);
+        const std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+        require(text == "{broken local state", "The set-aside file must keep the damaged contents unchanged.");
+    }
+    require(f.sync.pendingCount() == 1,
+        "After recovery the timer must keep working with a new local queue.");
+}
+
+void testUsageElapsedUsesUtcAndLegacyText() {
+    FILETIME nowFileTime{};
+    GetSystemTimeAsFileTime(&nowFileTime);
+    ULARGE_INTEGER now{};
+    now.LowPart = nowFileTime.dwLowDateTime;
+    now.HighPart = nowFileTime.dwHighDateTime;
+
+    unsigned long long elapsed = 0;
+    require(usageElapsedMs(L"", now.QuadPart - 90ULL * 10000000ULL, now.QuadPart, elapsed) && elapsed == 90000,
+        "Usage time must be measured from the UTC event time.");
+    require(usageElapsedMs(L"2000-01-01T00:00:00", now.QuadPart - 5ULL * 10000000ULL, now.QuadPart, elapsed) &&
+        elapsed == 5000, "The UTC event time must win over the local text.");
+    require(usageElapsedMs(L"", now.QuadPart + 10000000ULL, now.QuadPart, elapsed) && elapsed == 0,
+        "A start time slightly in the future must not underflow.");
+
+    SYSTEMTIME local{};
+    GetLocalTime(&local);
+    wchar_t text[32]{};
+    swprintf_s(text, L"%04u-%02u-%02uT%02u:%02u:%02u",
+        local.wYear, local.wMonth, local.wDay, local.wHour, local.wMinute, local.wSecond);
+    require(usageElapsedMs(text, 0, now.QuadPart, elapsed) && elapsed < 3000,
+        "Records of older versions must still be read from local time text.");
+    require(!usageElapsedMs(L"not a time", 0, now.QuadPart, elapsed) && !usageElapsedMs(L"", 0, now.QuadPart, elapsed),
+        "Unknown start time must be reported as unknown.");
+}
+
+void testBackgroundSyncSchedule() {
+    require(UsageStateSync::isBackgroundSyncDue(0, 1000, 0), "The first synchronization must start at once.");
+    require(!UsageStateSync::isBackgroundSyncDue(0, 20000, 1000),
+        "Without own changes other timers are refreshed only every 30 seconds.");
+    require(UsageStateSync::isBackgroundSyncDue(0, 31000, 1000), "Periodic refresh must start after 30 seconds.");
+    require(UsageStateSync::isBackgroundSyncDue(2, 6000, 1000), "Unsent own changes must be retried after 5 seconds.");
+    require(!UsageStateSync::isBackgroundSyncDue(2, 3000, 1000), "Retries must not start more often than every 5 seconds.");
+}
+
+void testQuickRefreshReusesUnchangedDeviceInfo() {
+    const auto devices = DeviceParser::parseList(
+        L"Key One (OFFICE-HUB-Gr-1.3)\n"
+        L"--> Key Two (OFFICE-HUB-Gr-1.4)\n");
+    require(devices.size() == 2 && devices[1].listLine == L"--> Key Two (OFFICE-HUB-Gr-1.4)",
+        "LIST lines must be kept to detect changes.");
+
+    DeviceViewModel previous;
+    previous.endpoint = L"OFFICE-HUB-Gr-1.3";
+    previous.listLine = L"Key One (OFFICE-HUB-Gr-1.3)";
+    require(canReuseDeviceInfo(devices[0], previous), "An unchanged LIST line must reuse DEVICE INFO.");
+
+    previous.listLine = L"--> Key One (OFFICE-HUB-Gr-1.3)";
+    require(!canReuseDeviceInfo(devices[0], previous), "A changed usage marker must trigger DEVICE INFO.");
+
+    previous.listLine.clear();
+    require(!canReuseDeviceInfo(devices[0], previous),
+        "A token whose DEVICE INFO was not loaded before must be read again.");
+
+    previous.endpoint = L"OFFICE-HUB-Gr-1.4";
+    previous.listLine = devices[1].listLine;
+    require(!canReuseDeviceInfo(devices[0], previous), "Data of another token must never be reused.");
+    require(canReuseDeviceInfo(devices[1], previous), "Matching token with unchanged line must be reused.");
 }
 
 void testUsageSyncProductionOwnerValidation() {
@@ -1676,6 +1745,9 @@ int main() {
         testNetworkStateReportParsing();
         testLocalRouteInspection();
         testVpnChoiceNameMatching();
+        testUsageElapsedUsesUtcAndLegacyText();
+        testBackgroundSyncSchedule();
+        testQuickRefreshReusesUnchangedDeviceInfo();
         removeFirstMatch("usage-sync-test-*");
         std::cout << "All DistControl C++ tests passed.\n";
         return 0;

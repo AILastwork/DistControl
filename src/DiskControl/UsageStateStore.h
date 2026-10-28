@@ -20,6 +20,11 @@ struct UsageStateRecord {
     unsigned long long eventFileTime = 0;
 };
 
+// Elapsed milliseconds of a usage period. The UTC event time is used when it
+// is known; records from older versions only have local "updatedAt" text.
+bool usageElapsedMs(const std::wstring& startedAtLocal, unsigned long long startedFileTime,
+    unsigned long long nowFileTime, unsigned long long& elapsedMs);
+
 class UsageStateStore {
 public:
     explicit UsageStateStore(std::wstring path);
