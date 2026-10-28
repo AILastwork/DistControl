@@ -19,6 +19,7 @@ BEGIN
     CONTROL         "", IDC_VPN_BULK_LIST, "SysListView32", LVS_REPORT | LVS_SHOWSELALWAYS | WS_BORDER | WS_TABSTOP, 10, 51, 600, 268
     LTEXT           "Нажмите значение в столбце VPN: выберите из списка или вставьте скопированное название (Ctrl+V) и нажмите Enter.", IDC_VPN_BULK_HINT, 10, 323, 600, 18
     PUSHBUTTON      "Автосопоставить", IDC_VPN_BULK_AUTO_MATCH, 10, 346, 104, 18
+    PUSHBUTTON      "Без VPN для всех ненастроенных", IDC_VPN_BULK_ALL_DIRECT, 120, 346, 150, 18
     DEFPUSHBUTTON   "Сохранить", IDC_VPN_BULK_SAVE, 430, 346, 84, 18
     PUSHBUTTON      "Закрыть", IDCANCEL, 522, 346, 88, 18
 END

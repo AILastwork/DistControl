@@ -859,6 +859,37 @@ INT_PTR CALLBACK vpnBulkDialogProc(HWND dialog, UINT message, WPARAM wParam, LPA
             return TRUE;
         }
 
+        if (LOWORD(wParam) == IDC_VPN_BULK_ALL_DIRECT) {
+            if (IsWindowVisible(data->editorCombo) && !commitBulkVpnEditor(dialog, *data)) {
+                hideBulkVpnEditor(*data);
+            }
+            const size_t unassigned = static_cast<size_t>(std::count_if(data->devices.begin(), data->devices.end(),
+                [](const DeviceViewModel& device) { return device.vpnProfileId.empty(); }));
+            if (unassigned == 0) {
+                MessageBoxW(dialog, L"Все токены уже имеют сетевую настройку.", L"DistControl Admin",
+                    MB_OK | MB_ICONINFORMATION);
+                return TRUE;
+            }
+            const std::wstring question = L"Назначить «Без VPN» токенам без сетевой настройки: " +
+                std::to_wstring(unassigned) + L"?\n\nУже назначенные VPN не изменятся.";
+            if (MessageBoxW(dialog, question.c_str(), L"DistControl Admin",
+                    MB_YESNO | MB_ICONQUESTION) != IDYES) {
+                return TRUE;
+            }
+            const VpnProfile direct = ensureBulkDirectProfile(*data);
+            for (DeviceViewModel& device : data->devices) {
+                if (device.vpnProfileId.empty()) {
+                    device.vpnProfileId = direct.id;
+                    device.vpnProfileDisplay = L"Без VPN";
+                }
+            }
+            data->changed = true;
+            populateBulkVpnList(dialog, *data);
+            const std::wstring done = L"«Без VPN» назначен токенам: " + std::to_wstring(unassigned) +
+                L". Нажмите «Сохранить».";
+            SetDlgItemTextW(dialog, IDC_VPN_BULK_HINT, done.c_str());
+            return TRUE;
+        }
         if (LOWORD(wParam) == IDC_VPN_BULK_AUTO_MATCH) {
             size_t matchedCount = 0;
             for (DeviceViewModel& device : data->devices) {

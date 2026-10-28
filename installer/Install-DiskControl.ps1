@@ -457,8 +457,11 @@ function Resolve-ServiceCredential {
     }
 
     $password = $ServicePassword
+    $checkedBySetup = $false
     if (-not $password -and -not [string]::IsNullOrEmpty($env:DISKCONTROL_SERVICE_PASSWORD)) {
+        # DistControl-Setup.exe has already checked this password.
         $password = ConvertTo-SecureString $env:DISKCONTROL_SERVICE_PASSWORD -AsPlainText -Force
+        $checkedBySetup = $true
     }
 
     if (-not $password) {
@@ -470,14 +473,69 @@ function Resolve-ServiceCredential {
         Write-Host ""
         Write-Host "DistControl will run dkclient service as: $account"
         Write-Host "Enter this Windows account password. It is passed to Windows Service Control Manager."
-        $password = Read-Host -Prompt "Password for $account" -AsSecureString
+        $wrongAttempts = 0
+        while ($true) {
+            $password = Read-Host -Prompt "Password for $account" -AsSecureString
+            if (-not $password -or $password.Length -eq 0) {
+                throw "Service account password is required."
+            }
+            if (Test-ServiceAccountPassword $account $password ([ref]$wrongAttempts) -AllowRetry) {
+                break
+            }
+        }
+        $checkedBySetup = $true
     }
 
     if (-not $password) {
         throw "Service account password is required."
     }
+    if (-not $checkedBySetup -and -not $DryRun) {
+        $ignored = 0
+        [void](Test-ServiceAccountPassword $account $password ([ref]$ignored))
+    }
 
     return New-Object System.Management.Automation.PSCredential($account, $password)
+}
+
+# Checks the password with a network logon right after it is entered. Returns
+# $true to continue, $false to ask again; throws when installation must stop.
+# Only wrong passwords count towards the limit (the domain lockout policy
+# counts them too).
+function Test-ServiceAccountPassword([string]$Account, [securestring]$Password, [ref]$WrongAttempts, [switch]$AllowRetry) {
+    if (-not ("CredentialCheck" -as [type])) {
+        Add-Type -Path (Join-Path $PSScriptRoot "CredentialCheck.cs")
+    }
+    $plain = [IntPtr]::Zero
+    $logonError = 0
+    try {
+        $plain = [Runtime.InteropServices.Marshal]::SecureStringToGlobalAllocUnicode($Password)
+        $logonError = [CredentialCheck]::Validate($Account, [Runtime.InteropServices.Marshal]::PtrToStringUni($plain))
+    }
+    finally {
+        if ($plain -ne [IntPtr]::Zero) {
+            [Runtime.InteropServices.Marshal]::ZeroFreeGlobalAllocUnicode($plain)
+        }
+    }
+    $result = [CredentialCheck]::Classify($logonError)
+    $message = [CredentialCheck]::Message($result, $Account, $logonError)
+    if ($result -eq [CredentialCheckResult]::Valid) {
+        Write-Step "Service account password checked"
+        return $true
+    }
+    if ([CredentialCheck]::CountsAsWrongPassword($result)) {
+        $WrongAttempts.Value++
+        Write-InstallLogLine "[DistControl] Service account password check failed: wrong password, attempt $($WrongAttempts.Value)"
+        if (-not $AllowRetry -or $WrongAttempts.Value -ge [CredentialCheck]::MaximumWrongPasswordAttempts) {
+            throw "$message Installation stopped after $($WrongAttempts.Value) wrong attempt(s) so that the account is not locked by the domain policy."
+        }
+        Write-Host "$message Attempts left: $([CredentialCheck]::MaximumWrongPasswordAttempts - $WrongAttempts.Value)."
+        return $false
+    }
+    if ([CredentialCheck]::MayContinueUnverified($result)) {
+        Write-InstallWarning "$message Installation continues without a password check; the service will not start if the password is wrong."
+        return $true
+    }
+    throw $message
 }
 
 function Resolve-PrivilegeIdentity([string]$Account) {
@@ -763,7 +821,7 @@ function Merge-MigrationLogs([string]$SourceDirectory) {
     }
 }
 
-function Test-DkClientPipeReady([string]$Name) {
+function Test-DkClientPipeReady([string]$Name, [int]$Attempts = 15) {
     Write-Step "Check that dkclient is ready to return the token list"
     if ($DryRun) {
         Write-Step "DRY-RUN: connect to \\.\pipe\$Name and send LIST"
@@ -771,7 +829,7 @@ function Test-DkClientPipeReady([string]$Name) {
     }
 
     $lastReason = "канал ещё не создан"
-    for ($attempt = 1; $attempt -le 15; $attempt++) {
+    for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
         $pipe = $null
         try {
             $pipe = New-Object System.IO.Pipes.NamedPipeClientStream(
@@ -804,7 +862,7 @@ function Test-DkClientPipeReady([string]$Name) {
         }
         catch {
             $lastReason = $_.Exception.Message
-            Write-Step "dkclient is not ready yet, attempt $attempt of 15: $lastReason"
+            Write-Step "dkclient is not ready yet, attempt $attempt of ${Attempts}: $lastReason"
             Start-Sleep -Milliseconds 700
         }
         finally {
@@ -816,7 +874,11 @@ function Test-DkClientPipeReady([string]$Name) {
 
     $service = Get-Service -Name $Name -ErrorAction SilentlyContinue
     $serviceStatus = if ($service) { $service.Status } else { "NotFound" }
-    throw "dkclient pipe did not become ready. Service status: $serviceStatus. Last reason: $lastReason"
+    # Installation is complete at this point; the service often needs a restart
+    # of Windows or a new sign-in after the USB driver was installed.
+    Write-InstallWarning (("Служба dkclient пока не отдала список токенов (состояние: {0}; причина: {1}). " +
+        "Установка завершена; перезагрузите компьютер или войдите в Windows заново и откройте DistControl. " +
+        "Если токены не появятся, запустите diagnose.cmd.") -f $serviceStatus, $lastReason)
 }
 
 function Migrate-LegacyData {
@@ -1512,6 +1574,167 @@ function Register-UninstallEntry {
     Set-RegistryValue $UninstallRegistryPath "EstimatedSize" (Get-DirectorySizeKb $InstallDir) "DWord"
 }
 
+$VirtualHereHardwareId = "ROOT\VHUSB3HC"
+$script:VirtualHereDriverInstalledNow = $false
+
+function Find-VirtualHereDriverInf {
+    foreach ($candidate in @(
+        (Join-Path $SourceRoot "drivers\vhusb3hc\vhusb3hc.inf"),
+        (Join-Path $SourceRoot "driver-export\virtualhere-vhusb3hc\vhusb3hc.inf")
+    )) {
+        if (Test-Path -LiteralPath $candidate) {
+            return $candidate
+        }
+    }
+    return $null
+}
+
+function Test-VirtualHereDevicePresent {
+    $devices = @(Get-CimInstance -ClassName Win32_PnPEntity -ErrorAction SilentlyContinue |
+        Where-Object { @($_.HardwareID) -contains $VirtualHereHardwareId })
+    return $devices.Count -gt 0
+}
+
+function Test-VirtualHereDriverInStore {
+    $output = & pnputil.exe /enum-drivers 2>$null
+    return [bool](@($output) | Where-Object { $_ -match '\bvhusb3hc\.inf\b' })
+}
+
+# Installs the VirtualHere USB 3 host controller used by dkcl64.exe, so that the
+# DistKontrol client does not have to install it with its own UAC prompt on the
+# first start. The virtual device is created like devcon does it, without
+# shipping extra tools. An existing device is left untouched.
+function Install-VirtualHereDriver {
+    Write-Step "Check VirtualHere USB driver used by DistKontrolUSB"
+    if (Test-VirtualHereDevicePresent) {
+        Write-Step "VirtualHere USB 3 host controller is already installed"
+        return
+    }
+
+    $infPath = Find-VirtualHereDriverInf
+    if (-not $infPath) {
+        Write-InstallWarning "VirtualHere driver package is not included in this installer; dkcl64.exe will install it on first start and may ask for administrator rights."
+        return
+    }
+    if (-not [Environment]::Is64BitProcess) {
+        Write-InstallWarning "Installer runs in 32-bit PowerShell and cannot install the 64-bit VirtualHere driver; dkcl64.exe will install it on first start."
+        return
+    }
+    if ($DryRun) {
+        Write-Step "DRY-RUN: pnputil /add-driver `"$infPath`" /install"
+        Write-Step "DRY-RUN: create device $VirtualHereHardwareId"
+        return
+    }
+
+    try {
+        if (-not (Test-VirtualHereDriverInStore)) {
+            $output = & pnputil.exe /add-driver $infPath /install 2>&1
+            foreach ($line in @($output)) {
+                Write-InstallLogLine "[external] $line"
+            }
+            if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3010) {
+                throw "pnputil exit code $LASTEXITCODE"
+            }
+        }
+
+        if (-not ("DistControlRootDevice" -as [type])) {
+            Add-Type -TypeDefinition @"
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class DistControlRootDevice
+{
+    [StructLayout(LayoutKind.Sequential)]
+    private struct SP_DEVINFO_DATA
+    {
+        public int cbSize;
+        public Guid ClassGuid;
+        public int DevInst;
+        public IntPtr Reserved;
+    }
+
+    [DllImport("setupapi.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool SetupDiGetINFClassW(string infName, out Guid classGuid, StringBuilder className, int classNameSize, out int requiredSize);
+    [DllImport("setupapi.dll", SetLastError = true)]
+    private static extern IntPtr SetupDiCreateDeviceInfoList(ref Guid classGuid, IntPtr hwndParent);
+    [DllImport("setupapi.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool SetupDiCreateDeviceInfoW(IntPtr deviceInfoSet, string deviceName, ref Guid classGuid, string deviceDescription, IntPtr hwndParent, int creationFlags, ref SP_DEVINFO_DATA deviceInfoData);
+    [DllImport("setupapi.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool SetupDiSetDeviceRegistryPropertyW(IntPtr deviceInfoSet, ref SP_DEVINFO_DATA deviceInfoData, int property, byte[] propertyBuffer, int propertyBufferSize);
+    [DllImport("setupapi.dll", SetLastError = true)]
+    private static extern bool SetupDiCallClassInstaller(int installFunction, IntPtr deviceInfoSet, ref SP_DEVINFO_DATA deviceInfoData);
+    [DllImport("setupapi.dll", SetLastError = true)]
+    private static extern bool SetupDiDestroyDeviceInfoList(IntPtr deviceInfoSet);
+    [DllImport("newdev.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool UpdateDriverForPlugAndPlayDevicesW(IntPtr hwndParent, string hardwareId, string fullInfPath, int installFlags, out bool rebootRequired);
+
+    private const int DICD_GENERATE_ID = 1;
+    private const int SPDRP_HARDWAREID = 1;
+    private const int DIF_REGISTERDEVICE = 0x19;
+    private const int INSTALLFLAG_FORCE = 1;
+
+    public static bool Install(string infPath, string hardwareId)
+    {
+        Guid classGuid;
+        StringBuilder className = new StringBuilder(64);
+        int required;
+        if (!SetupDiGetINFClassW(infPath, out classGuid, className, className.Capacity, out required))
+        {
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "SetupDiGetINFClass");
+        }
+        IntPtr set = SetupDiCreateDeviceInfoList(ref classGuid, IntPtr.Zero);
+        if (set == new IntPtr(-1))
+        {
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "SetupDiCreateDeviceInfoList");
+        }
+        try
+        {
+            SP_DEVINFO_DATA data = new SP_DEVINFO_DATA();
+            data.cbSize = Marshal.SizeOf(typeof(SP_DEVINFO_DATA));
+            if (!SetupDiCreateDeviceInfoW(set, className.ToString(), ref classGuid, null, IntPtr.Zero, DICD_GENERATE_ID, ref data))
+            {
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "SetupDiCreateDeviceInfo");
+            }
+            byte[] ids = Encoding.Unicode.GetBytes(hardwareId + "\0\0");
+            if (!SetupDiSetDeviceRegistryPropertyW(set, ref data, SPDRP_HARDWAREID, ids, ids.Length))
+            {
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "SetupDiSetDeviceRegistryProperty");
+            }
+            if (!SetupDiCallClassInstaller(DIF_REGISTERDEVICE, set, ref data))
+            {
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "SetupDiCallClassInstaller");
+            }
+        }
+        finally
+        {
+            SetupDiDestroyDeviceInfoList(set);
+        }
+        bool reboot;
+        if (!UpdateDriverForPlugAndPlayDevicesW(IntPtr.Zero, hardwareId, infPath, INSTALLFLAG_FORCE, out reboot))
+        {
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "UpdateDriverForPlugAndPlayDevices");
+        }
+        return reboot;
+    }
+}
+"@
+        }
+
+        Write-Step "Create VirtualHere USB 3 host controller device"
+        $rebootRequired = [DistControlRootDevice]::Install((Resolve-Path -LiteralPath $infPath).Path, $VirtualHereHardwareId)
+        $script:VirtualHereDriverInstalledNow = $true
+        Write-Step "VirtualHere USB driver installed"
+        if ($rebootRequired) {
+            Write-InstallWarning "Windows requests a restart to finish the VirtualHere USB driver installation."
+        }
+    }
+    catch {
+        Write-InstallWarning "VirtualHere USB driver was not installed: $($_.Exception.Message). dkcl64.exe will try to install it on first start."
+    }
+}
+
 function Register-DkClientService {
     $exePath = Join-Path $InstallDir "dkcl64.exe"
     $iniPath = Join-Path $InstallDir "dkcl.ini"
@@ -1539,7 +1762,7 @@ function Register-DkClientService {
 
     if (-not $NoStartService) {
         Try-StartService $ServiceName
-        Test-DkClientPipeReady $ServiceName
+        Test-DkClientPipeReady $ServiceName $(if ($script:VirtualHereDriverInstalledNow) { 40 } else { 15 })
     }
 }
 
@@ -1622,16 +1845,29 @@ foreach ($optional in @("README.md", "DistControl-guide.html", "allowlist.exampl
     }
 }
 
+# Only the uninstall scripts are needed after installation; they are used by
+# Uninstall-DistControl.exe. The folder is hidden from the user.
 foreach ($installerFile in @(
-    "Install-DiskControl.ps1",
     "Uninstall-DiskControl.ps1",
-    "Launch-Install-DiskControl.ps1",
     "Launch-Uninstall-DiskControl.ps1"
 )) {
     $source = Join-Path $SourceRoot "installer\$installerFile"
     if (Test-Path -LiteralPath $source) {
         Copy-RequiredFile $source (Join-Path $InstallerDir $installerFile)
     }
+}
+foreach ($obsoleteFile in @("Install-DiskControl.ps1", "Launch-Install-DiskControl.ps1", "CredentialCheck.cs")) {
+    $obsoletePath = Join-Path $InstallerDir $obsoleteFile
+    if (Test-Path -LiteralPath $obsoletePath) {
+        Write-Step "Remove setup file left by an earlier version: $obsoletePath"
+        if (-not $DryRun) {
+            Remove-Item -LiteralPath $obsoletePath -Force
+        }
+    }
+}
+if (-not $DryRun -and (Test-Path -LiteralPath $InstallerDir)) {
+    $installerFolder = Get-Item -LiteralPath $InstallerDir -Force
+    $installerFolder.Attributes = $installerFolder.Attributes -bor [IO.FileAttributes]::Hidden
 }
 
 Remove-LegacyDiagnostics
@@ -1642,6 +1878,7 @@ Initialize-UsageState
 Set-DirectoryAcl
 Initialize-DkClientUserProfile
 Test-UsageStateAccess
+Install-VirtualHereDriver
 Register-DkClientService
 Remove-LegacyInstallDirectory
 Remove-LegacyBranding

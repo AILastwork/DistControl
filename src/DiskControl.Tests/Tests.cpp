@@ -1408,6 +1408,73 @@ void testPolicyPatchPreservesUnseenDevicesAndRejectsStaleRevision() {
     std::remove(fileName);
 }
 
+void testAddedTokensDefaultToDirectNetwork() {
+    const char* fileName = "policy-default-direct-test.json";
+    std::remove(fileName);
+    {
+        std::ofstream stream(fileName, std::ios::binary);
+        stream << "{\n"
+            << "  \"pipeName\": \"dkclient\",\n"
+            << "  \"vpnProfiles\": [{\"id\": \"vpn-office\", \"name\": \"VPN - Office\", \"mode\": \"windowsVpn\"}],\n"
+            << "  \"userAssignments\": [{\n"
+            << "    \"users\": [\"DOMAIN\\\\petrov\"],\n"
+            << "    \"groups\": [],\n"
+            << "    \"allowedDevices\": [\n"
+            << "      {\"endpoint\": \"HUB-Gr-1.1\", \"nickname\": \"WITH-VPN\", \"product\": \"Rutoken\", \"vpnProfile\": \"vpn-office\"},\n"
+            << "      {\"endpoint\": \"HUB-Gr-1.2\", \"nickname\": \"LEGACY\", \"product\": \"Rutoken\"}\n"
+            << "    ]\n"
+            << "  }]\n"
+            << "}\n";
+    }
+
+    ParsedDevice withVpn{ L"HUB-Gr-1.1", L"WITH-VPN", L"Rutoken", L"NO ONE" };
+    ParsedDevice legacy{ L"HUB-Gr-1.2", L"LEGACY", L"Rutoken", L"NO ONE" };
+    ParsedDevice added{ L"HUB-Gr-2.2", L"ADDED", L"Rutoken", L"NO ONE" };
+    {
+        PolicyManager policy(L"policy-default-direct-test.json");
+        policy.applyDeviceAccessChanges({ added, withVpn }, {}, L"petrov", policy.revision());
+    }
+
+    PolicyManager updated(L"policy-default-direct-test.json");
+    std::wstring directId;
+    size_t directProfiles = 0;
+    for (const VpnProfile& profile : updated.vpnProfiles()) {
+        if (profile.mode == VpnProfileMode::Direct) {
+            directId = profile.id;
+            ++directProfiles;
+        }
+    }
+    require(directProfiles == 1 && !directId.empty(), "A missing direct profile must be created once.");
+
+    std::wstring addedVpn;
+    std::wstring keptVpn;
+    std::wstring legacyVpn = L"<missing>";
+    for (const DeviceRule& rule : updated.rulesForUser(L"petrov")) {
+        if (rule.endpoint == added.endpoint) addedVpn = rule.vpnProfileId;
+        if (rule.endpoint == withVpn.endpoint) keptVpn = rule.vpnProfileId;
+        if (rule.endpoint == legacy.endpoint) legacyVpn = rule.vpnProfileId;
+    }
+    require(addedVpn == directId, "A newly added token must default to the direct network.");
+    require(keptVpn == L"vpn-office", "An existing VPN assignment must not be replaced.");
+    require(legacyVpn.empty(), "Tokens that were not added keep their missing network setting.");
+
+    {
+        PolicyManager policy(L"policy-default-direct-test.json");
+        policy.applyDeviceAccessChanges({ legacy }, {}, L"petrov", policy.revision());
+    }
+    PolicyManager second(L"policy-default-direct-test.json");
+    size_t directAfterSecond = 0;
+    for (const VpnProfile& profile : second.vpnProfiles()) {
+        if (profile.mode == VpnProfileMode::Direct) ++directAfterSecond;
+    }
+    for (const DeviceRule& rule : second.rulesForUser(L"petrov")) {
+        if (rule.endpoint == legacy.endpoint) legacyVpn = rule.vpnProfileId;
+    }
+    require(legacyVpn == directId && directAfterSecond == 1,
+        "Re-adding an unconfigured token must reuse the existing direct profile.");
+    std::remove(fileName);
+}
+
 void testPolicyWriteReportsAccessDenied() {
     const char* fileName = "policy-readonly-test.json";
     std::remove(fileName);
@@ -1878,6 +1945,7 @@ int main() {
         testRemoveDeviceFromUser();
         testSetDevicesForUser();
         testPolicyPatchPreservesUnseenDevicesAndRejectsStaleRevision();
+        testAddedTokensDefaultToDirectNetwork();
         testPolicyWriteReportsAccessDenied();
         testInvalidPolicyFileIsNotOverwritten();
         testPolicyUsageStatePath();

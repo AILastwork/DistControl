@@ -665,6 +665,41 @@ JsonValue makeVpnProfile(const VpnProfile& profile) {
         { L"ipCheckUrl", makeString(profile.ipCheckUrl.empty() ? L"https://api.ipify.org" : profile.ipCheckUrl) }
     });
 }
+
+// Returns the id of an enabled "direct" (no VPN) profile in the policy root,
+// adding one when the policy has none. New token assignments use it by default.
+std::wstring ensureDirectProfileId(JsonValue& root) {
+    JsonValue& profiles = root.objectValue[L"vpnProfiles"];
+    if (profiles.type == JsonValue::Type::Null) {
+        profiles = makeArray();
+    }
+    if (profiles.type != JsonValue::Type::Array) {
+        throw std::runtime_error("Config vpnProfiles must be an array.");
+    }
+    for (const JsonValue& item : profiles.arrayValue) {
+        const VpnProfile profile = vpnProfileFromJson(item);
+        if (!profile.id.empty() && profile.mode == VpnProfileMode::Direct && profile.enabled) {
+            return profile.id;
+        }
+    }
+
+    VpnProfile direct;
+    direct.mode = VpnProfileMode::Direct;
+    direct.name = L"Без VPN";
+    direct.id = L"direct";
+    for (unsigned int suffix = 2;; ++suffix) {
+        const bool occupied = std::any_of(profiles.arrayValue.begin(), profiles.arrayValue.end(),
+            [&direct](const JsonValue& item) {
+                return equalsIgnoreCase(stringValue(item.find(L"id")), direct.id);
+            });
+        if (!occupied) {
+            break;
+        }
+        direct.id = L"direct-" + std::to_wstring(suffix);
+    }
+    profiles.arrayValue.push_back(makeVpnProfile(direct));
+    return direct.id;
+}
 }
 
 PolicyManager::PolicyManager()
@@ -915,6 +950,15 @@ std::wstring PolicyManager::applyDeviceAccessChanges(
             rules.arrayValue.end());
     }
 
+    // Newly allowed tokens start with "Без VPN" instead of "сеть не настроена";
+    // existing VPN assignments are kept.
+    std::wstring directProfileId;
+    const auto defaultVpnProfile = [&root, &directProfileId]() {
+        if (directProfileId.empty()) {
+            directProfileId = ensureDirectProfileId(root);
+        }
+        return directProfileId;
+    };
     for (const ParsedDevice& added : addedDevices) {
         if (added.endpoint.empty()) {
             continue;
@@ -931,9 +975,12 @@ std::wstring PolicyManager::applyDeviceAccessChanges(
             existingRule->objectValue[L"endpoint"] = makeString(added.endpoint);
             existingRule->objectValue[L"nickname"] = makeString(added.nickname);
             existingRule->objectValue[L"product"] = makeString(added.product);
+            if (stringValue(existingRule->find(L"vpnProfile")).empty()) {
+                existingRule->objectValue[L"vpnProfile"] = makeString(defaultVpnProfile());
+            }
         }
         else {
-            rules.arrayValue.push_back(makeDeviceRule(added));
+            rules.arrayValue.push_back(makeDeviceRule(added, defaultVpnProfile()));
         }
     }
 

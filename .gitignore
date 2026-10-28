@@ -68,3 +68,6 @@ diagnostics-current/
 output/
 DiskControl-0.1.1-win64/
 allowlist — копия.json
+
+# Driver packages exported from this computer for installer research
+driver-export/
