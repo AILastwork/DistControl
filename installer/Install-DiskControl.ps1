@@ -1845,17 +1845,29 @@ foreach ($optional in @("README.md", "DistControl-guide.html", "allowlist.exampl
     }
 }
 
+# Only the uninstall scripts are needed after installation; they are used by
+# Uninstall-DistControl.exe. The folder is hidden from the user.
 foreach ($installerFile in @(
-    "Install-DiskControl.ps1",
     "Uninstall-DiskControl.ps1",
-    "Launch-Install-DiskControl.ps1",
-    "Launch-Uninstall-DiskControl.ps1",
-    "CredentialCheck.cs"
+    "Launch-Uninstall-DiskControl.ps1"
 )) {
     $source = Join-Path $SourceRoot "installer\$installerFile"
     if (Test-Path -LiteralPath $source) {
         Copy-RequiredFile $source (Join-Path $InstallerDir $installerFile)
     }
+}
+foreach ($obsoleteFile in @("Install-DiskControl.ps1", "Launch-Install-DiskControl.ps1", "CredentialCheck.cs")) {
+    $obsoletePath = Join-Path $InstallerDir $obsoleteFile
+    if (Test-Path -LiteralPath $obsoletePath) {
+        Write-Step "Remove setup file left by an earlier version: $obsoletePath"
+        if (-not $DryRun) {
+            Remove-Item -LiteralPath $obsoletePath -Force
+        }
+    }
+}
+if (-not $DryRun -and (Test-Path -LiteralPath $InstallerDir)) {
+    $installerFolder = Get-Item -LiteralPath $InstallerDir -Force
+    $installerFolder.Attributes = $installerFolder.Attributes -bor [IO.FileAttributes]::Hidden
 }
 
 Remove-LegacyDiagnostics
