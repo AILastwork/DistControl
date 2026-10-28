@@ -79,3 +79,18 @@ long long sessionSecondsInPeriod(const UsageSession& session, long long periodSt
 std::wstring sessionEndText(SessionEnd reason);
 std::wstring escapeHtml(const std::wstring& text);
 std::string renderUsageReportHtml(const UsageReportInput& input);
+
+struct UsageReportRequest {
+    std::wstring sharedLogDirectory;  // <usage folder>\usage-log, all computers
+    std::wstring localLogDirectory;   // audit logs of one profile, used as fallback
+    std::wstring localComputer;
+    std::wstring localUser;
+    long long periodStart = 0;
+    long long periodEnd = 0;
+    long long generatedAt = 0;
+    std::wstring periodTitle;
+};
+
+// Reads the shared usage log, or the local audit log when the shared folder
+// is unavailable or still empty, and builds the report input.
+UsageReportInput collectUsageReport(const UsageReportRequest& request);

@@ -552,3 +552,105 @@ footer { margin-top:28px; color:var(--muted); font-size:12px; }
 )HTML";
     return wideToUtf8(html.str());
 }
+
+namespace {
+std::string readFileBytes(const std::wstring& path) {
+    HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        return {};
+    }
+    std::string bytes;
+    char buffer[65536];
+    DWORD read = 0;
+    while (ReadFile(file, buffer, sizeof(buffer), &read, nullptr) && read != 0) {
+        bytes.append(buffer, read);
+    }
+    CloseHandle(file);
+    return bytes;
+}
+
+std::vector<std::wstring> filesIn(const std::wstring& directory, const wchar_t* pattern, bool* accessible) {
+    std::vector<std::wstring> files;
+    WIN32_FIND_DATAW data{};
+    HANDLE find = FindFirstFileW((directory + L"\\" + pattern).c_str(), &data);
+    if (accessible) {
+        const DWORD attributes = GetFileAttributesW(directory.c_str());
+        *accessible = attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    }
+    if (find == INVALID_HANDLE_VALUE) {
+        return files;
+    }
+    do {
+        if ((data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+            files.push_back(directory + L"\\" + data.cFileName);
+        }
+    } while (FindNextFileW(find, &data));
+    FindClose(find);
+    return files;
+}
+}
+
+UsageReportInput collectUsageReport(const UsageReportRequest& request) {
+    UsageReportInput input;
+    input.periodStart = request.periodStart;
+    input.periodEnd = request.periodEnd;
+    input.generatedAt = request.generatedAt;
+    input.periodTitle = request.periodTitle;
+
+    std::vector<AuditRecord> records;
+    bool sharedAccessible = false;
+    const std::vector<std::wstring> sharedFiles = request.sharedLogDirectory.empty()
+        ? std::vector<std::wstring>{}
+        : filesIn(request.sharedLogDirectory, L"*.csv", &sharedAccessible);
+    if (!sharedAccessible && !request.sharedLogDirectory.empty()) {
+        // The usage-log folder appears with the first event; an existing usage
+        // folder means the share works and the log is just empty so far.
+        const size_t slash = request.sharedLogDirectory.find_last_of(L"\\/");
+        const DWORD parent = slash == std::wstring::npos ? INVALID_FILE_ATTRIBUTES
+            : GetFileAttributesW(request.sharedLogDirectory.substr(0, slash).c_str());
+        sharedAccessible = parent != INVALID_FILE_ATTRIBUTES && (parent & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    }
+    if (!sharedFiles.empty()) {
+        std::map<std::wstring, UsageReportSource> sources;
+        for (const std::wstring& file : sharedFiles) {
+            const std::vector<AuditRecord> fileRecords = parseAuditCsv(readFileBytes(file));
+            if (fileRecords.empty()) {
+                continue;
+            }
+            const std::wstring key = lower(fileRecords.front().computer) + L"|" + lower(fileRecords.front().user);
+            UsageReportSource& source = sources[key];
+            source.computer = fileRecords.front().computer;
+            source.user = fileRecords.front().user;
+            source.folder = request.sharedLogDirectory;
+            ++source.files;
+            source.records += fileRecords.size();
+            records.insert(records.end(), fileRecords.begin(), fileRecords.end());
+        }
+        for (const auto& source : sources) {
+            input.sources.push_back(source.second);
+        }
+        input.sourceNote = L"Сводные данные всех компьютеров из общей папки " + request.sharedLogDirectory +
+            L". Компьютеры, на которых ещё не установлена версия с общим журналом, в отчёт не попадают.";
+    }
+    else {
+        UsageReportSource source;
+        source.computer = request.localComputer;
+        source.user = request.localUser;
+        source.folder = request.localLogDirectory;
+        for (const std::wstring& file : filesIn(request.localLogDirectory, L"audit-*.csv", nullptr)) {
+            const std::vector<AuditRecord> fileRecords = parseAuditCsv(readFileBytes(file));
+            ++source.files;
+            source.records += fileRecords.size();
+            records.insert(records.end(), fileRecords.begin(), fileRecords.end());
+        }
+        input.sources.push_back(source);
+        input.sourceNote = (sharedAccessible
+            ? L"В общей папке пока нет записей о подключениях (" + request.sharedLogDirectory + L"). "
+            : L"Общая папка с журналами недоступна (" + request.sharedLogDirectory + L"). ") +
+            L"Показан только локальный журнал компьютера " + request.localComputer + L", профиль " + request.localUser + L".";
+    }
+
+    input.sessions = buildUsageSessions(std::move(records), request.localComputer, request.periodStart, request.periodEnd);
+    return input;
+}

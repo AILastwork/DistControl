@@ -2,8 +2,22 @@
 
 #include "resource.h"
 #include <windows.h>
+#include <commctrl.h>
 
 IDI_DISKCONTROL ICON "res\\DiskControl.ico"
+
+IDD_REPORT_PERIOD DIALOGEX 0, 0, 230, 92
+STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "DistControl Admin - период отчёта"
+FONT 9, "Segoe UI"
+BEGIN
+    LTEXT           "С:", -1, 12, 14, 30, 10
+    CONTROL         "", IDC_REPORT_FROM, "SysDateTimePick32", DTS_SHORTDATEFORMAT | WS_TABSTOP, 46, 11, 110, 15
+    LTEXT           "По:", -1, 12, 38, 30, 10
+    CONTROL         "", IDC_REPORT_TO, "SysDateTimePick32", DTS_SHORTDATEFORMAT | WS_TABSTOP, 46, 35, 110, 15
+    DEFPUSHBUTTON   "Сформировать", IDOK, 74, 66, 76, 18
+    PUSHBUTTON      "Отмена", IDCANCEL, 156, 66, 64, 18
+END
 
 IDD_VPN_BULK DIALOGEX 0, 0, 620, 374
 STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU

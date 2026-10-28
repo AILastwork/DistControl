@@ -54,6 +54,8 @@ private:
     void startTokenAction(DeviceViewModel device, bool connect);
     bool ensureVpnCredentials(const DeviceViewModel& device);
     void manageVpnMappings();
+    void showUsageReport();
+    void generateUsageReport(long long periodStart, long long periodEnd, const std::wstring& title);
     void finishTokenAction();
     void updateTokenActionProgress();
     void setMainControlsEnabled(bool enabled);
@@ -140,6 +142,7 @@ private:
     HWND exportButton_ = nullptr;
     HWND exportJsonButton_ = nullptr;
     HWND vpnMappingsButton_ = nullptr;
+    HWND usageReportButton_ = nullptr;
     HWND statusLabel_ = nullptr;
     HWND refreshProgressBar_ = nullptr;
     HWND refreshProgressLabel_ = nullptr;

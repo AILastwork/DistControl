@@ -275,6 +275,10 @@ std::string AuditLogger::csvEscapeForTest(const std::wstring& value) {
 }
 
 std::wstring AuditLogger::defaultLogDirectory() {
+#ifdef DISKCONTROL_TESTING
+    // Tests must never add fake tokens to the real journal and usage report.
+    return (fs::current_path() / L"audit-test-logs").wstring();
+#else
     const DWORD needed = GetEnvironmentVariableW(L"LOCALAPPDATA", nullptr, 0);
     if (needed == 0) {
         return fallbackLogDirectory();
@@ -288,6 +292,7 @@ std::wstring AuditLogger::defaultLogDirectory() {
 
     localAppData.resize(written);
     return (fs::path(localAppData) / L"DistControl" / L"logs").wstring();
+#endif
 }
 
 std::wstring AuditLogger::fallbackLogDirectory() {

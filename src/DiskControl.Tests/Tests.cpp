@@ -1818,6 +1818,7 @@ void removeDirectoryWithFiles(const char* directory) {
 }
 
 void removeUsageLogArtifacts() {
+    removeDirectoryWithFiles("audit-test-logs");
     removeFirstMatch("usage-log-queue-test.csv*");
     removeFirstMatch("usage-log-case-*.csv*");
     removeDirectoryWithFiles("usage-log");
@@ -1998,7 +1999,38 @@ void testVpnChoiceNameMatching() {
 }
 }
 
-int main() {
+// Developer helper: DistControl.Tests.exe --usage-report <shared usage-log folder>
+// <local audit log folder> <computer> <user> <days> <output.html> renders a report
+// from real logs without running the tests.
+int writeSampleUsageReport(int argc, wchar_t** argv) {
+    if (argc != 8) {
+        std::cerr << "Usage: --usage-report <shared> <local> <computer> <user> <days> <output.html>\n";
+        return 2;
+    }
+    SYSTEMTIME now{};
+    GetLocalTime(&now);
+    wchar_t text[32]{};
+    swprintf_s(text, L"%04u-%02u-%02u %02u:%02u:%02u",
+        now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond);
+    UsageReportRequest request;
+    request.sharedLogDirectory = argv[2];
+    request.localLogDirectory = argv[3];
+    request.localComputer = argv[4];
+    request.localUser = argv[5];
+    parseAuditTime(text, request.generatedAt);
+    request.periodEnd = request.generatedAt;
+    request.periodStart = request.generatedAt - std::stoll(argv[6]) * 86400LL;
+    request.periodTitle = L"Последние " + std::wstring(argv[6]) + L" дн.";
+    const std::string html = renderUsageReportHtml(collectUsageReport(request));
+    std::ofstream stream(argv[7], std::ios::binary);
+    stream.write(html.data(), static_cast<std::streamsize>(html.size()));
+    return stream ? 0 : 1;
+}
+
+int wmain(int argc, wchar_t** argv) {
+    if (argc > 1 && std::wstring(argv[1]) == L"--usage-report") {
+        return writeSampleUsageReport(argc, argv);
+    }
     try {
         removeFirstMatch("usage-sync-test-*");
         testIpcRoundTrip();
