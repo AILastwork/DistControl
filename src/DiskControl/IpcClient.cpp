@@ -32,7 +32,9 @@ std::wstring utf8ToWide(const std::string& value) {
         throw std::runtime_error("MultiByteToWideChar failed.");
     }
     std::wstring result(static_cast<size_t>(size), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, value.data(), static_cast<int>(value.size()), result.data(), size);
+    if (MultiByteToWideChar(CP_UTF8, 0, value.data(), static_cast<int>(value.size()), result.data(), size) != size) {
+        throw std::runtime_error("MultiByteToWideChar failed.");
+    }
     return result;
 }
 
@@ -101,7 +103,9 @@ HANDLE openPipeWithTimeout(const std::wstring& pipePath, DWORD timeoutMs) {
             0,
             nullptr,
             OPEN_EXISTING,
-            FILE_FLAG_OVERLAPPED,
+            // Если канал с этим именем успеет создать посторонний процесс, он не
+            // сможет выдать себя за пользователя клиента: только идентификация.
+            FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
             nullptr);
         if (pipe != INVALID_HANDLE_VALUE) {
             return pipe;

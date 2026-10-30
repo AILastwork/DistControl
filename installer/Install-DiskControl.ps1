@@ -461,6 +461,8 @@ function Resolve-ServiceCredential {
     if (-not $password -and -not [string]::IsNullOrEmpty($env:DISKCONTROL_SERVICE_PASSWORD)) {
         # DistControl-Setup.exe has already checked this password.
         $password = ConvertTo-SecureString $env:DISKCONTROL_SERVICE_PASSWORD -AsPlainText -Force
+        # Do not leak the plain-text password into every child process (icacls, sc, takeown...).
+        Remove-Item Env:DISKCONTROL_SERVICE_PASSWORD -ErrorAction SilentlyContinue
         $checkedBySetup = $true
     }
 
