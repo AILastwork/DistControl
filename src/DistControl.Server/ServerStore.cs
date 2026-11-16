@@ -252,7 +252,7 @@ namespace DistControl.Server
                 int added = 0;
                 foreach (LogUploadItem item in request.Items ?? new List<LogUploadItem>())
                 {
-                    if (String.IsNullOrWhiteSpace(item.Id) || known.Contains(item.Id)) continue;
+                    if (String.IsNullOrWhiteSpace(item.Id) || known.Contains(item.Id) || !IsAuditLogFile(item.FileName)) continue;
                     data.Logs.Add(new CentralLogRecord
                     {
                         Id = item.Id,
@@ -475,6 +475,7 @@ namespace DistControl.Server
             if (value.Clients == null) value.Clients = new List<ClientRecord>();
             if (value.PendingEnrollments == null) value.PendingEnrollments = new List<PendingEnrollmentRecord>();
             if (value.Logs == null) value.Logs = new List<CentralLogRecord>();
+            value.Logs.RemoveAll(delegate(CentralLogRecord item) { return !IsAuditLogFile(item.FileName); });
             if (value.Updates == null) value.Updates = new List<UpdateRecord>();
             if (value.Audit == null) value.Audit = new List<AuditRecord>();
             if (value.Hubs == null) value.Hubs = new HubConfiguration();
@@ -509,6 +510,13 @@ namespace DistControl.Server
         private void TrimLogsLocked()
         {
             if (data.Logs.Count > 100000) data.Logs.RemoveRange(0, data.Logs.Count - 100000);
+        }
+
+        private static bool IsAuditLogFile(string fileName)
+        {
+            string name = Path.GetFileName(fileName ?? "");
+            return name.StartsWith("audit-", StringComparison.OrdinalIgnoreCase) &&
+                String.Equals(Path.GetExtension(name), ".csv", StringComparison.OrdinalIgnoreCase);
         }
 
         private T Read<T>(Func<T> value)

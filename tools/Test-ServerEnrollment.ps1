@@ -13,6 +13,8 @@ $storeType = $assembly.GetType("DistControl.Server.ServerStore", $true)
 $requestType = $assembly.GetType("DistControl.Server.EnrollRequest", $true)
 $hubUpdateType = $assembly.GetType("DistControl.Server.HubConfigurationUpdateRequest", $true)
 $heartbeatType = $assembly.GetType("DistControl.Server.HeartbeatRequest", $true)
+$logRequestType = $assembly.GetType("DistControl.Server.LogUploadRequest", $true)
+$logItemType = $assembly.GetType("DistControl.Server.LogUploadItem", $true)
 $testDirectory = Join-Path $env:TEMP ("DistControl-enrollment-test-" + [Guid]::NewGuid().ToString("N"))
 [IO.Directory]::CreateDirectory($testDirectory) | Out-Null
 
@@ -45,8 +47,8 @@ try {
     $request.RequestToken = "test-request-secret"
     $request.MachineName = "WRK-TEST"
     $request.UserName = "OSNOVA\test"
-    $request.AppVersion = "0.8.2"
-    $request.AgentVersion = "0.8.2"
+    $request.AppVersion = "0.8.3"
+    $request.AgentVersion = "0.8.3"
 
     $pending = $store.Enroll($request, "10.0.0.10")
     if ($pending.Approved -or [string]::IsNullOrWhiteSpace($pending.RequestId)) {
@@ -69,6 +71,23 @@ try {
     $discovered = $store.GetHubConfiguration()
     if ($discovered.DiscoveredManualHubs -ne "10.14.0.71:6565,10.14.0.72:6565") {
         throw "Current USB servers were not discovered from the client heartbeat."
+    }
+
+    $logRequest = [Activator]::CreateInstance($logRequestType)
+    foreach ($logData in @(
+        @{ Id = "audit-line"; FileName = "audit-20261116.csv"; Text = "audit" },
+        @{ Id = "trace-line"; FileName = "trace-20261116.log"; Text = "trace" }
+    )) {
+        $item = [Activator]::CreateInstance($logItemType)
+        $item.Id = $logData.Id
+        $item.FileName = $logData.FileName
+        $item.Text = $logData.Text
+        [void]$logRequest.Items.Add($item)
+    }
+    [void]$store.AppendLogs($approved.ClientId, $approved.ClientToken, $logRequest)
+    $centralLogs = $store.ListLogs($approved.ClientId, 100)
+    if ($centralLogs.Count -ne 1 -or $centralLogs[0].FileName -ne "audit-20261116.csv") {
+        throw "Technical files were uploaded to the central token journal."
     }
 
     $hubUpdate = [Activator]::CreateInstance($hubUpdateType)

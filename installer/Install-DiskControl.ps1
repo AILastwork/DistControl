@@ -38,7 +38,7 @@ try {
 catch {
 }
 $ProductName = "DistControl"
-$ProductVersion = "0.8.2"
+$ProductVersion = "0.8.3"
 $Publisher = "DistControl"
 $SourceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $ReleaseDir = Join-Path $SourceRoot "build\x64\Release"

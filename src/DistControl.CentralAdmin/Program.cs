@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.DirectoryServices.AccountManagement;
 using System.Diagnostics;
 using System.Drawing;
+using System.Globalization;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
@@ -15,8 +17,8 @@ using System.Windows.Forms;
 
 [assembly: AssemblyTitle("DistControl Central Admin")]
 [assembly: AssemblyProduct("DistControl")]
-[assembly: AssemblyVersion("0.8.2.0")]
-[assembly: AssemblyFileVersion("0.8.2.0")]
+[assembly: AssemblyVersion("0.8.3.0")]
+[assembly: AssemblyFileVersion("0.8.3.0")]
 
 namespace DistControl.CentralAdmin
 {
@@ -110,6 +112,32 @@ namespace DistControl.CentralAdmin
         public string ReceivedUtc = "";
         public string FileName = "";
         public string Text = "";
+    }
+
+    internal sealed class TokenAuditEvent
+    {
+        public DateTime Timestamp;
+        public string User = "";
+        public string Action = "";
+        public string Endpoint = "";
+        public string Token = "";
+        public string Product = "";
+        public string Result = "";
+        public string Details = "";
+    }
+
+    internal sealed class TokenSession
+    {
+        public string User = "";
+        public string Employee = "";
+        public string Computer = "";
+        public string Endpoint = "";
+        public string Token = "";
+        public string Product = "";
+        public DateTime? Connected;
+        public DateTime? Disconnected;
+        public string Network = "";
+        public string Status = "";
     }
 
     public sealed class AuditRecord
@@ -227,6 +255,8 @@ namespace DistControl.CentralAdmin
         private bool refreshingEnrollments;
         private CentralApi api;
         private List<ClientSummary> clients = new List<ClientSummary>();
+        private readonly Dictionary<string, string> employeeNameCache =
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
         public MainForm()
         {
@@ -325,7 +355,7 @@ namespace DistControl.CentralAdmin
             ToolStrip tools = new ToolStrip { GripStyle = ToolStripGripStyle.Hidden, Dock = DockStyle.Top };
             ToolStripButton refresh = new ToolStripButton("Обновить");
             ToolStripButton edit = new ToolStripButton("Изменить доступы и VPN");
-            ToolStripButton logs = new ToolStripButton("Показать журналы");
+            ToolStripButton logs = new ToolStripButton("Показать журнал токенов");
             refresh.Click += async delegate { await RefreshClientsWithFeedbackAsync(); };
             edit.Click += async delegate { await EditPolicyAsync(); };
             logs.Click += async delegate { await RefreshLogsAsync(); };
@@ -360,10 +390,10 @@ namespace DistControl.CentralAdmin
 
         private TabPage BuildLogsPage()
         {
-            TabPage page = new TabPage("Журналы");
+            TabPage page = new TabPage("Журнал токенов");
             logsPage = page;
             ToolStrip tools = new ToolStrip { GripStyle = ToolStripGripStyle.Hidden, Dock = DockStyle.Top };
-            ToolStripButton refresh = new ToolStripButton("Обновить журналы выбранного компьютера");
+            ToolStripButton refresh = new ToolStripButton("Обновить журнал выбранного компьютера");
             refresh.Click += async delegate { await RefreshLogsAsync(); };
             tools.Items.Add(refresh);
             page.Controls.Add(logsGrid);
@@ -860,25 +890,268 @@ namespace DistControl.CentralAdmin
             RequireApi();
             ClientSummary client = SelectedClient();
             if (client == null) return;
-            SetBusy(true, "Загружаем журналы компьютера " + client.MachineName + "…");
+            SetBusy(true, "Формируем журнал использования токенов на " + client.MachineName + "…");
             try
             {
                 CaptureGridLayout(logsGrid, "logs");
                 List<CentralLogRecord> records = await Task.Run(delegate
                 {
                     return api.Json<List<CentralLogRecord>>("GET",
-                        "/api/v1/admin/logs?clientId=" + Uri.EscapeDataString(client.Id) + "&limit=1000", null);
+                        "/api/v1/admin/logs?clientId=" + Uri.EscapeDataString(client.Id) + "&limit=5000", null);
                 });
-                logsGrid.DataSource = (records ?? new List<CentralLogRecord>()).Select(delegate(CentralLogRecord x)
+                List<TokenSession> sessions = await Task.Run(delegate
                 {
-                    return new { Получено = LocalTime(x.ReceivedUtc), Файл = x.FileName, Запись = x.Text };
+                    List<TokenSession> built = BuildTokenSessions(records ?? new List<CentralLogRecord>(), client.MachineName);
+                    ResolveEmployeeNames(built);
+                    return built;
+                });
+                logsGrid.DataSource = sessions.Select(delegate(TokenSession session)
+                {
+                    return new
+                    {
+                        Сотрудник = session.Employee,
+                        Учётная_запись = session.User,
+                        Компьютер = session.Computer,
+                        Токен = session.Token,
+                        Endpoint = session.Endpoint,
+                        Подключён = SessionTime(session.Connected),
+                        Отключён = SessionTime(session.Disconnected),
+                        Длительность = SessionDuration(session),
+                        Сеть = session.Network,
+                        Состояние = session.Status
+                    };
                 }).ToList();
                 FormatGrid(logsGrid, "logs");
                 if (logsPage != null) tabs.SelectedTab = logsPage;
-                SetOperationResult("Журналы загружены: " + (records == null ? 0 : records.Count) + " записей.");
+                SetOperationResult("Журнал токенов сформирован: " + sessions.Count + " операций/сеансов.");
             }
             catch (Exception error) { ShowError(error); }
             finally { SetBusy(false, null); }
+        }
+
+        private static List<TokenSession> BuildTokenSessions(List<CentralLogRecord> records, string computer)
+        {
+            List<TokenAuditEvent> events = records
+                .Where(delegate(CentralLogRecord item)
+                {
+                    return (item.FileName ?? "").StartsWith("audit-", StringComparison.OrdinalIgnoreCase);
+                })
+                .Select(delegate(CentralLogRecord item) { return ParseTokenAuditEvent(item.Text); })
+                .Where(delegate(TokenAuditEvent item) { return item != null; })
+                .OrderBy(delegate(TokenAuditEvent item) { return item.Timestamp; })
+                .ToList();
+            List<TokenSession> result = new List<TokenSession>();
+            Dictionary<string, TokenSession> open = new Dictionary<string, TokenSession>(StringComparer.OrdinalIgnoreCase);
+            foreach (TokenAuditEvent item in events)
+            {
+                string key = item.User + "\n" + item.Endpoint;
+                bool connected = String.Equals(item.Action, "USE", StringComparison.OrdinalIgnoreCase);
+                bool disconnected = IsDisconnectAction(item.Action);
+                bool success = String.Equals(item.Result, "OK", StringComparison.OrdinalIgnoreCase);
+                if (connected && success)
+                {
+                    TokenSession previous;
+                    if (open.TryGetValue(key, out previous))
+                    {
+                        previous.Status = "Нет записи об отключении";
+                        result.Add(previous);
+                    }
+                    open[key] = NewSession(item, computer, "Подключён");
+                    continue;
+                }
+                if (connected && !success)
+                {
+                    TokenSession failed = NewSession(item, computer, "Ошибка подключения");
+                    failed.Connected = item.Timestamp;
+                    result.Add(failed);
+                    continue;
+                }
+                if (!disconnected) continue;
+                if (!success)
+                {
+                    TokenSession failed = NewSession(item, computer, "Ошибка отключения");
+                    failed.Disconnected = item.Timestamp;
+                    result.Add(failed);
+                    continue;
+                }
+                TokenSession session;
+                if (open.TryGetValue(key, out session))
+                {
+                    open.Remove(key);
+                    session.Disconnected = item.Timestamp;
+                    session.Status = "Завершён";
+                    result.Add(session);
+                }
+                else
+                {
+                    session = NewSession(item, computer, "Отключён, подключение было раньше");
+                    session.Disconnected = item.Timestamp;
+                    result.Add(session);
+                }
+            }
+            foreach (TokenSession session in open.Values)
+            {
+                session.Status = "Подключён, отключение не зафиксировано";
+                result.Add(session);
+            }
+            return result.OrderByDescending(delegate(TokenSession item)
+            {
+                return item.Disconnected ?? item.Connected ?? DateTime.MinValue;
+            }).ToList();
+        }
+
+        private static TokenSession NewSession(TokenAuditEvent item, string computer, string status)
+        {
+            return new TokenSession
+            {
+                User = item.User,
+                Employee = item.User,
+                Computer = computer ?? "",
+                Endpoint = item.Endpoint,
+                Token = String.IsNullOrWhiteSpace(item.Token) ? item.Endpoint : item.Token,
+                Product = item.Product,
+                Connected = String.Equals(item.Action, "USE", StringComparison.OrdinalIgnoreCase)
+                    ? (DateTime?)item.Timestamp : null,
+                Network = NetworkDescription(item.Details),
+                Status = status
+            };
+        }
+
+        private static bool IsDisconnectAction(string action)
+        {
+            return String.Equals(action, "STOP USING OWN", StringComparison.OrdinalIgnoreCase) ||
+                String.Equals(action, "AUTO STOP", StringComparison.OrdinalIgnoreCase) ||
+                String.Equals(action, "AUTO STOP BEFORE VPN SWITCH", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static TokenAuditEvent ParseTokenAuditEvent(string line)
+        {
+            List<string> fields = ParseCsvLine(line ?? "");
+            if (fields.Count < 9 || String.Equals(fields[0], "timestamp", StringComparison.OrdinalIgnoreCase)) return null;
+            DateTime timestamp;
+            if (!DateTime.TryParseExact(fields[0], "yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeLocal, out timestamp) &&
+                !DateTime.TryParse(fields[0], CultureInfo.CurrentCulture, DateTimeStyles.AssumeLocal, out timestamp)) return null;
+            return new TokenAuditEvent
+            {
+                Timestamp = timestamp,
+                User = fields[1],
+                Action = fields[3],
+                Endpoint = fields[4],
+                Token = fields[5],
+                Product = fields[6],
+                Result = fields[7],
+                Details = fields[8]
+            };
+        }
+
+        private static List<string> ParseCsvLine(string line)
+        {
+            List<string> fields = new List<string>();
+            StringBuilder current = new StringBuilder();
+            bool quoted = false;
+            for (int index = 0; index < line.Length; ++index)
+            {
+                char value = line[index];
+                if (value == '"')
+                {
+                    if (quoted && index + 1 < line.Length && line[index + 1] == '"')
+                    {
+                        current.Append('"');
+                        index++;
+                    }
+                    else quoted = !quoted;
+                }
+                else if (value == ',' && !quoted)
+                {
+                    fields.Add(current.ToString());
+                    current.Clear();
+                }
+                else current.Append(value);
+            }
+            fields.Add(current.ToString());
+            return fields;
+        }
+
+        private void ResolveEmployeeNames(List<TokenSession> sessions)
+        {
+            foreach (string user in sessions.Select(delegate(TokenSession item) { return item.User; })
+                .Where(delegate(string value) { return !String.IsNullOrWhiteSpace(value); })
+                .Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                string displayName;
+                if (!employeeNameCache.TryGetValue(user, out displayName))
+                {
+                    displayName = ResolveEmployeeName(user);
+                    employeeNameCache[user] = displayName;
+                }
+                foreach (TokenSession session in sessions.Where(delegate(TokenSession item)
+                {
+                    return String.Equals(item.User, user, StringComparison.OrdinalIgnoreCase);
+                })) session.Employee = displayName;
+            }
+        }
+
+        private static string ResolveEmployeeName(string account)
+        {
+            try
+            {
+                string domain = "";
+                string login = account;
+                int separator = account.IndexOf('\\');
+                if (separator > 0)
+                {
+                    domain = account.Substring(0, separator);
+                    login = account.Substring(separator + 1);
+                }
+                using (PrincipalContext context = String.IsNullOrWhiteSpace(domain)
+                    ? new PrincipalContext(ContextType.Domain)
+                    : new PrincipalContext(ContextType.Domain, domain))
+                using (UserPrincipal principal = UserPrincipal.FindByIdentity(
+                    context, IdentityType.SamAccountName, login))
+                {
+                    if (principal != null && !String.IsNullOrWhiteSpace(principal.DisplayName))
+                        return principal.DisplayName;
+                }
+            }
+            catch { }
+            return account;
+        }
+
+        private static string NetworkDescription(string details)
+        {
+            string profile = DetailValue(details, "profileName");
+            string address = DetailValue(details, "publicIp");
+            if (String.Equals(address, "unknown", StringComparison.OrdinalIgnoreCase)) address = "";
+            if (String.IsNullOrWhiteSpace(profile)) return address;
+            return String.IsNullOrWhiteSpace(address) ? profile : profile + " / IP " + address;
+        }
+
+        private static string DetailValue(string details, string name)
+        {
+            foreach (string part in (details ?? "").Split(';'))
+            {
+                string value = part.Trim();
+                int separator = value.IndexOf('=');
+                if (separator > 0 && String.Equals(value.Substring(0, separator).Trim(), name,
+                    StringComparison.OrdinalIgnoreCase)) return value.Substring(separator + 1).Trim();
+            }
+            return "";
+        }
+
+        private static string SessionTime(DateTime? value)
+        {
+            return value.HasValue ? value.Value.ToString("dd.MM.yyyy HH:mm:ss") : "—";
+        }
+
+        private static string SessionDuration(TokenSession session)
+        {
+            if (!session.Connected.HasValue || !session.Disconnected.HasValue) return "—";
+            TimeSpan duration = session.Disconnected.Value - session.Connected.Value;
+            if (duration < TimeSpan.Zero) return "—";
+            return duration.TotalDays >= 1
+                ? ((int)duration.TotalDays) + " д. " + duration.ToString("hh\\:mm\\:ss")
+                : duration.ToString("hh\\:mm\\:ss");
         }
 
         private async Task RefreshAuditAsync()

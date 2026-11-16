@@ -34,7 +34,7 @@ Build-CSharp "DistControl.Updater.exe" `
 
 Build-CSharp "DistControl.CentralAdmin.exe" `
     @((Join-Path $root "src\DistControl.CentralAdmin\Program.cs")) `
-    @("System.Windows.Forms.dll", "System.Drawing.dll", "System.Web.Extensions.dll", "System.Security.dll", "System.IO.Compression.dll", "System.IO.Compression.FileSystem.dll") `
+    @("System.Windows.Forms.dll", "System.Drawing.dll", "System.Web.Extensions.dll", "System.Security.dll", "System.DirectoryServices.dll", "System.DirectoryServices.AccountManagement.dll", "System.IO.Compression.dll", "System.IO.Compression.FileSystem.dll") `
     "winexe" `
     (Join-Path $root "src\DistControl.CentralAdmin\DistControl.CentralAdmin.manifest")
 

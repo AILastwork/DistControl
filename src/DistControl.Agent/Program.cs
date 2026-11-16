@@ -14,8 +14,8 @@ using System.Web.Script.Serialization;
 
 [assembly: AssemblyTitle("DistControl Central Agent")]
 [assembly: AssemblyProduct("DistControl")]
-[assembly: AssemblyVersion("0.8.2.0")]
-[assembly: AssemblyFileVersion("0.8.2.0")]
+[assembly: AssemblyVersion("0.8.3.0")]
+[assembly: AssemblyFileVersion("0.8.3.0")]
 
 namespace DistControl.Agent
 {
@@ -426,9 +426,9 @@ namespace DistControl.Agent
             foreach (string file in Directory.GetFiles(config.LogsDirectory)
                 .Where(delegate(string path)
                 {
-                    string extension = Path.GetExtension(path);
-                    return String.Equals(extension, ".log", StringComparison.OrdinalIgnoreCase) ||
-                        String.Equals(extension, ".csv", StringComparison.OrdinalIgnoreCase);
+                    string name = Path.GetFileName(path);
+                    return name.StartsWith("audit-", StringComparison.OrdinalIgnoreCase) &&
+                        String.Equals(Path.GetExtension(name), ".csv", StringComparison.OrdinalIgnoreCase);
                 }).OrderByDescending(File.GetLastWriteTimeUtc).Take(6))
             {
                 string[] lines;
