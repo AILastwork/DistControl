@@ -18,8 +18,8 @@ using System.Windows.Forms;
 
 [assembly: AssemblyTitle("DistControl Central Admin")]
 [assembly: AssemblyProduct("DistControl")]
-[assembly: AssemblyVersion("0.8.7.0")]
-[assembly: AssemblyFileVersion("0.8.7.0")]
+[assembly: AssemblyVersion("0.8.8.0")]
+[assembly: AssemblyFileVersion("0.8.8.0")]
 
 namespace DistControl.CentralAdmin
 {
@@ -173,18 +173,17 @@ namespace DistControl.CentralAdmin
 
         public T Json<T>(string method, string path, object body)
         {
-            byte[] content = body == null ? new byte[0] : Encoding.UTF8.GetBytes(json.Serialize(body));
+            bool requiresBody = String.Equals(method, "POST", StringComparison.OrdinalIgnoreCase) ||
+                String.Equals(method, "PUT", StringComparison.OrdinalIgnoreCase);
+            byte[] content = body == null
+                ? (requiresBody ? Encoding.UTF8.GetBytes("{}") : new byte[0])
+                : Encoding.UTF8.GetBytes(json.Serialize(body));
             HttpWebRequest request = Create(method, path);
             if (content.Length > 0)
             {
                 request.ContentType = "application/json; charset=utf-8";
                 request.ContentLength = content.Length;
                 using (Stream output = request.GetRequestStream()) output.Write(content, 0, content.Length);
-            }
-            else if (String.Equals(method, "POST", StringComparison.OrdinalIgnoreCase) ||
-                String.Equals(method, "PUT", StringComparison.OrdinalIgnoreCase))
-            {
-                request.ContentLength = 0;
             }
             using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
             using (StreamReader reader = new StreamReader(response.GetResponseStream(), Encoding.UTF8))

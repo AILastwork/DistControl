@@ -14,8 +14,8 @@ using System.Web.Script.Serialization;
 
 [assembly: AssemblyTitle("DistControl Central Agent")]
 [assembly: AssemblyProduct("DistControl")]
-[assembly: AssemblyVersion("0.8.7.0")]
-[assembly: AssemblyFileVersion("0.8.7.0")]
+[assembly: AssemblyVersion("0.8.8.0")]
+[assembly: AssemblyFileVersion("0.8.8.0")]
 
 namespace DistControl.Agent
 {
@@ -34,6 +34,7 @@ namespace DistControl.Agent
         public bool AutoUpdate = true;
         public string AppliedHubRevision = "";
         public string HubStatus = "";
+        public string LastAppliedPolicyRevision = "";
     }
 
     public sealed class EnrollRequest
@@ -144,6 +145,7 @@ namespace DistControl.Agent
         private string appliedRevision = "";
         private string updateStatus = "";
         private string lastError = "";
+        private string reportedPolicyConflictRevision = "";
         private bool missingServerWasLogged;
 
         public AgentWorker(string configPath)
@@ -258,10 +260,33 @@ namespace DistControl.Agent
         private void SynchronizePolicy()
         {
             PolicyResponse policy = SendJson<PolicyResponse>("GET", "/api/v1/client/policy", null, true);
-            if (String.IsNullOrWhiteSpace(policy.Revision) || String.Equals(policy.Revision, appliedRevision, StringComparison.Ordinal)) return;
+            if (String.IsNullOrWhiteSpace(policy.Revision)) return;
+            if (String.Equals(policy.Revision, appliedRevision, StringComparison.Ordinal))
+            {
+                if (!String.Equals(config.LastAppliedPolicyRevision, policy.Revision, StringComparison.Ordinal))
+                {
+                    config.LastAppliedPolicyRevision = policy.Revision;
+                    SaveConfig();
+                }
+                return;
+            }
+            if (!String.IsNullOrWhiteSpace(config.LastAppliedPolicyRevision) &&
+                String.Equals(policy.Revision, config.LastAppliedPolicyRevision, StringComparison.Ordinal))
+            {
+                string conflict = config.LastAppliedPolicyRevision + ":" + appliedRevision;
+                if (!String.Equals(reportedPolicyConflictRevision, conflict, StringComparison.Ordinal))
+                {
+                    Log("Локальный allow.json изменён после последней синхронизации. Серверная копия не менялась, поэтому агент не перезаписывает локальные назначения. Сохраните нужный файл через центральную админку.");
+                    reportedPolicyConflictRevision = conflict;
+                }
+                return;
+            }
             ValidatePolicy(policy.PolicyJson);
             AtomicWrite(config.PolicyPath, Encoding.UTF8.GetBytes(policy.PolicyJson));
             appliedRevision = policy.Revision;
+            config.LastAppliedPolicyRevision = policy.Revision;
+            SaveConfig();
+            reportedPolicyConflictRevision = "";
             Log("Получена и применена новая политика " + appliedRevision + ".");
         }
 
@@ -814,6 +839,17 @@ namespace DistControl.Agent
             try
             {
                 Directory.CreateDirectory(Path.GetDirectoryName(logPath));
+                if (File.Exists(logPath) && new FileInfo(logPath).Length >= 5L * 1024L * 1024L)
+                {
+                    string oldest = logPath + ".3";
+                    if (File.Exists(oldest)) File.Delete(oldest);
+                    for (int index = 2; index >= 1; --index)
+                    {
+                        string source = logPath + "." + index;
+                        if (File.Exists(source)) File.Move(source, logPath + "." + (index + 1));
+                    }
+                    File.Move(logPath, logPath + ".1");
+                }
                 File.AppendAllText(logPath, DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " " + message + Environment.NewLine, Encoding.UTF8);
             }
             catch { }

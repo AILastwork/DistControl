@@ -82,7 +82,13 @@ $serverJob = Start-Job -ArgumentList $port -ScriptBlock {
             $stream.Write($header, 0, $header.Length)
             $stream.Write($body, 0, $body.Length)
             $stream.Flush()
-            return $contentLength
+            $bodyText = ""
+            if ($contentLength -gt 0) {
+                $buffer = New-Object char[] $contentLength
+                [void]$reader.ReadBlock($buffer, 0, $buffer.Length)
+                $bodyText = -join $buffer
+            }
+            return "$contentLength|$bodyText"
         }
         finally { $client.Dispose() }
     }
@@ -96,7 +102,7 @@ try {
     $jsonMethod = $apiType.GetMethod("Json").MakeGenericMethod([object])
     [void]$jsonMethod.Invoke($api, @([string]"POST", [string]"/empty-post", $null))
     $postedLength = Receive-Job -Job $serverJob -Wait
-    if ($postedLength -ne 0) { throw "Empty POST did not send Content-Length: 0." }
+    if ($postedLength -ne "2|{}") { throw "Empty POST did not send the required empty JSON object." }
 }
 finally {
     Stop-Job -Job $serverJob -ErrorAction SilentlyContinue
