@@ -13,6 +13,7 @@ $storeType = $assembly.GetType("DistControl.Server.ServerStore", $true)
 $requestType = $assembly.GetType("DistControl.Server.EnrollRequest", $true)
 $hubUpdateType = $assembly.GetType("DistControl.Server.HubConfigurationUpdateRequest", $true)
 $heartbeatType = $assembly.GetType("DistControl.Server.HeartbeatRequest", $true)
+$policyUpdateType = $assembly.GetType("DistControl.Server.PolicyUpdateRequest", $true)
 $logRequestType = $assembly.GetType("DistControl.Server.LogUploadRequest", $true)
 $logItemType = $assembly.GetType("DistControl.Server.LogUploadItem", $true)
 $testDirectory = Join-Path $env:TEMP ("DistControl-enrollment-test-" + [Guid]::NewGuid().ToString("N"))
@@ -47,8 +48,8 @@ try {
     $request.RequestToken = "test-request-secret"
     $request.MachineName = "WRK-TEST"
     $request.UserName = "OSNOVA\test"
-    $request.AppVersion = "0.8.3"
-    $request.AgentVersion = "0.8.3"
+    $request.AppVersion = "0.8.4"
+    $request.AgentVersion = "0.8.4"
 
     $pending = $store.Enroll($request, "10.0.0.10")
     if ($pending.Approved -or [string]::IsNullOrWhiteSpace($pending.RequestId)) {
@@ -64,6 +65,49 @@ try {
         throw "Approved enrollment did not issue a token."
     }
     [void]$store.AuthenticateClient($approved.ClientId, $approved.ClientToken)
+
+    $smallPolicy = [ordered]@{
+        vpnProfiles = @()
+        userAssignments = @([ordered]@{
+            users = @("OSNOVA\test")
+            groups = @()
+            allowedDevices = @([ordered]@{ endpoint = "hub-1"; nickname = "Token 1"; product = "Rutoken" })
+        })
+    } | ConvertTo-Json -Depth 6 -Compress
+    $smallUpdate = [Activator]::CreateInstance($policyUpdateType)
+    $smallUpdate.ExpectedRevision = $store.GetPolicyForAdmin($approved.ClientId).Revision
+    $smallUpdate.PolicyJson = $smallPolicy
+    $smallUpdate.Actor = "OSNOVA\domain-admin"
+    [void]$store.UpdatePolicy($approved.ClientId, $smallUpdate)
+
+    $largeDevices = for ($i = 1; $i -le 20; $i++) {
+        [ordered]@{ endpoint = "hub-$i"; nickname = "Token $i"; product = "Rutoken" }
+    }
+    $largePolicy = [ordered]@{
+        vpnProfiles = @()
+        userAssignments = @([ordered]@{
+            users = @("OSNOVA\test")
+            groups = @()
+            allowedDevices = @($largeDevices)
+        })
+    } | ConvertTo-Json -Depth 6 -Compress
+    $largeUpdate = [Activator]::CreateInstance($policyUpdateType)
+    $largeUpdate.ExpectedRevision = $store.GetPolicyForAdmin($approved.ClientId).Revision
+    $largeUpdate.PolicyJson = $largePolicy
+    $largeUpdate.Actor = "OSNOVA\domain-admin"
+    $massRejected = $false
+    try { [void]$store.UpdatePolicy($approved.ClientId, $largeUpdate) }
+    catch { $massRejected = $true }
+    if (-not $massRejected) { throw "Unconfirmed mass policy expansion was accepted." }
+    if ($store.GetPolicyForAdmin($approved.ClientId).PolicyJson -ne $smallPolicy) {
+        throw "Rejected mass policy expansion still modified the stored policy."
+    }
+
+    $largeUpdate.ConfirmMassExpansion = $true
+    [void]$store.UpdatePolicy($approved.ClientId, $largeUpdate)
+    if ($store.GetPolicyForAdmin($approved.ClientId).PolicyJson -ne $largePolicy) {
+        throw "Confirmed mass policy expansion was not saved."
+    }
 
     $heartbeat = [Activator]::CreateInstance($heartbeatType)
     $heartbeat.CurrentManualHubs = "10.14.0.71:6565,10.14.0.72:6565"

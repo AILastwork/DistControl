@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -235,9 +236,20 @@ namespace DistControl.Server
                     throw new InvalidOperationException("Политика уже изменена другим администратором. Обновите данные.");
 
                 ValidatePolicyJson(request.PolicyJson);
+                int oldAccessCount = PolicyAccessCount(client.PolicyJson);
+                int newAccessCount = PolicyAccessCount(request.PolicyJson);
+                int addedAccessCount = Math.Max(0, newAccessCount - oldAccessCount);
+                bool massExpansion = addedAccessCount >= 10 &&
+                    newAccessCount > Math.Max(oldAccessCount * 2, oldAccessCount + 10);
+                if (massExpansion && !request.ConfirmMassExpansion)
+                    throw new InvalidOperationException(
+                        "Обнаружено массовое расширение доступа: было " + oldAccessCount +
+                        ", станет " + newAccessCount + ". Повторите действие в новой версии админки и подтвердите изменение.");
                 client.PolicyJson = request.PolicyJson;
                 client.PolicyRevision = PolicyRevision(request.PolicyJson);
-                AddAudit(request.Actor, "POLICY_UPDATED", client.Id, client.PolicyRevision);
+                AddAudit(request.Actor, "POLICY_UPDATED", client.Id,
+                    "revision=" + client.PolicyRevision + "; accessBefore=" + oldAccessCount +
+                    "; accessAfter=" + newAccessCount + "; massConfirmed=" + request.ConfirmMassExpansion);
                 SaveLocked();
                 return new PolicyResponse { Revision = client.PolicyRevision, PolicyJson = client.PolicyJson };
             }
@@ -546,6 +558,30 @@ namespace DistControl.Server
             Dictionary<string, object> map = (Dictionary<string, object>)root;
             if (!map.ContainsKey("userAssignments") || !map.ContainsKey("vpnProfiles"))
                 throw new InvalidDataException("В allow.json отсутствуют userAssignments или vpnProfiles.");
+        }
+
+        private int PolicyAccessCount(string text)
+        {
+            if (String.IsNullOrWhiteSpace(text)) return 0;
+            object parsed = json.DeserializeObject(text);
+            Dictionary<string, object> root = parsed as Dictionary<string, object>;
+            if (root == null) return 0;
+            object assignmentsValue;
+            IList assignments = root.TryGetValue("userAssignments", out assignmentsValue)
+                ? assignmentsValue as IList : null;
+            if (assignments == null) return 0;
+
+            int count = 0;
+            foreach (object assignmentValue in assignments)
+            {
+                Dictionary<string, object> assignment = assignmentValue as Dictionary<string, object>;
+                if (assignment == null) continue;
+                object rulesValue;
+                IList rules = assignment.TryGetValue("allowedDevices", out rulesValue)
+                    ? rulesValue as IList : null;
+                if (rules != null) count += rules.Count;
+            }
+            return count;
         }
 
         public static string PolicyRevision(string value)

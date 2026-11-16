@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.DirectoryServices.AccountManagement;
 using System.Diagnostics;
@@ -17,8 +18,8 @@ using System.Windows.Forms;
 
 [assembly: AssemblyTitle("DistControl Central Admin")]
 [assembly: AssemblyProduct("DistControl")]
-[assembly: AssemblyVersion("0.8.3.0")]
-[assembly: AssemblyFileVersion("0.8.3.0")]
+[assembly: AssemblyVersion("0.8.4.0")]
+[assembly: AssemblyFileVersion("0.8.4.0")]
 
 namespace DistControl.CentralAdmin
 {
@@ -93,6 +94,20 @@ namespace DistControl.CentralAdmin
     {
         public string ExpectedRevision = "";
         public string PolicyJson = "";
+        public bool ConfirmMassExpansion = false;
+    }
+
+    internal sealed class PolicyChangeSummary
+    {
+        public int BeforeCount;
+        public int AfterCount;
+        public int AddedCount;
+        public int RemovedCount;
+
+        public bool IsMassExpansion
+        {
+            get { return AddedCount >= 10 && AfterCount > Math.Max(BeforeCount * 2, BeforeCount + 10); }
+        }
     }
 
     public sealed class UpdateAssignmentRequest
@@ -355,13 +370,16 @@ namespace DistControl.CentralAdmin
             ToolStrip tools = new ToolStrip { GripStyle = ToolStripGripStyle.Hidden, Dock = DockStyle.Top };
             ToolStripButton refresh = new ToolStripButton("Обновить");
             ToolStripButton edit = new ToolStripButton("Изменить доступы и VPN");
+            ToolStripButton import = new ToolStripButton("Восстановить allow.json");
             ToolStripButton logs = new ToolStripButton("Показать журнал токенов");
             refresh.Click += async delegate { await RefreshClientsWithFeedbackAsync(); };
             edit.Click += async delegate { await EditPolicyAsync(); };
+            import.Click += async delegate { await ImportPolicyAsync(); };
             logs.Click += async delegate { await RefreshLogsAsync(); };
             tools.Items.Add(refresh);
             tools.Items.Add(new ToolStripSeparator());
             tools.Items.Add(edit);
+            tools.Items.Add(import);
             tools.Items.Add(logs);
             page.Controls.Add(clientsGrid);
             page.Controls.Add(tools);
@@ -838,6 +856,7 @@ namespace DistControl.CentralAdmin
             ClientSummary client = SelectedClient();
             if (client == null) return;
             SetBusy(true, "Получение конфигурации " + client.MachineName + "…");
+            string editDirectory = null;
             try
             {
                 PolicyResponse policy = await Task.Run(delegate
@@ -845,9 +864,8 @@ namespace DistControl.CentralAdmin
                     return api.Json<PolicyResponse>("GET", "/api/v1/admin/clients/" + client.Id + "/policy", null);
                 });
                 SetBusy(true, "Открываем локальную админку для " + client.MachineName + "…");
-                string directory = Path.Combine(Path.GetDirectoryName(settingsPath), "clients", client.Id);
-                Directory.CreateDirectory(directory);
-                string policyPath = Path.Combine(directory, "allow.json");
+                editDirectory = CreatePolicyEditSessionDirectory(settingsPath, client.Id);
+                string policyPath = Path.Combine(editDirectory, "allow.json");
                 File.WriteAllText(policyPath, policy.PolicyJson, new UTF8Encoding(false));
                 string before = Sha256(Encoding.UTF8.GetBytes(policy.PolicyJson));
                 string adminExe = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "DistControl.Admin.exe");
@@ -865,13 +883,29 @@ namespace DistControl.CentralAdmin
                     SetOperationResult("Редактирование завершено. Настройки не изменялись.");
                     return;
                 }
+
+                PolicyChangeSummary summary = SummarizePolicyChange(policy.PolicyJson, changed);
+                string confirmation =
+                    "Отправить изменённые доступы и VPN на компьютер «" + client.MachineName + "»?\r\n\r\n" +
+                    "Разрешений было: " + summary.BeforeCount + "\r\n" +
+                    "Разрешений станет: " + summary.AfterCount + "\r\n" +
+                    "Добавлено: " + summary.AddedCount + "\r\n" +
+                    "Удалено: " + summary.RemovedCount;
                 if (MessageBox.Show(this,
-                    "Отправить изменённые доступы и VPN на компьютер «" + client.MachineName + "»?",
-                    "DistControl", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+                    confirmation,
+                    "DistControl", MessageBoxButtons.YesNo, MessageBoxIcon.Question,
+                    MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
+
+                if (summary.IsMassExpansion && MessageBox.Show(this,
+                    "Обнаружено массовое расширение доступа: добавляется " + summary.AddedCount +
+                    " токенов.\r\n\r\nПродолжайте только если вы действительно выбрали эти токены вручную.",
+                    "Подтверждение массового изменения", MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
                 PolicyUpdateRequest request = new PolicyUpdateRequest
                 {
                     ExpectedRevision = policy.Revision,
-                    PolicyJson = changed
+                    PolicyJson = changed,
+                    ConfirmMassExpansion = summary.IsMassExpansion
                 };
                 SetBusy(true, "Отправляем изменённые доступы и VPN на сервер…");
                 await Task.Run(delegate
@@ -880,6 +914,157 @@ namespace DistControl.CentralAdmin
                 });
                 await RefreshClientsAsync();
                 SetOperationResult("Изменения сохранены на сервере и ожидают применения клиентом.");
+            }
+            catch (Exception error) { ShowError(error); }
+            finally
+            {
+                TryDeletePolicyEditSession(editDirectory);
+                SetBusy(false, null);
+            }
+        }
+
+        private static string CreatePolicyEditSessionDirectory(string settingsFile, string clientId)
+        {
+            string root = Path.Combine(Path.GetDirectoryName(settingsFile), "edit-sessions", clientId ?? "unknown");
+            string directory = Path.Combine(root,
+                DateTime.Now.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture) + "-" +
+                Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+            return directory;
+        }
+
+        private static void TryDeletePolicyEditSession(string directory)
+        {
+            if (String.IsNullOrWhiteSpace(directory)) return;
+            try
+            {
+                if (Directory.Exists(directory)) Directory.Delete(directory, true);
+            }
+            catch
+            {
+                // A failed cleanup is harmless; the next run uses a different isolated directory.
+            }
+        }
+
+        private static PolicyChangeSummary SummarizePolicyChange(string beforeJson, string afterJson)
+        {
+            HashSet<string> before = PolicyAccessKeys(beforeJson);
+            HashSet<string> after = PolicyAccessKeys(afterJson);
+            return new PolicyChangeSummary
+            {
+                BeforeCount = before.Count,
+                AfterCount = after.Count,
+                AddedCount = after.Count(delegate(string key) { return !before.Contains(key); }),
+                RemovedCount = before.Count(delegate(string key) { return !after.Contains(key); })
+            };
+        }
+
+        private static HashSet<string> PolicyAccessKeys(string policyJson)
+        {
+            JavaScriptSerializer serializer = new JavaScriptSerializer { MaxJsonLength = Int32.MaxValue };
+            Dictionary<string, object> root = serializer.DeserializeObject(policyJson) as Dictionary<string, object>;
+            if (root == null) throw new InvalidDataException("Корень allow.json должен быть объектом.");
+
+            HashSet<string> result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            object assignmentsValue;
+            IList assignments = root.TryGetValue("userAssignments", out assignmentsValue)
+                ? assignmentsValue as IList : null;
+            if (assignments == null) throw new InvalidDataException("В allow.json отсутствует массив userAssignments.");
+
+            for (int assignmentIndex = 0; assignmentIndex < assignments.Count; assignmentIndex++)
+            {
+                Dictionary<string, object> assignment = assignments[assignmentIndex] as Dictionary<string, object>;
+                if (assignment == null) continue;
+                List<string> principals = new List<string>();
+                AddPolicyPrincipals(principals, assignment, "users", "user:");
+                AddPolicyPrincipals(principals, assignment, "groups", "group:");
+                if (principals.Count == 0) principals.Add("assignment:" + assignmentIndex);
+
+                object rulesValue;
+                IList rules = assignment.TryGetValue("allowedDevices", out rulesValue)
+                    ? rulesValue as IList : null;
+                if (rules == null) continue;
+                foreach (object ruleValue in rules)
+                {
+                    Dictionary<string, object> rule = ruleValue as Dictionary<string, object>;
+                    object endpointValue;
+                    string endpoint = rule != null && rule.TryGetValue("endpoint", out endpointValue)
+                        ? Convert.ToString(endpointValue, CultureInfo.InvariantCulture) : "";
+                    if (String.IsNullOrWhiteSpace(endpoint)) continue;
+                    foreach (string principal in principals) result.Add(principal + "\u001f" + endpoint.Trim());
+                }
+            }
+            return result;
+        }
+
+        private static void AddPolicyPrincipals(
+            List<string> target, Dictionary<string, object> assignment, string propertyName, string prefix)
+        {
+            object value;
+            IList principals = assignment.TryGetValue(propertyName, out value) ? value as IList : null;
+            if (principals == null) return;
+            foreach (object principalValue in principals)
+            {
+                string principal = Convert.ToString(principalValue, CultureInfo.InvariantCulture);
+                if (!String.IsNullOrWhiteSpace(principal)) target.Add(prefix + principal.Trim());
+            }
+        }
+
+        private async Task ImportPolicyAsync()
+        {
+            ClientSummary client = SelectedClient();
+            if (client == null) return;
+
+            string path;
+            using (OpenFileDialog dialog = new OpenFileDialog())
+            {
+                dialog.Title = "Выберите резервный allow.json";
+                dialog.Filter = "Политика DistControl (allow.json;*.json)|allow.json;*.json|Все файлы (*.*)|*.*";
+                dialog.CheckFileExists = true;
+                dialog.Multiselect = false;
+                if (dialog.ShowDialog(this) != DialogResult.OK) return;
+                path = dialog.FileName;
+            }
+
+            SetBusy(true, "Проверяем резервную политику для " + client.MachineName + "…");
+            try
+            {
+                string imported = File.ReadAllText(path, Encoding.UTF8);
+                PolicyResponse current = await Task.Run(delegate
+                {
+                    return api.Json<PolicyResponse>("GET", "/api/v1/admin/clients/" + client.Id + "/policy", null);
+                });
+                PolicyChangeSummary summary = SummarizePolicyChange(current.PolicyJson, imported);
+                string message =
+                    "Восстановить выбранный allow.json на компьютере «" + client.MachineName + "»?\r\n\r\n" +
+                    "Разрешений сейчас: " + summary.BeforeCount + "\r\n" +
+                    "Разрешений будет: " + summary.AfterCount + "\r\n" +
+                    "Добавится: " + summary.AddedCount + "\r\n" +
+                    "Удалится: " + summary.RemovedCount + "\r\n\r\n" +
+                    "Файл: " + path;
+                if (MessageBox.Show(this, message, "Восстановление политики",
+                    MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+                    MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
+
+                if (summary.IsMassExpansion && MessageBox.Show(this,
+                    "Резервный файл массово расширяет доступ: добавляется " + summary.AddedCount +
+                    " токенов. Подтвердите это изменение отдельно.",
+                    "Подтверждение массового изменения", MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
+
+                PolicyUpdateRequest request = new PolicyUpdateRequest
+                {
+                    ExpectedRevision = current.Revision,
+                    PolicyJson = imported,
+                    ConfirmMassExpansion = summary.IsMassExpansion
+                };
+                SetBusy(true, "Восстанавливаем политику на сервере…");
+                await Task.Run(delegate
+                {
+                    api.Json<PolicyResponse>("PUT", "/api/v1/admin/clients/" + client.Id + "/policy", request);
+                });
+                await RefreshClientsAsync();
+                SetOperationResult("Резервный allow.json сохранён на сервере и ожидает применения клиентом.");
             }
             catch (Exception error) { ShowError(error); }
             finally { SetBusy(false, null); }

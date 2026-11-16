@@ -158,6 +158,7 @@ namespace DistControl.Server
         public string ExpectedRevision = "";
         public string PolicyJson = "";
         public string Actor = "";
+        public bool ConfirmMassExpansion = false;
     }
 
     public sealed class LogUploadRequest
