@@ -22,6 +22,7 @@
 #include <exception>
 #include <fstream>
 #include <iomanip>
+#include <limits>
 #include <map>
 #include <set>
 #include <sstream>
@@ -47,6 +48,7 @@ constexpr int IDC_LOAD_COMPUTER = 1019;
 constexpr int IDC_AVAILABLE_LIST = 1020;
 constexpr int IDC_VPN_MAPPINGS = 1022;
 constexpr int IDC_USAGE_REPORT = 1030;
+constexpr int IDC_SORT_MODE = 1031;
 constexpr UINT_PTR IDT_DELAYED_REFRESH = 2001;
 constexpr UINT_PTR IDT_USAGE_WATCHDOG = 2002;
 constexpr UINT_PTR IDT_USAGE_SYNC = 2003;
@@ -1060,6 +1062,35 @@ std::wstring columnLayoutSettingsPath() {
     const std::wstring directory = std::wstring(localAppData) + L"\\DistControl";
     CreateDirectoryW(directory.c_str(), nullptr);
     return directory + L"\\admin-ui.ini";
+}
+
+std::wstring clientUiSettingsPath() {
+    wchar_t localAppData[32768]{};
+    const DWORD length = GetEnvironmentVariableW(
+        L"LOCALAPPDATA", localAppData, static_cast<DWORD>(std::size(localAppData)));
+    if (length == 0 || length >= std::size(localAppData)) {
+        return {};
+    }
+    const std::wstring root = std::wstring(localAppData) + L"\\DistControl";
+    const std::wstring state = root + L"\\state";
+    CreateDirectoryW(root.c_str(), nullptr);
+    CreateDirectoryW(state.c_str(), nullptr);
+    return state + L"\\client-ui.ini";
+}
+
+unsigned long long readUsageCount(const std::wstring& settingsPath, const std::wstring& endpoint) {
+    if (settingsPath.empty() || endpoint.empty()) {
+        return 0;
+    }
+    wchar_t value[32]{};
+    GetPrivateProfileStringW(L"TokenUsage", endpoint.c_str(), L"0", value,
+        static_cast<DWORD>(std::size(value)), settingsPath.c_str());
+    try {
+        return std::stoull(value);
+    }
+    catch (...) {
+        return 0;
+    }
 }
 
 std::vector<int> parseColumnLayout(const std::wstring& text, int columnCount) {
@@ -2132,6 +2163,17 @@ LRESULT MainWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         }
         break;
     case WM_COMMAND:
+        if (!kAdminBuild && reinterpret_cast<HWND>(lParam) == sortModeCombo_ &&
+            HIWORD(wParam) == CBN_SELCHANGE) {
+            sortFrequentlyUsed_ = ComboBox_GetCurSel(sortModeCombo_) == 1;
+            saveClientSortMode();
+            sortDevices();
+            populateListView();
+            updateStatus(sortFrequentlyUsed_
+                ? L"Часто используемые токены показаны первыми."
+                : L"Токены отсортированы по алфавиту.");
+            return 0;
+        }
         if (reinterpret_cast<HWND>(lParam) == searchEdit_ && HIWORD(wParam) == EN_CHANGE) {
             applyDeviceFilter();
             return 0;
@@ -2351,6 +2393,15 @@ void MainWindow::createControls() {
         hwnd_, controlId(IDC_USE), instance_, nullptr);
     stopButton_ = CreateWindowW(L"BUTTON", L"Отключить", userActionStyle, 0, 0, 0, 0,
         hwnd_, controlId(IDC_STOP), instance_, nullptr);
+    sortModeCombo_ = CreateWindowExW(WS_EX_CLIENTEDGE, WC_COMBOBOXW, nullptr,
+        userActionStyle | CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP,
+        0, 0, 0, 0, hwnd_, controlId(IDC_SORT_MODE), instance_, nullptr);
+    if (!kAdminBuild && sortModeCombo_) {
+        ComboBox_AddString(sortModeCombo_, L"Сортировка: по алфавиту");
+        ComboBox_AddString(sortModeCombo_, L"Сортировка: часто используемые");
+        loadClientSortSettings();
+        ComboBox_SetCurSel(sortModeCombo_, sortFrequentlyUsed_ ? 1 : 0);
+    }
     diagnosticsButton_ = CreateWindowW(L"BUTTON", L"Админ режим", WS_CHILD, 0, 0, 0, 0,
         hwnd_, controlId(IDC_DIAGNOSTICS), instance_, nullptr);
     assignUserLabel_ = CreateWindowW(L"STATIC", L"Пользователь:", adminActionStyle | SS_LEFTNOWORDWRAP,
@@ -2690,7 +2741,10 @@ void MainWindow::layoutControls() {
         }
 
         MoveWindow(refreshButton_, margin, buttonTop, buttonWidth, buttonHeight, TRUE);
-        MoveWindow(useButton_, margin + buttonWidth + gap, buttonTop, 170, buttonHeight, TRUE);
+        constexpr int sortWidth = 250;
+        const int sortX = margin + buttonWidth + gap;
+        MoveWindow(sortModeCombo_, sortX, buttonTop, sortWidth, 240, TRUE);
+        MoveWindow(useButton_, sortX + sortWidth + gap, buttonTop, 170, buttonHeight, TRUE);
     }
 
     constexpr int refreshProgressWidth = 230;
@@ -2714,6 +2768,9 @@ void MainWindow::setMainControlsEnabled(bool enabled) {
     }
     if (stopButton_) {
         EnableWindow(stopButton_, value);
+    }
+    if (sortModeCombo_) {
+        EnableWindow(sortModeCombo_, value);
     }
     if (kAdminBuild) {
         updateAdminMoveButtons(enabled);
@@ -3187,6 +3244,7 @@ void MainWindow::finishTokenAction() {
     tokenActionFailureTicks_.erase(endpoint);
     if (connect) {
         activeDeviceStartTicks_[endpoint] = GetTickCount64();
+        recordSuccessfulUse(endpoint);
     }
     else {
         activeDeviceStartTicks_.erase(endpoint);
@@ -3429,6 +3487,9 @@ void MainWindow::finishRefresh() {
 
     consecutiveRefreshFailures_ = 0;
     allDevices_ = std::move(loadedDevices);
+    if (!kAdminBuild) {
+        loadClientSortSettings();
+    }
 
     if (kAdminBuild) {
         captureAdminAccessState(loadedPolicyUser, loadedPolicyRevision);
@@ -3817,6 +3878,31 @@ void MainWindow::updateTreeTimerTextRecursive(HTREEITEM item) {
 }
 
 void MainWindow::sortDevices() {
+    if (!kAdminBuild) {
+        const bool byFrequency = sortFrequentlyUsed_;
+        std::stable_sort(devices_.begin(), devices_.end(),
+            [this, byFrequency](const DeviceViewModel& left, const DeviceViewModel& right) {
+                if (byFrequency) {
+                    const auto leftFound = tokenUseCounts_.find(left.endpoint);
+                    const auto rightFound = tokenUseCounts_.find(right.endpoint);
+                    const unsigned long long leftCount =
+                        leftFound == tokenUseCounts_.end() ? 0 : leftFound->second;
+                    const unsigned long long rightCount =
+                        rightFound == tokenUseCounts_.end() ? 0 : rightFound->second;
+                    if (leftCount != rightCount) {
+                        return leftCount > rightCount;
+                    }
+                }
+                const std::wstring leftName = lowerCopy(displayDeviceName(left));
+                const std::wstring rightName = lowerCopy(displayDeviceName(right));
+                if (leftName != rightName) {
+                    return leftName < rightName;
+                }
+                return lowerCopy(left.endpoint) < lowerCopy(right.endpoint);
+            });
+        return;
+    }
+
     const int column = sortColumn_;
     const bool ascending = sortAscending_;
     std::stable_sort(devices_.begin(), devices_.end(),
@@ -3828,6 +3914,58 @@ void MainWindow::sortDevices() {
             }
             return ascending ? leftValue < rightValue : rightValue < leftValue;
         });
+}
+
+void MainWindow::loadClientSortSettings() {
+    if (kAdminBuild) {
+        return;
+    }
+    const std::wstring settingsPath = clientUiSettingsPath();
+    if (settingsPath.empty()) {
+        return;
+    }
+    wchar_t mode[32]{};
+    GetPrivateProfileStringW(L"Sort", L"Mode", L"alphabetical", mode,
+        static_cast<DWORD>(std::size(mode)), settingsPath.c_str());
+    sortFrequentlyUsed_ = _wcsicmp(mode, L"frequent") == 0;
+
+    tokenUseCounts_.clear();
+    for (const DeviceViewModel& device : allDevices_) {
+        tokenUseCounts_[device.endpoint] = readUsageCount(settingsPath, device.endpoint);
+    }
+    if (sortModeCombo_) {
+        ComboBox_SetCurSel(sortModeCombo_, sortFrequentlyUsed_ ? 1 : 0);
+    }
+}
+
+void MainWindow::saveClientSortMode() const {
+    if (kAdminBuild) {
+        return;
+    }
+    const std::wstring settingsPath = clientUiSettingsPath();
+    if (!settingsPath.empty()) {
+        WritePrivateProfileStringW(L"Sort", L"Mode",
+            sortFrequentlyUsed_ ? L"frequent" : L"alphabetical", settingsPath.c_str());
+    }
+}
+
+void MainWindow::recordSuccessfulUse(const std::wstring& endpoint) {
+    if (kAdminBuild || endpoint.empty()) {
+        return;
+    }
+    unsigned long long& count = tokenUseCounts_[endpoint];
+    if (count != (std::numeric_limits<unsigned long long>::max)()) {
+        ++count;
+    }
+    const std::wstring settingsPath = clientUiSettingsPath();
+    if (!settingsPath.empty()) {
+        const std::wstring value = std::to_wstring(count);
+        WritePrivateProfileStringW(L"TokenUsage", endpoint.c_str(), value.c_str(), settingsPath.c_str());
+    }
+    if (sortFrequentlyUsed_) {
+        sortDevices();
+        populateListView();
+    }
 }
 
 void MainWindow::sortByColumn(int column) {

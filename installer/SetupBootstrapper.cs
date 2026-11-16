@@ -18,8 +18,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("DistControl")]
 [assembly: AssemblyProduct("DistControl")]
 [assembly: AssemblyCopyright("Copyright 2026")]
-[assembly: AssemblyVersion("0.6.4.0")]
-[assembly: AssemblyFileVersion("0.6.4.0")]
+[assembly: AssemblyVersion("0.8.0.0")]
+[assembly: AssemblyFileVersion("0.8.0.0")]
 [assembly: ComVisible(false)]
 
 internal static class SetupBootstrapper
@@ -63,6 +63,7 @@ internal static class SetupBootstrapper
         public string RoamingAppDataDirectory;
         public string StartMenuDirectory;
         public string DesktopDirectory;
+        public string ServerUrl;
         public bool ConfigureVpn;
         public List<VpnInstallProfile> VpnProfiles = new List<VpnInstallProfile>();
     }
@@ -290,7 +291,7 @@ internal static class SetupBootstrapper
         {
             form.Text = ProductName + " - учетная запись службы";
             form.Width = 570;
-            form.Height = 350;
+            form.Height = 440;
             form.FormBorderStyle = FormBorderStyle.FixedDialog;
             form.StartPosition = FormStartPosition.CenterScreen;
             form.MaximizeBox = false;
@@ -358,17 +359,31 @@ internal static class SetupBootstrapper
             usageHint.Text = "Общая папка таймеров для всех компьютеров. Если оставить путь пустым, состояние будет сохранено в локальном профиле пользователя.";
             form.Controls.Add(usageHint);
 
+            Label serverLabel = new Label();
+            serverLabel.Left = 14;
+            serverLabel.Top = 226;
+            serverLabel.Width = 120;
+            serverLabel.Height = 20;
+            serverLabel.Text = "Сервер управления";
+            form.Controls.Add(serverLabel);
+
+            TextBox serverBox = new TextBox();
+            serverBox.Left = 140;
+            serverBox.Top = 222;
+            serverBox.Width = 395;
+            form.Controls.Add(serverBox);
+
             Label note = new Label();
             note.Left = 14;
-            note.Top = 222;
+            note.Top = 260;
             note.Width = 525;
-            note.Height = 34;
-            note.Text = "Логин текущего сеанса подставлен автоматически. Введите пароль учетной записи, не PIN-код. Пароль не записывается в файлы и журналы.";
+            note.Height = 72;
+            note.Text = "Адрес сервера можно оставить пустым для локальной работы. После установки компьютер отправит заявку, которую должен разрешить администратор домена в центральной консоли. Логин текущего сеанса подставлен автоматически. Пароль не записывается в файлы и журналы.";
             form.Controls.Add(note);
 
             Button okButton = new Button();
             okButton.Left = 345;
-            okButton.Top = 268;
+            okButton.Top = 355;
             okButton.Width = 90;
             okButton.Height = 28;
             okButton.Text = "Установить";
@@ -376,7 +391,7 @@ internal static class SetupBootstrapper
 
             Button cancelButton = new Button();
             cancelButton.Left = 445;
-            cancelButton.Top = 268;
+            cancelButton.Top = 355;
             cancelButton.Width = 90;
             cancelButton.Height = 28;
             cancelButton.Text = "Отмена";
@@ -457,6 +472,20 @@ internal static class SetupBootstrapper
                     }
                 }
 
+                string serverUrl = serverBox.Text.Trim();
+                if (!string.IsNullOrWhiteSpace(serverUrl))
+                {
+                    Uri parsedServer;
+                    if (string.IsNullOrWhiteSpace(serverUrl) ||
+                        !Uri.TryCreate(serverUrl, UriKind.Absolute, out parsedServer) ||
+                        (parsedServer.Scheme != Uri.UriSchemeHttp && parsedServer.Scheme != Uri.UriSchemeHttps))
+                    {
+                        MessageBox.Show("Укажите полный адрес сервера, например http://server:8765.", ProductName + " Setup", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        serverBox.Focus();
+                        return;
+                    }
+                }
+
                 UserInstallContext installContext;
                 try
                 {
@@ -481,7 +510,8 @@ internal static class SetupBootstrapper
                     DataDirectory = installContext.DataDirectory,
                     RoamingAppDataDirectory = installContext.RoamingAppDataDirectory,
                     StartMenuDirectory = installContext.StartMenuDirectory,
-                    DesktopDirectory = installContext.DesktopDirectory
+                    DesktopDirectory = installContext.DesktopDirectory,
+                    ServerUrl = serverUrl
                 };
                 form.DialogResult = DialogResult.OK;
                 form.Close();
@@ -1066,6 +1096,7 @@ internal static class SetupBootstrapper
             startInfo.EnvironmentVariables["DISTCONTROL_ROAMING_APPDATA_DIR"] = credentials.RoamingAppDataDirectory ?? string.Empty;
             startInfo.EnvironmentVariables["DISTCONTROL_START_MENU_DIR"] = credentials.StartMenuDirectory ?? string.Empty;
             startInfo.EnvironmentVariables["DISTCONTROL_DESKTOP_DIR"] = credentials.DesktopDirectory ?? string.Empty;
+            startInfo.EnvironmentVariables["DISTCONTROL_SERVER_URL"] = credentials.ServerUrl ?? string.Empty;
         }
 
         try
@@ -1259,8 +1290,14 @@ internal static class SetupBootstrapper
         {
             return "проблема с общей папкой таймеров usage.json. Проверьте путь, доступность сетевой папки и права на чтение/запись для пользователей.";
         }
-        if (ContainsText(text, "Service") ||
-            ContainsText(text, "Start-Service") ||
+        if (ContainsText(text, "ERROR TYPE: System.Management.Automation.RuntimeException") ||
+            ContainsText(text, "выражения со значением NULL"))
+        {
+            return "внутренняя ошибка сценария установки. Службы и пароль могли быть исправны; используйте свежий установщик и приложите указанный журнал, если ошибка повторится.";
+        }
+        if (ContainsText(text, "Start-Service") ||
+            ContainsText(text, "service dkclient") ||
+            ContainsText(text, "служба dkclient") ||
             ContainsText(text, "did not reach Running"))
         {
             return "служба dkclient установилась, но не запустилась. Проверьте пароль учетной записи службы, dkcl.ini и журнал событий Windows.";

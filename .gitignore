@@ -66,6 +66,7 @@ ibases-*
 tmp-*.txt
 diagnostics-current/
 output/
+.tmp/
 DiskControl-0.1.1-win64/
 allowlist — копия.json
 

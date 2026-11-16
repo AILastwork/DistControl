@@ -21,6 +21,7 @@ param(
     [string]$VpnExpectedIp = $env:DISKCONTROL_VPN_EXPECTED_IP,
     [string]$VpnTokenIdentity = $env:DISKCONTROL_VPN_TOKEN,
     [string]$VpnProfilesFile = $env:DISKCONTROL_VPN_PROFILES_FILE,
+    [string]$CentralServerUrl = $env:DISTCONTROL_SERVER_URL,
     [securestring]$ServicePassword,
     [switch]$SkipBuild,
     [switch]$NoStartService,
@@ -37,7 +38,7 @@ try {
 catch {
 }
 $ProductName = "DistControl"
-$ProductVersion = "0.6.4"
+$ProductVersion = "0.8.0"
 $Publisher = "DistControl"
 $SourceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $ReleaseDir = Join-Path $SourceRoot "build\x64\Release"
@@ -47,6 +48,8 @@ $UsageStateRoot = if ([string]::IsNullOrWhiteSpace($UsageStateDir)) { $StateDir 
 $UsageStatePath = Join-Path $UsageStateRoot "usage.json"
 $LogsDir = Join-Path $ProgramDataDir "logs"
 $InstallerDir = Join-Path $InstallDir "installer"
+$AgentServiceName = "DistControlAgent"
+$AgentConfigPath = Join-Path $InstallDir "agent.json"
 $ManagedHubRoutesPath = Join-Path $ProgramDataDir "managed-hub-routes.json"
 $EffectiveTargetUserSid = if ([string]::IsNullOrWhiteSpace($TargetUserSid)) { [Security.Principal.WindowsIdentity]::GetCurrent().User.Value } else { $TargetUserSid.Trim() }
 $TargetUserAcl = "*$EffectiveTargetUserSid"
@@ -776,7 +779,7 @@ function Install-VpnProfiles([object[]]$Profiles) {
 
 function Assert-DistControlApplicationsClosed {
     if ($DryRun) {
-        Write-Step "DRY-RUN: check that DistControl and DistControl Admin are closed"
+        Write-Step "DRY-RUN: check that DistControl applications are closed"
         return
     }
 
@@ -784,9 +787,12 @@ function Assert-DistControlApplicationsClosed {
         ForEach-Object { [System.IO.Path]::GetFullPath($_).TrimEnd('\') }
     $running = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
         Where-Object {
-            $_.Name -in @("DistControl.exe", "DistControl.Admin.exe", "DiskControl.exe", "DiskControl.Admin.exe") -and
-            $_.ExecutablePath -and
-            ($installRoots | Where-Object { $_.ExecutablePath.StartsWith($_ + "\", [StringComparison]::OrdinalIgnoreCase) })
+            $processPath = [string]$_.ExecutablePath
+            $_.Name -in @("DistControl.exe", "DistControl.Admin.exe", "DistControl.CentralAdmin.exe", "DiskControl.exe", "DiskControl.Admin.exe") -and
+            -not [string]::IsNullOrWhiteSpace($processPath) -and
+            @($installRoots | Where-Object {
+                $processPath.StartsWith($_ + "\", [StringComparison]::OrdinalIgnoreCase)
+            }).Count -gt 0
         })
     if ($running.Count -gt 0) {
         $names = ($running | ForEach-Object { "$($_.Name) (PID $($_.ProcessId))" }) -join ", "
@@ -1400,6 +1406,70 @@ function Set-DkClientFilesAcl {
     )
 }
 
+function Initialize-CentralAgentConfig {
+    $existing = $null
+    if (Test-Path -LiteralPath $AgentConfigPath) {
+        try { $existing = Get-Content -LiteralPath $AgentConfigPath -Raw | ConvertFrom-Json }
+        catch { Write-Step "WARNING: Existing central agent configuration is invalid and will be recreated." }
+    }
+
+    $serverUrl = if ([string]::IsNullOrWhiteSpace($CentralServerUrl) -and $existing) { [string]$existing.ServerUrl } else { [string]$CentralServerUrl }
+    $clientId = if ($existing) { [string]$existing.ClientId } else { "" }
+    $protectedToken = if ($existing) { [string]$existing.ProtectedClientToken } else { "" }
+    $protectedEnrollmentRequestToken = if ($existing) { [string]$existing.ProtectedEnrollmentRequestToken } else { "" }
+    $appliedHubRevision = if ($existing) { [string]$existing.AppliedHubRevision } else { "" }
+    $hubStatus = if ($existing) { [string]$existing.HubStatus } else { "" }
+
+    $configuration = [ordered]@{
+        ServerUrl = $serverUrl
+        ClientId = $clientId
+        ProtectedClientToken = $protectedToken
+        ProtectedEnrollmentRequestToken = $protectedEnrollmentRequestToken
+        TargetUser = $ServiceAccount
+        PolicyPath = $PolicyPath
+        LogsDirectory = $LogsDir
+        NetworkStatePath = (Join-Path $StateDir "network-state.json")
+        InstallDirectory = $InstallDir
+        PollSeconds = 30
+        AutoUpdate = $true
+        AppliedHubRevision = $appliedHubRevision
+        HubStatus = $hubStatus
+    }
+    if (-not $DryRun) {
+        $text = $configuration | ConvertTo-Json -Depth 5
+        [IO.File]::WriteAllText($AgentConfigPath, $text, $script:Utf8NoBomEncoding)
+        Set-ProtectedAcl $AgentConfigPath @(
+            "*S-1-5-18:F",
+            "*S-1-5-32-544:M"
+        )
+    }
+    Write-Step $(if ([string]::IsNullOrWhiteSpace($serverUrl)) { "Central management is not configured; local mode remains active" } else { "Central management server: $serverUrl" })
+}
+
+function Install-CentralAgentService {
+    $agentExe = Join-Path $InstallDir "DistControl.Agent.exe"
+    if (-not (Test-Path -LiteralPath $agentExe)) {
+        throw "Central agent executable is missing: $agentExe"
+    }
+    $existing = Get-Service -Name $AgentServiceName -ErrorAction SilentlyContinue
+    if ($existing) {
+        Write-Step "Replace service $AgentServiceName"
+        if (-not $DryRun) {
+            Stop-Service -Name $AgentServiceName -Force -ErrorAction SilentlyContinue
+            sc.exe delete $AgentServiceName | Out-Null
+            Start-Sleep -Milliseconds 600
+        }
+    }
+    $binary = '"{0}" --service --config "{1}"' -f $agentExe, $AgentConfigPath
+    if ($DryRun) {
+        Write-Step "DRY-RUN: New-Service $AgentServiceName $binary"
+        return
+    }
+    New-Service -Name $AgentServiceName -BinaryPathName $binary -DisplayName "DistControl Central Agent" -StartupType Automatic | Out-Null
+    Start-Service -Name $AgentServiceName
+    Write-Step "Central agent service started"
+}
+
 function New-Shortcut([string]$Path, [string]$Target, [string]$Arguments = "", [string]$WorkingDirectory = $InstallDir) {
     Write-Step "Create shortcut $Path"
     if ($DryRun) {
@@ -1447,6 +1517,8 @@ function Remove-LegacyDiagnostics {
     $startMenu = $UserStartMenuDir
     foreach ($path in @(
         (Join-Path $startMenu "DistControl Diagnostics.lnk"),
+        (Join-Path $startMenu "DistControl Central Admin.lnk"),
+        (Join-Path $InstallDir "DistControl.CentralAdmin.exe"),
         (Join-Path $InstallerDir "Diagnose-DiskControl.ps1"),
         (Join-Path $InstallDir "diagnose.cmd")
     )) {
@@ -1794,6 +1866,8 @@ if (-not $SkipBuild) {
 $required = @(
     (Join-Path $ReleaseDir "DistControl.exe"),
     (Join-Path $ReleaseDir "DistControl.Admin.exe"),
+    (Join-Path $SourceRoot "build\central\DistControl.Agent.exe"),
+    (Join-Path $SourceRoot "build\central\DistControl.Updater.exe"),
     (Join-Path $SourceRoot "dkcl64.exe"),
     (Join-Path $SourceRoot "dkcl.ini")
 )
@@ -1819,11 +1893,14 @@ if (-not $DryRun) {
 }
 
 Assert-DistControlApplicationsClosed
+Stop-ExistingService $AgentServiceName
 Stop-ExistingService $ServiceName
 Stop-InstalledDkClientProcess
 
 Copy-RequiredFile (Join-Path $ReleaseDir "DistControl.exe") (Join-Path $InstallDir "DistControl.exe")
 Copy-RequiredFile (Join-Path $ReleaseDir "DistControl.Admin.exe") (Join-Path $InstallDir "DistControl.Admin.exe")
+Copy-RequiredFile (Join-Path $SourceRoot "build\central\DistControl.Agent.exe") (Join-Path $InstallDir "DistControl.Agent.exe")
+Copy-RequiredFile (Join-Path $SourceRoot "build\central\DistControl.Updater.exe") (Join-Path $InstallDir "DistControl.Updater.exe")
 Copy-RequiredFile (Join-Path $SourceRoot "dkcl64.exe") (Join-Path $InstallDir "dkcl64.exe")
 Copy-RequiredFile (Join-Path $SourceRoot "dkcl.ini") (Join-Path $InstallDir "dkcl.ini")
 Set-DistKontrolHubRoutes (Join-Path $SourceRoot "dkcl.ini")
@@ -1876,10 +1953,12 @@ Set-PolicyUsageStatePath
 Write-Step "VPN profiles are managed in Windows and assigned to tokens in DistControl Admin; installer does not create or update VPN connections"
 Initialize-UsageState
 Set-DirectoryAcl
+Initialize-CentralAgentConfig
 Initialize-DkClientUserProfile
 Test-UsageStateAccess
 Install-VirtualHereDriver
 Register-DkClientService
+Install-CentralAgentService
 Remove-LegacyInstallDirectory
 Remove-LegacyBranding
 Install-Shortcuts

@@ -23,6 +23,7 @@ catch {
 $EffectiveTargetUserSid = if ([string]::IsNullOrWhiteSpace($TargetUserSid)) { [Security.Principal.WindowsIdentity]::GetCurrent().User.Value } else { $TargetUserSid.Trim() }
 $UninstallRegistryPath = "Registry::HKEY_USERS\$EffectiveTargetUserSid\Software\Microsoft\Windows\CurrentVersion\Uninstall\DistControl"
 $ClientStartupShortcut = Join-Path (Split-Path -Parent $UserStartMenuDir) "Startup\DistControl dkclient.lnk"
+$AgentServiceName = "DistControlAgent"
 $LogsDir = Join-Path $ProgramDataDir "logs"
 $ManagedHubRoutesPath = Join-Path $ProgramDataDir "managed-hub-routes.json"
 $script:UninstallLogPath = $null
@@ -299,11 +300,12 @@ foreach ($path in @($InstallDir, $ProgramDataDir, $UserStartMenuDir, $UserDeskto
     }
 }
 
-$service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-if ($service) {
-    Write-Step "Stop service $ServiceName"
+foreach ($serviceToRemove in @($AgentServiceName, $ServiceName)) {
+    $service = Get-Service -Name $serviceToRemove -ErrorAction SilentlyContinue
+    if (-not $service) { continue }
+    Write-Step "Stop service $serviceToRemove"
     if (-not $DryRun -and $service.Status -ne "Stopped") {
-        Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
+        Stop-Service -Name $serviceToRemove -Force -ErrorAction SilentlyContinue
         try {
             $service.WaitForStatus(
                 [System.ServiceProcess.ServiceControllerStatus]::Stopped,
@@ -313,8 +315,8 @@ if ($service) {
             Write-Step "WARNING: service $ServiceName did not report Stopped in time; continuing with process cleanup."
         }
     }
-    Write-Step "Delete service $ServiceName"
-    Invoke-External "sc.exe" @("delete", $ServiceName)
+    Write-Step "Delete service $serviceToRemove"
+    Invoke-External "sc.exe" @("delete", $serviceToRemove)
     Start-Sleep -Milliseconds 500
 }
 

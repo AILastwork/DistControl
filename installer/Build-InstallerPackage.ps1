@@ -222,11 +222,17 @@ if (-not $SkipBuild) {
     if ($LASTEXITCODE -ne 0) {
         throw "Release build failed."
     }
+    & (Join-Path $Root "tools\Build-CentralComponents.ps1")
+    if ($LASTEXITCODE -ne 0) {
+        throw "Central components build failed."
+    }
 }
 
 Invoke-CodeSigning -Files @(
     (Join-Path $ReleaseDir "DistControl.exe"),
-    (Join-Path $ReleaseDir "DistControl.Admin.exe")
+    (Join-Path $ReleaseDir "DistControl.Admin.exe"),
+    (Join-Path $Root "build\central\DistControl.Agent.exe"),
+    (Join-Path $Root "build\central\DistControl.Updater.exe")
 )
 
 Build-UninstallExe
@@ -265,7 +271,9 @@ foreach ($name in @("vhusb3hc.inf", "vhusb3hc.sys", "vhusb3hc.cat")) {
 
 foreach ($relative in @(
     "build\x64\Release\DistControl.exe",
-    "build\x64\Release\DistControl.Admin.exe"
+    "build\x64\Release\DistControl.Admin.exe",
+    "build\central\DistControl.Agent.exe",
+    "build\central\DistControl.Updater.exe"
 )) {
     Copy-IntoStage $relative
 }
