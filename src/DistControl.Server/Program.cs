@@ -6,8 +6,8 @@ using System.Threading;
 
 [assembly: AssemblyTitle("DistControl Server")]
 [assembly: AssemblyProduct("DistControl")]
-[assembly: AssemblyVersion("0.8.4.0")]
-[assembly: AssemblyFileVersion("0.8.4.0")]
+[assembly: AssemblyVersion("0.8.5.0")]
+[assembly: AssemblyFileVersion("0.8.5.0")]
 
 namespace DistControl.Server
 {

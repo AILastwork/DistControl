@@ -66,9 +66,6 @@ private:
     void populateTreeView();
     void sortDevices();
     void sortByColumn(int column);
-    void loadClientSortSettings();
-    void saveClientSortMode() const;
-    void recordSuccessfulUse(const std::wstring& endpoint);
     void activateSelectedDevice();
     // reason is written to the audit log as "STOP REASON" for the usage report.
     void releaseActiveDevices(bool interactive, const wchar_t* reason);
@@ -128,7 +125,7 @@ private:
     HWND refreshButton_ = nullptr;
     HWND useButton_ = nullptr;
     HWND stopButton_ = nullptr;
-    HWND sortModeCombo_ = nullptr;
+    HWND sortAlphabeticallyButton_ = nullptr;
     HWND diagnosticsButton_ = nullptr;
     HWND assignUserLabel_ = nullptr;
     HWND assignUserEdit_ = nullptr;
@@ -161,7 +158,6 @@ private:
     std::map<std::wstring, ULONGLONG> activeDeviceStartTicks_;
     std::map<std::wstring, ULONGLONG> autoReleaseRequestTicks_;
     std::map<std::wstring, ULONGLONG> tokenActionFailureTicks_;
-    std::map<std::wstring, unsigned long long> tokenUseCounts_;
     std::wstring pendingError_;
     std::wstring pendingPolicyRevision_;
     std::wstring pendingPolicyUser_;
@@ -213,7 +209,6 @@ private:
     bool suppressAdminUserChange_ = false;
     int sortColumn_ = 0;
     bool sortAscending_ = true;
-    bool sortFrequentlyUsed_ = false;
 #ifdef DISKCONTROL_ADMIN
     bool diagnosticsMode_ = true;
 #else
