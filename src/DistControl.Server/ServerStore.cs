@@ -196,6 +196,7 @@ namespace DistControl.Server
                 client.UpdateStatus = request.UpdateStatus ?? "";
                 client.LastError = request.LastError ?? "";
                 client.LastNetworkStateJson = request.NetworkStateJson ?? "";
+                client.CurrentManualHubs = request.CurrentManualHubs ?? "";
                 client.AppliedHubRevision = request.AppliedHubRevision ?? "";
                 client.HubStatus = request.HubStatus ?? "";
                 client.LastIpAddress = remoteAddress ?? "";
@@ -403,6 +404,7 @@ namespace DistControl.Server
                 {
                     Revision = data.Hubs.Revision,
                     ManualHubs = data.Hubs.ManualHubs,
+                    DiscoveredManualHubs = DiscoveredManualHubsLocked(),
                     UpdatedUtc = data.Hubs.UpdatedUtc,
                     UpdatedBy = data.Hubs.UpdatedBy
                 };
@@ -589,6 +591,20 @@ namespace DistControl.Server
                 if (!result.Contains(normalized, StringComparer.OrdinalIgnoreCase)) result.Add(normalized);
             }
             return String.Join(",", result.ToArray());
+        }
+
+        private string DiscoveredManualHubsLocked()
+        {
+            List<string> discovered = new List<string>();
+            foreach (ClientRecord client in data.Clients)
+            {
+                string normalized;
+                try { normalized = NormalizeManualHubs(client.CurrentManualHubs); }
+                catch { continue; }
+                foreach (string endpoint in normalized.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries))
+                    if (!discovered.Contains(endpoint, StringComparer.OrdinalIgnoreCase)) discovered.Add(endpoint);
+            }
+            return String.Join(",", discovered.ToArray());
         }
 
         private static string RandomDigits(int count)

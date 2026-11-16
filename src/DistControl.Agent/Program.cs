@@ -14,8 +14,8 @@ using System.Web.Script.Serialization;
 
 [assembly: AssemblyTitle("DistControl Central Agent")]
 [assembly: AssemblyProduct("DistControl")]
-[assembly: AssemblyVersion("0.8.0.0")]
-[assembly: AssemblyFileVersion("0.8.0.0")]
+[assembly: AssemblyVersion("0.8.1.0")]
+[assembly: AssemblyFileVersion("0.8.1.0")]
 
 namespace DistControl.Agent
 {
@@ -67,6 +67,7 @@ namespace DistControl.Agent
         public string UpdateStatus = "";
         public string LastError = "";
         public string NetworkStateJson = "";
+        public string CurrentManualHubs = "";
         public string AppliedHubRevision = "";
         public string HubStatus = "";
     }
@@ -233,6 +234,7 @@ namespace DistControl.Agent
                 UpdateStatus = updateStatus,
                 LastError = lastError,
                 NetworkStateJson = ReadText(config.NetworkStatePath),
+                CurrentManualHubs = ReadCurrentManualHubs(),
                 AppliedHubRevision = config.AppliedHubRevision,
                 HubStatus = config.HubStatus
             };
@@ -338,6 +340,28 @@ namespace DistControl.Agent
             }
             AtomicWrite(iniPath, Encoding.Default.GetBytes(
                 String.Join(Environment.NewLine, lines.ToArray()) + Environment.NewLine));
+        }
+
+        private string ReadCurrentManualHubs()
+        {
+            string iniPath = Path.Combine(config.InstallDirectory, "dkcl.ini");
+            if (!File.Exists(iniPath)) return "";
+            bool inSettings = false;
+            foreach (string line in File.ReadAllLines(iniPath, Encoding.Default))
+            {
+                string trimmed = line.Trim();
+                if (trimmed.StartsWith("[") && trimmed.EndsWith("]"))
+                {
+                    inSettings = String.Equals(trimmed, "[Settings]", StringComparison.OrdinalIgnoreCase);
+                    continue;
+                }
+                if (inSettings && trimmed.StartsWith("ManualHubs", StringComparison.OrdinalIgnoreCase))
+                {
+                    int separator = trimmed.IndexOf('=');
+                    return separator < 0 ? "" : trimmed.Substring(separator + 1).Trim();
+                }
+            }
+            return "";
         }
 
         private void ApplyHubRoutes(List<string> addresses)

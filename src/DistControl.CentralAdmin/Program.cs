@@ -15,8 +15,8 @@ using System.Windows.Forms;
 
 [assembly: AssemblyTitle("DistControl Central Admin")]
 [assembly: AssemblyProduct("DistControl")]
-[assembly: AssemblyVersion("0.8.0.0")]
-[assembly: AssemblyFileVersion("0.8.0.0")]
+[assembly: AssemblyVersion("0.8.1.0")]
+[assembly: AssemblyFileVersion("0.8.1.0")]
 
 namespace DistControl.CentralAdmin
 {
@@ -56,6 +56,7 @@ namespace DistControl.CentralAdmin
     {
         public string Revision = "";
         public string ManualHubs = "";
+        public string DiscoveredManualHubs = "";
         public string UpdatedUtc = "";
         public string UpdatedBy = "";
     }
@@ -639,11 +640,17 @@ namespace DistControl.CentralAdmin
                 {
                     return api.Json<HubConfiguration>("GET", "/api/v1/admin/hubs", null);
                 });
-                string[] entries = (hubs == null ? "" : hubs.ManualHubs ?? "")
+                bool usingDiscovered = hubs != null && String.IsNullOrWhiteSpace(hubs.ManualHubs) &&
+                    !String.IsNullOrWhiteSpace(hubs.DiscoveredManualHubs);
+                string displayed = hubs == null ? "" :
+                    (usingDiscovered ? hubs.DiscoveredManualHubs : hubs.ManualHubs) ?? "";
+                string[] entries = displayed
                     .Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
                 hubsText.Text = String.Join(Environment.NewLine, entries);
-                hubsInfo.Text = hubs == null || String.IsNullOrWhiteSpace(hubs.Revision)
-                    ? "Центральный список ещё не задан. Клиенты продолжают использовать свой текущий dkcl.ini."
+                hubsInfo.Text = usingDiscovered
+                    ? "Адреса обнаружены в dkcl.ini клиентов. Проверьте список и нажмите «Сохранить и применить»."
+                    : hubs == null || String.IsNullOrWhiteSpace(hubs.Revision)
+                    ? "Клиенты ещё не передали адреса. Они продолжают использовать свой текущий dkcl.ini."
                     : "Последнее изменение: " + LocalTime(hubs.UpdatedUtc) + " | " + hubs.UpdatedBy;
                 if (feedback) SetOperationResult("Список USB-серверов обновлён.");
             }

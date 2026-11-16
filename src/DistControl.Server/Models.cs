@@ -18,6 +18,7 @@ namespace DistControl.Server
     {
         public string Revision = "";
         public string ManualHubs = "";
+        public string DiscoveredManualHubs = "";
         public string UpdatedUtc = "";
         public string UpdatedBy = "";
     }
@@ -56,6 +57,7 @@ namespace DistControl.Server
         public string LastSeenUtc = "";
         public string LastIpAddress = "";
         public string LastNetworkStateJson = "";
+        public string CurrentManualHubs = "";
         public string AppliedHubRevision = "";
         public string HubStatus = "";
         public string PolicyRevision = "";
@@ -140,6 +142,7 @@ namespace DistControl.Server
         public string UpdateStatus = "";
         public string LastError = "";
         public string NetworkStateJson = "";
+        public string CurrentManualHubs = "";
         public string AppliedHubRevision = "";
         public string HubStatus = "";
     }

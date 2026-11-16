@@ -43,6 +43,11 @@ try {
     } | ConvertTo-Json), [Text.Encoding]::UTF8)
     $worker = [Activator]::CreateInstance($workerType, [object[]]@([string]$configPath))
     $worker.Initialize()
+    $readCurrent = $workerType.GetMethod("ReadCurrentManualHubs", [Reflection.BindingFlags]::NonPublic -bor [Reflection.BindingFlags]::Instance)
+    $current = [string]$readCurrent.Invoke($worker, $null)
+    if ($current -ne "10.14.0.71:6565,10.14.0.72:6565") {
+        throw "Agent did not read the current ManualHubs value from dkcl.ini."
+    }
     $applyRoutes = $workerType.GetMethod("ApplyHubRoutes", [Reflection.BindingFlags]::NonPublic -bor [Reflection.BindingFlags]::Instance)
     $emptyAddresses = [Activator]::CreateInstance($applyRoutes.GetParameters()[0].ParameterType)
     $routeArguments = New-Object object[] 1
