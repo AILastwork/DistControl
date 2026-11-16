@@ -253,7 +253,6 @@ foreach ($relative in @(
     "installer\Launch-Uninstall-DiskControl.ps1",
     "installer\Sign-DiskControl.ps1",
     "installer\CredentialCheck.cs",
-    "README.md",
     "DistControl-guide.html",
     "dkcl64.exe",
     "dkcl.ini",
@@ -261,6 +260,8 @@ foreach ($relative in @(
 )) {
     Copy-IntoStage $relative
 }
+
+Copy-IntoStageAs (Join-Path $Root "installer\Client-README.md") "README.md"
 
 Copy-IntoStageAs $UninstallExePath "Uninstall-DistControl.exe"
 

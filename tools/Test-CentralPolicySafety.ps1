@@ -58,4 +58,49 @@ finally {
     if ([IO.Directory]::Exists($settingsRoot)) { [IO.Directory]::Delete($settingsRoot, $true) }
 }
 
+$port = Get-Random -Minimum 21000 -Maximum 49000
+$serverJob = Start-Job -ArgumentList $port -ScriptBlock {
+    param([int]$Port)
+    $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $Port)
+    $listener.Start()
+    try {
+        $client = $listener.AcceptTcpClient()
+        try {
+            $reader = [IO.StreamReader]::new($client.GetStream(), [Text.Encoding]::ASCII, $false, 1024, $true)
+            $contentLength = $null
+            while ($true) {
+                $line = $reader.ReadLine()
+                if ([string]::IsNullOrEmpty($line)) { break }
+                if ($line.StartsWith("Content-Length:", [StringComparison]::OrdinalIgnoreCase)) {
+                    $contentLength = [int64]$line.Substring($line.IndexOf(':') + 1).Trim()
+                }
+            }
+            $body = [Text.Encoding]::UTF8.GetBytes("{}")
+            $header = [Text.Encoding]::ASCII.GetBytes(
+                "HTTP/1.1 200 OK`r`nContent-Type: application/json`r`nContent-Length: 2`r`nConnection: close`r`n`r`n")
+            $stream = $client.GetStream()
+            $stream.Write($header, 0, $header.Length)
+            $stream.Write($body, 0, $body.Length)
+            $stream.Flush()
+            return $contentLength
+        }
+        finally { $client.Dispose() }
+    }
+    finally { $listener.Stop() }
+}
+try {
+    Start-Sleep -Milliseconds 500
+    $apiType = $assembly.GetType("DistControl.CentralAdmin.CentralApi", $true)
+    $api = [Activator]::CreateInstance($apiType, $true)
+    $apiType.GetField("ServerUrl").SetValue($api, "http://127.0.0.1:$port")
+    $jsonMethod = $apiType.GetMethod("Json").MakeGenericMethod([object])
+    [void]$jsonMethod.Invoke($api, @([string]"POST", [string]"/empty-post", $null))
+    $postedLength = Receive-Job -Job $serverJob -Wait
+    if ($postedLength -ne 0) { throw "Empty POST did not send Content-Length: 0." }
+}
+finally {
+    Stop-Job -Job $serverJob -ErrorAction SilentlyContinue
+    Remove-Job -Job $serverJob -Force -ErrorAction SilentlyContinue
+}
+
 Write-Host "Central policy editing safety tests passed."

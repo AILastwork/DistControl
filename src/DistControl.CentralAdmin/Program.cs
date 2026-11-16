@@ -18,8 +18,8 @@ using System.Windows.Forms;
 
 [assembly: AssemblyTitle("DistControl Central Admin")]
 [assembly: AssemblyProduct("DistControl")]
-[assembly: AssemblyVersion("0.8.6.0")]
-[assembly: AssemblyFileVersion("0.8.6.0")]
+[assembly: AssemblyVersion("0.8.7.0")]
+[assembly: AssemblyFileVersion("0.8.7.0")]
 
 namespace DistControl.CentralAdmin
 {
@@ -180,6 +180,11 @@ namespace DistControl.CentralAdmin
                 request.ContentType = "application/json; charset=utf-8";
                 request.ContentLength = content.Length;
                 using (Stream output = request.GetRequestStream()) output.Write(content, 0, content.Length);
+            }
+            else if (String.Equals(method, "POST", StringComparison.OrdinalIgnoreCase) ||
+                String.Equals(method, "PUT", StringComparison.OrdinalIgnoreCase))
+            {
+                request.ContentLength = 0;
             }
             using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
             using (StreamReader reader = new StreamReader(response.GetResponseStream(), Encoding.UTF8))
