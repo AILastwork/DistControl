@@ -11,7 +11,7 @@ $ErrorActionPreference = 'Stop'
 $repository = 'AILastwork/DistControl'
 $api = "https://api.github.com/repos/$repository"
 $assetFiles = @($Assets | ForEach-Object { Get-Item -LiteralPath $_ })
-$notes = Get-Content -LiteralPath $NotesFile -Raw -Encoding UTF8
+$notes = [string](Get-Content -LiteralPath $NotesFile -Raw -Encoding UTF8)
 
 # Reuse the Git credential helper without printing or persisting its response.
 $credentialLines = "protocol=https`nhost=github.com`n`n" | git credential fill
