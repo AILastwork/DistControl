@@ -45,8 +45,8 @@ try {
     $request.RequestToken = "test-request-secret"
     $request.MachineName = "WRK-TEST"
     $request.UserName = "OSNOVA\test"
-    $request.AppVersion = "0.8.1"
-    $request.AgentVersion = "0.8.1"
+    $request.AppVersion = "0.8.2"
+    $request.AgentVersion = "0.8.2"
 
     $pending = $store.Enroll($request, "10.0.0.10")
     if ($pending.Approved -or [string]::IsNullOrWhiteSpace($pending.RequestId)) {

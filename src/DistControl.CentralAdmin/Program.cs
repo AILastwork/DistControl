@@ -15,8 +15,8 @@ using System.Windows.Forms;
 
 [assembly: AssemblyTitle("DistControl Central Admin")]
 [assembly: AssemblyProduct("DistControl")]
-[assembly: AssemblyVersion("0.8.1.0")]
-[assembly: AssemblyFileVersion("0.8.1.0")]
+[assembly: AssemblyVersion("0.8.2.0")]
+[assembly: AssemblyFileVersion("0.8.2.0")]
 
 namespace DistControl.CentralAdmin
 {
@@ -205,6 +205,8 @@ namespace DistControl.CentralAdmin
         private readonly DataGridView updateClientsGrid = NewGrid();
         private readonly DataGridView logsGrid = NewGrid();
         private readonly DataGridView auditGrid = NewGrid();
+        private readonly TabControl tabs = new TabControl();
+        private TabPage logsPage;
         private readonly StatusStrip statusStrip = new StatusStrip();
         private readonly ToolStripStatusLabel statusLabel = new ToolStripStatusLabel();
         private readonly TextBox updateVersion = new TextBox();
@@ -302,7 +304,7 @@ namespace DistControl.CentralAdmin
             operationPanel.Controls.Add(operationLayout);
             root.Controls.Add(operationPanel, 0, 1);
 
-            TabControl tabs = new TabControl { Dock = DockStyle.Fill };
+            tabs.Dock = DockStyle.Fill;
             tabs.TabPages.Add(BuildClientsPage());
             tabs.TabPages.Add(BuildEnrollmentsPage());
             tabs.TabPages.Add(BuildHubsPage());
@@ -359,6 +361,7 @@ namespace DistControl.CentralAdmin
         private TabPage BuildLogsPage()
         {
             TabPage page = new TabPage("Журналы");
+            logsPage = page;
             ToolStrip tools = new ToolStrip { GripStyle = ToolStripGripStyle.Hidden, Dock = DockStyle.Top };
             ToolStripButton refresh = new ToolStripButton("Обновить журналы выбранного компьютера");
             refresh.Click += async delegate { await RefreshLogsAsync(); };
@@ -871,6 +874,7 @@ namespace DistControl.CentralAdmin
                     return new { Получено = LocalTime(x.ReceivedUtc), Файл = x.FileName, Запись = x.Text };
                 }).ToList();
                 FormatGrid(logsGrid, "logs");
+                if (logsPage != null) tabs.SelectedTab = logsPage;
                 SetOperationResult("Журналы загружены: " + (records == null ? 0 : records.Count) + " записей.");
             }
             catch (Exception error) { ShowError(error); }

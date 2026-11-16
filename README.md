@@ -1,6 +1,6 @@
 # DistControl
 
-Текущая сборка: 0.8.1. В этой ветке добавлен первый вариант централизованного
+Текущая сборка: 0.8.2. В этой ветке добавлен первый вариант централизованного
 управления без Docker и Linux: служба `DistControl.Server.exe`, фоновый агент,
 настольная консоль администратора и доставка обновлений. Локальный режим остаётся
 доступным, если сервер не указан при установке.
@@ -143,7 +143,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
-  -File .\tools\Build-ClientUpdatePackage.ps1 -Version 0.8.1
+  -File .\tools\Build-ClientUpdatePackage.ps1 -Version 0.8.2
 ```
 
 ZIP публикуется на вкладке **Обновления** центральной админки и назначается
