@@ -58,6 +58,7 @@ public:
         const DeviceViewModel& device,
         const std::wstring& operationId = {},
         const TokenActionProgressCallback& progress = {}) const;
+    std::wstring forceDisconnectLocalTokens(const std::wstring& userName) const;
     void refreshUsageTimer(const DeviceViewModel& device) const;
     void requestUsageStateSync() const;
     size_t pendingUsageSyncCount() const;

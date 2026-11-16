@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 #include "AuditLogger.h"
+#include "DeviceAccessService.h"
 #include "PolicyManager.h"
 #include "UsageStateSync.h"
 
@@ -26,6 +27,9 @@ struct CommandLineOptions {
     std::wstring sharedUsagePath;
     std::wstring localUsagePath;
     std::wstring pipeName;
+    bool forceDisconnectAll = false;
+    std::wstring targetUser;
+    std::wstring resultPath;
 };
 
 std::wstring widenAscii(const char* text) {
@@ -194,6 +198,15 @@ CommandLineOptions parseCommandLine() {
         else if (arg == L"--pipe" && i + 1 < argc) {
             options.pipeName = argv[++i];
         }
+        else if (arg == L"--force-disconnect-all") {
+            options.forceDisconnectAll = true;
+        }
+        else if (arg == L"--target-user" && i + 1 < argc) {
+            options.targetUser = argv[++i];
+        }
+        else if (arg == L"--result" && i + 1 < argc) {
+            options.resultPath = argv[++i];
+        }
         else if (arg == L"--policy" || arg == L"/policy") {
             if (i + 1 < argc) {
                 options.policyPath = argv[++i];
@@ -214,11 +227,33 @@ int runApplication(HINSTANCE instance, int showCommand) {
         return UsageStateSync::runBackgroundSync(
             options.sharedUsagePath, options.localUsagePath, options.pipeName);
     }
+    if (!options.policyPath.empty()) {
+        PolicyManager::setConfigPathOverride(options.policyPath);
+    }
+    if (options.forceDisconnectAll) {
+        try {
+            const std::wstring result = DeviceAccessService().forceDisconnectLocalTokens(options.targetUser);
+            if (!options.resultPath.empty()) {
+                std::ofstream output(options.resultPath, std::ios::binary | std::ios::trunc);
+                output << wideToUtf8(result);
+            }
+            appendStartupLog(L"Центральная команда отключения выполнена. " + result);
+            return 0;
+        }
+        catch (const std::exception& error) {
+            const std::wstring result = L"Не удалось принудительно отключить токены. " + widenAscii(error.what());
+            if (!options.resultPath.empty()) {
+                std::ofstream output(options.resultPath, std::ios::binary | std::ios::trunc);
+                output << wideToUtf8(result);
+            }
+            appendStartupLog(result);
+            return 2;
+        }
+    }
     const std::wstring startupOperation = AuditLogger::createOperationId(L"APP");
     AuditLogger::trace(startupOperation,
         std::wstring(L"Запуск приложения «") + kAppTitle + L"». Командная строка: " + GetCommandLineW());
     if (!options.policyPath.empty()) {
-        PolicyManager::setConfigPathOverride(options.policyPath);
         AuditLogger::trace(startupOperation,
             L"Используется явно указанный файл конфигурации: " + options.policyPath + L".");
     }

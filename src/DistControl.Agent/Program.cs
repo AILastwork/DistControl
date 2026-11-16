@@ -14,8 +14,8 @@ using System.Web.Script.Serialization;
 
 [assembly: AssemblyTitle("DistControl Central Agent")]
 [assembly: AssemblyProduct("DistControl")]
-[assembly: AssemblyVersion("0.8.5.0")]
-[assembly: AssemblyFileVersion("0.8.5.0")]
+[assembly: AssemblyVersion("0.8.6.0")]
+[assembly: AssemblyFileVersion("0.8.6.0")]
 
 namespace DistControl.Agent
 {
@@ -119,6 +119,19 @@ namespace DistControl.Agent
         public string Sha256 = "";
     }
 
+    public sealed class ClientCommandResponse
+    {
+        public bool Available = false;
+        public string Id = "";
+        public string Type = "";
+    }
+
+    public sealed class ClientCommandResultRequest
+    {
+        public bool Success = false;
+        public string Message = "";
+    }
+
     internal sealed class AgentWorker
     {
         private readonly string configPath;
@@ -167,6 +180,7 @@ namespace DistControl.Agent
             {
                 if (!EnsureEnrolled()) return;
                 SendHeartbeat();
+                ProcessPendingCommand();
                 SynchronizePolicy();
                 SynchronizeHubs();
                 UploadLogs();
@@ -249,6 +263,73 @@ namespace DistControl.Agent
             AtomicWrite(config.PolicyPath, Encoding.UTF8.GetBytes(policy.PolicyJson));
             appliedRevision = policy.Revision;
             Log("Получена и применена новая политика " + appliedRevision + ".");
+        }
+
+        private void ProcessPendingCommand()
+        {
+            ClientCommandResponse command = SendJson<ClientCommandResponse>(
+                "GET", "/api/v1/client/command", null, true);
+            if (command == null || !command.Available || String.IsNullOrWhiteSpace(command.Id)) return;
+
+            ClientCommandResultRequest result = new ClientCommandResultRequest();
+            try
+            {
+                if (!String.Equals(command.Type, "FORCE_DISCONNECT", StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("Сервер прислал неизвестную команду: " + command.Type + ".");
+                result.Message = ForceDisconnectTokens();
+                result.Success = true;
+                Log("Команда администратора выполнена. " + result.Message);
+            }
+            catch (Exception error)
+            {
+                result.Success = false;
+                result.Message = HumanError(error);
+                Log("Команда администратора не выполнена. " + result.Message);
+            }
+            SendJson<object>("POST", "/api/v1/client/command/" +
+                Uri.EscapeDataString(command.Id) + "/result", result, true);
+        }
+
+        private string ForceDisconnectTokens()
+        {
+            string executable = Path.Combine(config.InstallDirectory, "DistControl.exe");
+            if (!File.Exists(executable))
+                throw new FileNotFoundException("Не найден клиент DistControl.exe.", executable);
+            if (String.IsNullOrWhiteSpace(config.TargetUser))
+                throw new InvalidOperationException("В конфигурации агента не указан пользователь компьютера.");
+
+            string resultPath = Path.Combine(Path.GetTempPath(),
+                "DistControl-force-disconnect-" + Guid.NewGuid().ToString("N") + ".txt");
+            try
+            {
+                string arguments = "--force-disconnect-all --policy " + QuoteArgument(config.PolicyPath) +
+                    " --target-user " + QuoteArgument(config.TargetUser) + " --result " + QuoteArgument(resultPath);
+                ProcessStartInfo start = new ProcessStartInfo(executable, arguments);
+                start.UseShellExecute = false;
+                start.CreateNoWindow = true;
+                using (Process process = Process.Start(start))
+                {
+                    if (!process.WaitForExit(120000))
+                    {
+                        try { process.Kill(); } catch { }
+                        throw new System.TimeoutException("Отключение токенов не завершилось за две минуты.");
+                    }
+                    string message = File.Exists(resultPath)
+                        ? File.ReadAllText(resultPath, Encoding.UTF8).Trim()
+                        : "Клиент не записал результат команды.";
+                    if (process.ExitCode != 0) throw new InvalidOperationException(message);
+                    return String.IsNullOrWhiteSpace(message) ? "Токены отключены." : message;
+                }
+            }
+            finally
+            {
+                try { if (File.Exists(resultPath)) File.Delete(resultPath); } catch { }
+            }
+        }
+
+        private static string QuoteArgument(string value)
+        {
+            return "\"" + (value ?? "").Replace("\"", "\\\"") + "\"";
         }
 
         private void SynchronizeHubs()

@@ -5,12 +5,13 @@ namespace DistControl.Server
 {
     public sealed class ServerData
     {
-        public int SchemaVersion = 3;
+        public int SchemaVersion = 4;
         public List<ClientRecord> Clients = new List<ClientRecord>();
         public List<PendingEnrollmentRecord> PendingEnrollments = new List<PendingEnrollmentRecord>();
         public List<CentralLogRecord> Logs = new List<CentralLogRecord>();
         public List<UpdateRecord> Updates = new List<UpdateRecord>();
         public List<AuditRecord> Audit = new List<AuditRecord>();
+        public List<ClientCommandRecord> Commands = new List<ClientCommandRecord>();
         public HubConfiguration Hubs = new HubConfiguration();
     }
 
@@ -94,6 +95,31 @@ namespace DistControl.Server
         public string Action = "";
         public string Target = "";
         public string Details = "";
+    }
+
+    public sealed class ClientCommandRecord
+    {
+        public string Id = "";
+        public string ClientId = "";
+        public string Type = "";
+        public string Status = "";
+        public string RequestedUtc = "";
+        public string RequestedBy = "";
+        public string CompletedUtc = "";
+        public string Result = "";
+    }
+
+    public sealed class ClientCommandResponse
+    {
+        public bool Available = false;
+        public string Id = "";
+        public string Type = "";
+    }
+
+    public sealed class ClientCommandResultRequest
+    {
+        public bool Success = false;
+        public string Message = "";
     }
 
     public sealed class EnrollRequest
@@ -204,6 +230,8 @@ namespace DistControl.Server
         public string LastError = "";
         public string AppliedHubRevision = "";
         public string HubStatus = "";
+        public string CommandStatus = "";
+        public string CommandResult = "";
         public bool Online = false;
     }
 }

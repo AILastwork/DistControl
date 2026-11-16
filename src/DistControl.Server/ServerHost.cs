@@ -174,6 +174,17 @@ namespace DistControl.Server
                 WriteJson(response, 200, new { accepted = added });
                 return;
             }
+            if (action == "command" && parts.Length == 4 && method == "GET")
+            {
+                WriteJson(response, 200, store.GetPendingCommand(clientId, token));
+                return;
+            }
+            if (action == "command" && parts.Length == 6 && parts[5] == "result" && method == "POST")
+            {
+                store.CompleteCommand(clientId, token, parts[4], ReadJson<ClientCommandResultRequest>(request));
+                WriteJson(response, 200, new { accepted = true });
+                return;
+            }
             if (action == "update" && parts.Length == 4 && method == "GET")
             {
                 WriteJson(response, 200, store.GetUpdate(clientId, token));
@@ -238,6 +249,11 @@ namespace DistControl.Server
                 assignment.Actor = request.AuthenticatedUser;
                 store.AssignUpdate(parts[4], assignment);
                 WriteJson(response, 200, new { accepted = true });
+                return;
+            }
+            if (parts.Length == 6 && parts[3] == "clients" && parts[5] == "disconnect" && method == "POST")
+            {
+                WriteJson(response, 200, store.QueueForceDisconnect(parts[4], request.AuthenticatedUser));
                 return;
             }
             if (parts.Length == 4 && parts[3] == "logs" && method == "GET")

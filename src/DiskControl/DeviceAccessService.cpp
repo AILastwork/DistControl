@@ -399,10 +399,11 @@ bool markDeviceUsedBestEffort(const PolicyManager& policy, const DeviceViewModel
 }
 
 void markDeviceReleasedBestEffort(const PolicyManager& policy, const DeviceViewModel& device,
-    const std::wstring& operationId = {}) {
+    const std::wstring& operationId = {}, const std::wstring& userName = {}) {
     try {
         UsageStateSync sync(policy.usageStatePath());
-        sync.markReleased(toParsedDevice(device), PolicyManager::currentUserName(), operationId);
+        sync.markReleased(toParsedDevice(device),
+            userName.empty() ? PolicyManager::currentUserName() : userName, operationId);
         AuditLogger::trace(operationId, L"Отключение токена «" + device.nickname +
             L"» записано на компьютере. Общая папка обновляется в фоне.");
         sync.requestBackgroundSync(policy.pipeName());
@@ -477,7 +478,8 @@ DeviceViewModel confirmDeviceStateAfterCommand(
     const DeviceViewModel& device,
     bool expectOwned,
     bool waitForTransition,
-    const HumanOperationTrace& trace) {
+    const HumanOperationTrace& trace,
+    const std::wstring& userName = {}) {
     IpcClient ipc(policy.pipeName());
     const ULONGLONG startedAt = GetTickCount64();
     int attempt = 0;
@@ -486,7 +488,8 @@ DeviceViewModel confirmDeviceStateAfterCommand(
         try {
             DeviceViewModel current = loadCurrentDevice(ipc, device, 3000);
             const DeviceUsageInfo usage =
-                DeviceParser::parseUsage(current.inUseBy, PolicyManager::currentUserName());
+                DeviceParser::parseUsage(current.inUseBy,
+                    userName.empty() ? PolicyManager::currentUserName() : userName);
             trace.step(L"Контроль DEVICE INFO после команды, попытка " + std::to_wstring(attempt) +
                 L": состояние «" + current.statusText + L"».");
             if (expectOwned && usage.isUsedByCurrentUser) {
@@ -1168,6 +1171,98 @@ std::wstring DeviceAccessService::stopUsingOwnedDevice(
                 L"; technical=" + widenAscii(error.what()));
         throw;
     }
+}
+
+std::wstring DeviceAccessService::forceDisconnectLocalTokens(const std::wstring& userName) const {
+    if (userName.empty()) {
+        throw std::runtime_error("The target user is not specified for forced disconnect.");
+    }
+
+    const std::wstring operationId = AuditLogger::createOperationId(L"CENTRAL-FORCE-STOP");
+    PolicyManager policy;
+    IpcClient ipc(policy.pipeName());
+    const std::wstring currentComputer = UsageStateStore::currentComputerName();
+    const std::wstring listResponse = ipc.issueCommand(L"LIST", kVpnRecoveryCommandTimeoutMs);
+    throwIfCommandFailed(listResponse, "LIST");
+    const std::vector<ParsedDevice> listed = DeviceParser::parseList(listResponse);
+    if (listed.empty()) {
+        throw std::runtime_error("DistKontrol device catalog is temporarily empty.");
+    }
+
+    std::vector<ParsedDevice> candidates;
+    for (const ParsedDevice& device : listed) {
+        const DeviceUsageInfo usage = DeviceParser::parseUsage(device.inUseBy, userName);
+        if (usage.isUsedByCurrentUser &&
+            (usage.locationText.empty() || equalsIgnoreCase(usage.locationText, currentComputer))) {
+            candidates.push_back(device);
+        }
+    }
+    try {
+        for (const UsageStateRecord& record : UsageStateSync(policy.usageStatePath()).snapshot()) {
+            if (!equalsIgnoreCase(record.user, userName) ||
+                (!record.computer.empty() && !equalsIgnoreCase(record.computer, currentComputer))) {
+                continue;
+            }
+            if (std::none_of(candidates.begin(), candidates.end(), [&record](const ParsedDevice& item) {
+                return equalsIgnoreCase(item.endpoint, record.endpoint);
+            })) {
+                ParsedDevice candidate;
+                candidate.endpoint = record.endpoint;
+                candidate.nickname = record.nickname;
+                candidate.product = record.product;
+                candidates.push_back(std::move(candidate));
+            }
+        }
+    }
+    catch (const std::exception& error) {
+        AuditLogger::trace(operationId,
+            L"Локальный журнал токенов прочитать не удалось: " + humanErrorDescription(error.what()) + L".");
+    }
+
+    size_t released = 0;
+    size_t failures = 0;
+    for (const ParsedDevice& candidate : candidates) {
+        DeviceViewModel current = toViewModel(candidate, policy.isAllowed(candidate));
+        try {
+            current = loadCurrentDevice(ipc, current, kActiveTokenScanCommandTimeoutMs);
+        }
+        catch (const std::exception& error) {
+            ++failures;
+            AuditLogger::trace(operationId, L"Токен «" + candidate.nickname +
+                L"» проверить не удалось: " + humanErrorDescription(error.what()) + L".");
+            continue;
+        }
+
+        const DeviceUsageInfo usage = DeviceParser::parseUsage(current.inUseBy, userName);
+        if (!usage.isUsedByCurrentUser ||
+            (!usage.locationText.empty() && !equalsIgnoreCase(usage.locationText, currentComputer))) {
+            continue;
+        }
+
+        try {
+            std::wstring response = ipc.issueCommand(L"STOP USING," + current.endpoint, kStopCommandTimeoutMs);
+            const bool reportedFailure = isCommandFailureResponse(response);
+            confirmDeviceStateAfterCommand(policy, current, false, !reportedFailure,
+                HumanOperationTrace(L"CENTRAL-FORCE-STOP", operationId), userName);
+            markDeviceReleasedBestEffort(policy, current, operationId, userName);
+            AuditLogger::logDeviceAction(L"CENTRAL FORCE STOP", current, L"OK",
+                L"Команда отправлена администратором через центральный сервер.");
+            ++released;
+        }
+        catch (const std::exception& error) {
+            ++failures;
+            AuditLogger::logDeviceAction(L"CENTRAL FORCE STOP", current, L"ERROR",
+                humanErrorDescription(error.what()));
+        }
+    }
+
+    if (failures > 0) {
+        throw std::runtime_error("Some local tokens could not be verified or disconnected. Released: " +
+            std::to_string(released) + ", errors: " + std::to_string(failures) + ".");
+    }
+    return released == 0
+        ? L"Активных токенов этого пользователя на компьютере не найдено."
+        : L"Принудительно отключено токенов: " + std::to_wstring(released) + L".";
 }
 
 void DeviceAccessService::refreshUsageTimer(const DeviceViewModel& device) const {

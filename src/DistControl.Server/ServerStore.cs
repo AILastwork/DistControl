@@ -308,6 +308,8 @@ namespace DistControl.Server
                         LastError = c.LastError,
                         AppliedHubRevision = c.AppliedHubRevision,
                         HubStatus = c.HubStatus,
+                        CommandStatus = LatestCommandLocked(c.Id) == null ? "" : LatestCommandLocked(c.Id).Status,
+                        CommandResult = LatestCommandLocked(c.Id) == null ? "" : LatestCommandLocked(c.Id).Result,
                         Online = parsed && now.Subtract(seen.ToUniversalTime()).TotalSeconds <= 90
                     };
                 }).OrderBy(delegate(ClientSummary c) { return c.MachineName; }).ToList();
@@ -386,6 +388,75 @@ namespace DistControl.Server
             }
         }
 
+        public ClientCommandRecord QueueForceDisconnect(string clientId, string actor)
+        {
+            lock (sync)
+            {
+                ClientRecord client = FindClientLocked(clientId);
+                if (client == null) throw new KeyNotFoundException("Компьютер не найден.");
+                ClientCommandRecord active = data.Commands.LastOrDefault(delegate(ClientCommandRecord item)
+                {
+                    return String.Equals(item.ClientId, clientId, StringComparison.OrdinalIgnoreCase) &&
+                        (item.Status == "Ожидает выполнения" || item.Status == "Выполняется");
+                });
+                if (active != null) throw new InvalidOperationException("На компьютере уже ожидает выполнения команда администратора.");
+
+                ClientCommandRecord command = new ClientCommandRecord
+                {
+                    Id = Guid.NewGuid().ToString("N"),
+                    ClientId = clientId,
+                    Type = "FORCE_DISCONNECT",
+                    Status = "Ожидает выполнения",
+                    RequestedUtc = UtcNow(),
+                    RequestedBy = actor ?? ""
+                };
+                data.Commands.Add(command);
+                if (data.Commands.Count > 20000) data.Commands.RemoveRange(0, data.Commands.Count - 20000);
+                AddAudit(actor, "FORCE_DISCONNECT_QUEUED", client.Id,
+                    client.MachineName + " / " + client.UserName);
+                SaveLocked();
+                return command;
+            }
+        }
+
+        public ClientCommandResponse GetPendingCommand(string clientId, string token)
+        {
+            lock (sync)
+            {
+                RequireClientLocked(clientId, token);
+                ClientCommandRecord command = data.Commands.FirstOrDefault(delegate(ClientCommandRecord item)
+                {
+                    return String.Equals(item.ClientId, clientId, StringComparison.OrdinalIgnoreCase) &&
+                        (item.Status == "Ожидает выполнения" || item.Status == "Выполняется");
+                });
+                if (command == null) return new ClientCommandResponse();
+                command.Status = "Выполняется";
+                SaveLocked();
+                return new ClientCommandResponse { Available = true, Id = command.Id, Type = command.Type };
+            }
+        }
+
+        public void CompleteCommand(string clientId, string token, string commandId, ClientCommandResultRequest request)
+        {
+            lock (sync)
+            {
+                RequireClientLocked(clientId, token);
+                ClientCommandRecord command = data.Commands.FirstOrDefault(delegate(ClientCommandRecord item)
+                {
+                    return String.Equals(item.Id, commandId, StringComparison.OrdinalIgnoreCase) &&
+                        String.Equals(item.ClientId, clientId, StringComparison.OrdinalIgnoreCase);
+                });
+                if (command == null) throw new KeyNotFoundException("Команда для компьютера не найдена.");
+                if (command.Status == "Выполнено" || command.Status == "Ошибка") return;
+                command.Status = request != null && request.Success ? "Выполнено" : "Ошибка";
+                command.Result = request == null ? "Клиент не передал результат команды." : (request.Message ?? "");
+                command.CompletedUtc = UtcNow();
+                AddAudit("CLIENT", request != null && request.Success
+                    ? "FORCE_DISCONNECT_COMPLETED" : "FORCE_DISCONNECT_FAILED", clientId, command.Result);
+                SaveLocked();
+            }
+        }
+
         public UpdateManifestResponse GetUpdate(string clientId, string token)
         {
             lock (sync)
@@ -460,7 +531,7 @@ namespace DistControl.Server
                 ServerData loaded = json.Deserialize<ServerData>(text);
                 if (loaded == null) throw new InvalidDataException("Не удалось прочитать серверное хранилище.");
                 Normalize(loaded);
-                loaded.SchemaVersion = 3;
+                loaded.SchemaVersion = 4;
                 AtomicWrite(dataPath, Encoding.UTF8.GetBytes(json.Serialize(loaded)));
                 WriteBootstrapInformation();
                 return loaded;
@@ -483,19 +554,28 @@ namespace DistControl.Server
 
         private void Normalize(ServerData value)
         {
-            value.SchemaVersion = 3;
+            value.SchemaVersion = 4;
             if (value.Clients == null) value.Clients = new List<ClientRecord>();
             if (value.PendingEnrollments == null) value.PendingEnrollments = new List<PendingEnrollmentRecord>();
             if (value.Logs == null) value.Logs = new List<CentralLogRecord>();
             value.Logs.RemoveAll(delegate(CentralLogRecord item) { return !IsAuditLogFile(item.FileName); });
             if (value.Updates == null) value.Updates = new List<UpdateRecord>();
             if (value.Audit == null) value.Audit = new List<AuditRecord>();
+            if (value.Commands == null) value.Commands = new List<ClientCommandRecord>();
             if (value.Hubs == null) value.Hubs = new HubConfiguration();
         }
 
         private ClientRecord FindClientLocked(string id)
         {
             return data.Clients.FirstOrDefault(delegate(ClientRecord c) { return String.Equals(c.Id, id, StringComparison.OrdinalIgnoreCase); });
+        }
+
+        private ClientCommandRecord LatestCommandLocked(string clientId)
+        {
+            return data.Commands.LastOrDefault(delegate(ClientCommandRecord item)
+            {
+                return String.Equals(item.ClientId, clientId, StringComparison.OrdinalIgnoreCase);
+            });
         }
 
         private ClientRecord RequireClientLocked(string id, string token)

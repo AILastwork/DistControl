@@ -18,8 +18,8 @@ using System.Windows.Forms;
 
 [assembly: AssemblyTitle("DistControl Central Admin")]
 [assembly: AssemblyProduct("DistControl")]
-[assembly: AssemblyVersion("0.8.5.0")]
-[assembly: AssemblyFileVersion("0.8.5.0")]
+[assembly: AssemblyVersion("0.8.6.0")]
+[assembly: AssemblyFileVersion("0.8.6.0")]
 
 namespace DistControl.CentralAdmin
 {
@@ -52,6 +52,8 @@ namespace DistControl.CentralAdmin
         public string LastError = "";
         public string AppliedHubRevision = "";
         public string HubStatus = "";
+        public string CommandStatus = "";
+        public string CommandResult = "";
         public bool Online = false;
     }
 
@@ -372,15 +374,19 @@ namespace DistControl.CentralAdmin
             ToolStripButton edit = new ToolStripButton("Изменить доступы и VPN");
             ToolStripButton import = new ToolStripButton("Восстановить allow.json");
             ToolStripButton logs = new ToolStripButton("Показать журнал токенов");
+            ToolStripButton disconnect = new ToolStripButton("Принудительно отключить токены");
             refresh.Click += async delegate { await RefreshClientsWithFeedbackAsync(); };
             edit.Click += async delegate { await EditPolicyAsync(); };
             import.Click += async delegate { await ImportPolicyAsync(); };
             logs.Click += async delegate { await RefreshLogsAsync(); };
+            disconnect.Click += async delegate { await ForceDisconnectAsync(); };
             tools.Items.Add(refresh);
             tools.Items.Add(new ToolStripSeparator());
             tools.Items.Add(edit);
             tools.Items.Add(import);
             tools.Items.Add(logs);
+            tools.Items.Add(new ToolStripSeparator());
+            tools.Items.Add(disconnect);
             page.Controls.Add(clientsGrid);
             page.Controls.Add(tools);
             return page;
@@ -559,9 +565,17 @@ namespace DistControl.CentralAdmin
         private async Task RefreshClientsAsync()
         {
             RequireApi();
-            CaptureGridLayout(clientsGrid, "clients");
             List<ClientSummary> loaded = await Task.Run(delegate { return api.Json<List<ClientSummary>>("GET", "/api/v1/admin/clients", null); });
             clients = loaded ?? new List<ClientSummary>();
+            BindClientsGrid();
+            BindUpdateClientsGrid();
+        }
+
+        private void BindClientsGrid()
+        {
+            CaptureGridLayout(clientsGrid, "clients");
+            string selectedId = clientsGrid.CurrentRow != null && clientsGrid.Columns.Contains("Id")
+                ? Convert.ToString(clientsGrid.CurrentRow.Cells["Id"].Value) : "";
             clientsGrid.DataSource = clients.Select(delegate(ClientSummary c)
             {
                 return new
@@ -575,12 +589,25 @@ namespace DistControl.CentralAdmin
                     Политика = c.PolicyRevision == c.AppliedPolicyRevision ? "Применена" : "Ожидает применения",
                     Обновление = c.UpdateStatus,
                     USB_серверы = c.HubStatus,
+                    Команда = c.CommandStatus,
+                    Результат_команды = c.CommandResult,
                     Ошибка = c.LastError,
                     Id = c.Id
                 };
             }).ToList();
             FormatGrid(clientsGrid, "clients");
-            BindUpdateClientsGrid();
+            if (!String.IsNullOrWhiteSpace(selectedId) && clientsGrid.Columns.Contains("Id"))
+            {
+                foreach (DataGridViewRow row in clientsGrid.Rows)
+                    if (String.Equals(Convert.ToString(row.Cells["Id"].Value), selectedId,
+                        StringComparison.OrdinalIgnoreCase))
+                    {
+                        row.Selected = true;
+                        clientsGrid.CurrentCell = row.Cells.Cast<DataGridViewCell>()
+                            .FirstOrDefault(delegate(DataGridViewCell cell) { return cell.Visible; });
+                        break;
+                    }
+            }
         }
 
         private async Task RefreshEnrollmentsWithFeedbackAsync()
@@ -767,6 +794,7 @@ namespace DistControl.CentralAdmin
                     return api.Json<List<ClientSummary>>("GET", "/api/v1/admin/clients", null);
                 });
                 clients = loaded ?? new List<ClientSummary>();
+                BindClientsGrid();
                 BindUpdateClientsGrid();
             }
             finally { refreshingUpdateClients = false; }
@@ -921,6 +949,40 @@ namespace DistControl.CentralAdmin
                 TryDeletePolicyEditSession(editDirectory);
                 SetBusy(false, null);
             }
+        }
+
+        private async Task ForceDisconnectAsync()
+        {
+            ClientSummary client = SelectedClient();
+            if (client == null) return;
+            if (!client.Online)
+            {
+                MessageBox.Show(this,
+                    "Компьютер сейчас не в сети. Команда не будет отправлена, пока агент недоступен.",
+                    "DistControl", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            string message =
+                "Принудительно отключить все токены пользователя «" + client.UserName +
+                "» на компьютере «" + client.MachineName + "»?\r\n\r\n" +
+                "Токены других пользователей и других компьютеров затронуты не будут. " +
+                "Используемые ими подключения останутся активными.";
+            if (MessageBox.Show(this, message, "Принудительное отключение токенов",
+                MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
+
+            SetBusy(true, "Передаём команду отключения на " + client.MachineName + "…");
+            try
+            {
+                await Task.Run(delegate
+                {
+                    api.Json<object>("POST", "/api/v1/admin/clients/" + client.Id + "/disconnect", null);
+                });
+                await RefreshClientsAsync();
+                SetOperationResult("Команда отправлена. Агент выполнит её при ближайшем опросе сервера; результат появится в столбцах «Команда» и «Результат команды».");
+            }
+            catch (Exception error) { ShowError(error); }
+            finally { SetBusy(false, null); }
         }
 
         private static string CreatePolicyEditSessionDirectory(string settingsFile, string clientId)

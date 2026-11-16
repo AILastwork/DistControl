@@ -16,6 +16,7 @@ $heartbeatType = $assembly.GetType("DistControl.Server.HeartbeatRequest", $true)
 $policyUpdateType = $assembly.GetType("DistControl.Server.PolicyUpdateRequest", $true)
 $logRequestType = $assembly.GetType("DistControl.Server.LogUploadRequest", $true)
 $logItemType = $assembly.GetType("DistControl.Server.LogUploadItem", $true)
+$commandResultType = $assembly.GetType("DistControl.Server.ClientCommandResultRequest", $true)
 $testDirectory = Join-Path $env:TEMP ("DistControl-enrollment-test-" + [Guid]::NewGuid().ToString("N"))
 [IO.Directory]::CreateDirectory($testDirectory) | Out-Null
 
@@ -48,8 +49,8 @@ try {
     $request.RequestToken = "test-request-secret"
     $request.MachineName = "WRK-TEST"
     $request.UserName = "OSNOVA\test"
-    $request.AppVersion = "0.8.5"
-    $request.AgentVersion = "0.8.5"
+    $request.AppVersion = "0.8.6"
+    $request.AgentVersion = "0.8.6"
 
     $pending = $store.Enroll($request, "10.0.0.10")
     if ($pending.Approved -or [string]::IsNullOrWhiteSpace($pending.RequestId)) {
@@ -65,6 +66,29 @@ try {
         throw "Approved enrollment did not issue a token."
     }
     [void]$store.AuthenticateClient($approved.ClientId, $approved.ClientToken)
+
+    $queuedCommand = $store.QueueForceDisconnect($approved.ClientId, "OSNOVA\domain-admin")
+    if ($queuedCommand.Type -ne "FORCE_DISCONNECT" -or
+        [string]::IsNullOrWhiteSpace($queuedCommand.Id) -or
+        [string]::IsNullOrWhiteSpace($queuedCommand.Status)) {
+        throw "Forced disconnect command was not queued."
+    }
+    $clientCommand = $store.GetPendingCommand($approved.ClientId, $approved.ClientToken)
+    if (-not $clientCommand.Available -or $clientCommand.Id -ne $queuedCommand.Id) {
+        throw "Queued command was not delivered to the client."
+    }
+    $commandResult = [Activator]::CreateInstance($commandResultType)
+    $commandResult.Success = $true
+    $commandResult.Message = "Disconnected: 1"
+    $store.CompleteCommand($approved.ClientId, $approved.ClientToken, $queuedCommand.Id, $commandResult)
+    $clientSummary = @($store.ListClients() | Where-Object Id -eq $approved.ClientId)[0]
+    if ([string]::IsNullOrWhiteSpace($clientSummary.CommandStatus) -or
+        $clientSummary.CommandResult -ne $commandResult.Message) {
+        throw "Forced disconnect result was not recorded."
+    }
+    if ($store.GetPendingCommand($approved.ClientId, $approved.ClientToken).Available) {
+        throw "Completed command was delivered repeatedly."
+    }
 
     $smallPolicy = [ordered]@{
         vpnProfiles = @()
