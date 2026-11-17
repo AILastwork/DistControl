@@ -18,8 +18,8 @@ using System.Windows.Forms;
 
 [assembly: AssemblyTitle("DistControl Central Admin")]
 [assembly: AssemblyProduct("DistControl")]
-[assembly: AssemblyVersion("0.8.9.0")]
-[assembly: AssemblyFileVersion("0.8.9.0")]
+[assembly: AssemblyVersion("0.8.10.0")]
+[assembly: AssemblyFileVersion("0.8.10.0")]
 
 namespace DistControl.CentralAdmin
 {
@@ -887,73 +887,25 @@ namespace DistControl.CentralAdmin
         {
             ClientSummary client = SelectedClient();
             if (client == null) return;
-            SetBusy(true, "Получение конфигурации " + client.MachineName + "…");
-            string editDirectory = null;
+            SetBusy(true, "Открываем профили пользователей компьютера " + client.MachineName + "…");
             try
             {
-                PolicyResponse policy = await Task.Run(delegate
-                {
-                    return api.Json<PolicyResponse>("GET", "/api/v1/admin/clients/" + client.Id + "/policy", null);
-                });
-                SetBusy(true, "Открываем локальную админку для " + client.MachineName + "…");
-                editDirectory = CreatePolicyEditSessionDirectory(settingsPath, client.Id);
-                string policyPath = Path.Combine(editDirectory, "allow.json");
-                File.WriteAllText(policyPath, policy.PolicyJson, new UTF8Encoding(false));
-                string before = Sha256(Encoding.UTF8.GetBytes(policy.PolicyJson));
                 string adminExe = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "DistControl.Admin.exe");
                 if (!File.Exists(adminExe)) throw new FileNotFoundException("Рядом с центральной консолью нет DistControl.Admin.exe.", adminExe);
 
                 ProcessStartInfo start = new ProcessStartInfo(adminExe,
-                    BuildPolicyEditorArguments(policyPath, client.MachineName, client.UserName));
+                    BuildComputerEditorArguments(client.MachineName, client.UserName));
                 start.UseShellExecute = true;
                 Process process = Process.Start(start);
-                SetBusy(true, "Ожидаем завершения редактирования доступов и VPN…");
+                SetBusy(true, "Открыт компьютер " + client.MachineName +
+                    ". Изменения сохраняются непосредственно в профиле выбранного пользователя…");
                 await Task.Run(delegate { process.WaitForExit(); });
-                SetBusy(true, "Проверяем внесённые изменения…");
-                string changed = File.ReadAllText(policyPath, Encoding.UTF8);
-                if (Sha256(Encoding.UTF8.GetBytes(changed)) == before)
-                {
-                    SetOperationResult("Редактирование завершено. Настройки не изменялись.");
-                    return;
-                }
-
-                PolicyChangeSummary summary = SummarizePolicyChange(policy.PolicyJson, changed);
-                string confirmation =
-                    "Отправить изменённые доступы и VPN на компьютер «" + client.MachineName + "»?\r\n\r\n" +
-                    "Разрешений было: " + summary.BeforeCount + "\r\n" +
-                    "Разрешений станет: " + summary.AfterCount + "\r\n" +
-                    "Добавлено: " + summary.AddedCount + "\r\n" +
-                    "Удалено: " + summary.RemovedCount;
-                if (MessageBox.Show(this,
-                    confirmation,
-                    "DistControl", MessageBoxButtons.YesNo, MessageBoxIcon.Question,
-                    MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
-
-                if (summary.IsMassExpansion && MessageBox.Show(this,
-                    "Обнаружено массовое расширение доступа: добавляется " + summary.AddedCount +
-                    " токенов.\r\n\r\nПродолжайте только если вы действительно выбрали эти токены вручную.",
-                    "Подтверждение массового изменения", MessageBoxButtons.YesNo,
-                    MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
-                PolicyUpdateRequest request = new PolicyUpdateRequest
-                {
-                    ExpectedRevision = policy.Revision,
-                    PolicyJson = changed,
-                    ConfirmMassExpansion = summary.IsMassExpansion
-                };
-                SetBusy(true, "Отправляем изменённые доступы и VPN на сервер…");
-                await Task.Run(delegate
-                {
-                    api.Json<PolicyResponse>("PUT", "/api/v1/admin/clients/" + client.Id + "/policy", request);
-                });
                 await RefreshClientsAsync();
-                SetOperationResult("Изменения сохранены на сервере и ожидают применения клиентом.");
+                SetOperationResult("Редактирование " + client.MachineName +
+                    " завершено. Файл allow.json сохранялся непосредственно в профиле выбранного пользователя.");
             }
             catch (Exception error) { ShowError(error); }
-            finally
-            {
-                TryDeletePolicyEditSession(editDirectory);
-                SetBusy(false, null);
-            }
+            finally { SetBusy(false, null); }
         }
 
         private async Task ForceDisconnectAsync()
@@ -1000,10 +952,9 @@ namespace DistControl.CentralAdmin
             return directory;
         }
 
-        private static string BuildPolicyEditorArguments(string policyPath, string machineName, string userName)
+        private static string BuildComputerEditorArguments(string machineName, string userName)
         {
-            return "--policy \"" + (policyPath ?? "").Replace("\"", "") +
-                "\" --computer \"" + (machineName ?? "").Replace("\"", "") +
+            return "--computer \"" + (machineName ?? "").Replace("\"", "") +
                 "\" --target-user \"" + (userName ?? "").Replace("\"", "") + "\"";
         }
 

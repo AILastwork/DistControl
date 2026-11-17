@@ -124,9 +124,10 @@ std::vector<ParsedDevice> DeviceParser::parseList(const std::wstring& text) {
     std::set<std::wstring> seen;
     const std::wregex endpointPattern(LR"(\(([^()\s]+-Gr-\d+\.\d+)\))");
     const std::wregex serverPattern(
-        LR"(^\s*([^()\s]+-Gr-\d+)\s+\(((?:\d{1,3}\.){3}\d{1,3})(?::\d+)?\)\s*$)",
+        LR"(^\s*([^()\s]+-Gr-\d+)\s+\(([^()\s:]+)(?::\d+)?\)\s*$)",
         std::regex_constants::icase);
     std::map<std::wstring, std::wstring> serverAddresses;
+    std::set<std::wstring> listedServers;
 
     size_t serverLineStart = 0;
     while (serverLineStart <= text.size()) {
@@ -137,7 +138,11 @@ std::vector<ParsedDevice> DeviceParser::parseList(const std::wstring& text) {
 
         std::wsmatch serverMatch;
         if (std::regex_match(serverLine, serverMatch, serverPattern) && serverMatch.size() >= 3) {
-            serverAddresses.emplace(lowerCopy(serverMatch[1].str()), serverMatch[2].str());
+            listedServers.insert(lowerCopy(serverMatch[1].str()));
+            const std::wstring address = parseServerAddress(L"ADDRESS: " + serverMatch[2].str());
+            if (!address.empty()) {
+                serverAddresses.emplace(lowerCopy(serverMatch[1].str()), address);
+            }
         }
     }
 
@@ -178,15 +183,31 @@ std::vector<ParsedDevice> DeviceParser::parseList(const std::wstring& text) {
         device.listLine = trim(line);
         const size_t deviceSeparator = endpoint.find_last_of(L'.');
         if (deviceSeparator != std::wstring::npos) {
-            const auto server = serverAddresses.find(lowerCopy(endpoint.substr(0, deviceSeparator)));
-            if (server != serverAddresses.end()) {
-                device.serverAddress = server->second;
+            const std::wstring serverName = endpoint.substr(0, deviceSeparator);
+            const std::wstring serverKey = lowerCopy(serverName);
+            if (listedServers.find(serverKey) != listedServers.end()) {
+                device.serverName = serverName;
+                const auto server = serverAddresses.find(serverKey);
+                if (server != serverAddresses.end()) {
+                    device.serverAddress = server->second;
+                }
             }
         }
         devices.push_back(device);
     }
 
     return devices;
+}
+
+std::wstring DeviceParser::parseServerAddress(const std::wstring& text) {
+    const std::wregex addressPattern(
+        LR"((^|[\r\n])\s*ADDRESS\s*:\s*((?:\d{1,3}\.){3}\d{1,3})(?:\s|\(|$))",
+        std::regex_constants::icase);
+    std::wsmatch match;
+    if (!std::regex_search(text, match, addressPattern) || match.size() < 3) {
+        return {};
+    }
+    return trim(match[2].str());
 }
 
 void DeviceParser::applyDeviceInfo(ParsedDevice& device, const std::wstring& text) {

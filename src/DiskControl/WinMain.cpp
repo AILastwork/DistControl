@@ -14,6 +14,8 @@
 #include <sstream>
 #include <string>
 
+#pragma comment(linker, "\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
+
 namespace {
 #ifdef DISKCONTROL_ADMIN
 constexpr const wchar_t* kAppTitle = L"DistControl Admin";
@@ -269,8 +271,7 @@ int runApplication(HINSTANCE instance, int showCommand) {
     appendStartupLog(std::wstring(kAppTitle) + L" start. CommandLine=" + GetCommandLineW());
 
     MainWindow window;
-    if (!options.policyPath.empty() &&
-        (!options.computerName.empty() || !options.targetUser.empty())) {
+    if (!options.computerName.empty()) {
         window.setPolicyEditContext(options.computerName, options.targetUser);
     }
     if (!window.create(instance, showCommand)) {

@@ -767,6 +767,16 @@ void testParseList() {
     require(devices[1].endpoint == L"OFFICE-HUB-Gr-1.4", "Unexpected second endpoint.");
     require(devices[1].serverAddress == L"192.168.1.10",
         "All tokens in a USB server group should keep its IPv4 address.");
+    require(DeviceParser::parseServerAddress(
+        L"NAME: OFFICE-HUB-Gr-1\r\nADDRESS: 10.14.0.71 (10.14.0.71)\r\nPORT: 6565\r\n") ==
+        L"10.14.0.71", "SERVER INFO address should be parsed for admin grouping.");
+    const auto namedServerDevices = DeviceParser::parseList(
+        L"distkontrolusb64-1-Gr-01 (distkontrolusb64-1-Gr-01:6565)\r\n"
+        L"--> Token (distkontrolusb64-1-Gr-01.1111)\r\n");
+    require(namedServerDevices.size() == 1 &&
+        namedServerDevices[0].serverName == L"distkontrolusb64-1-Gr-01" &&
+        namedServerDevices[0].serverAddress.empty(),
+        "LIST server name should be retained for the follow-up SERVER INFO request.");
 
     const std::wstring occupiedSample =
         L"--> Token A (OFFICE-HUB-Gr-1.5) (In-use by:d.karev (d.karev) at 10.14.32.148 (WRK-114))\n";

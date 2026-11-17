@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <map>
 #include <stdexcept>
 #include <utility>
 
@@ -1616,6 +1617,48 @@ std::vector<DeviceViewModel> DeviceAccessService::listDevices(
             L" мс. Распознано устройств: " + std::to_wstring(devices.size()) + L".");
         if (devices.empty()) {
             throw std::runtime_error("DistKontrol device catalog is temporarily empty.");
+        }
+        std::map<std::wstring, std::wstring> serverAddresses;
+        if (previous) {
+            for (const DeviceViewModel& item : *previous) {
+                const size_t separator = item.endpoint.find_last_of(L'.');
+                if (separator != std::wstring::npos && !item.serverAddress.empty()) {
+                    serverAddresses.emplace(item.endpoint.substr(0, separator), item.serverAddress);
+                }
+            }
+        }
+        for (const ParsedDevice& device : devices) {
+            if (!device.serverName.empty() && !device.serverAddress.empty()) {
+                serverAddresses.emplace(device.serverName, device.serverAddress);
+            }
+        }
+        for (ParsedDevice& device : devices) {
+            if (device.serverName.empty()) continue;
+            const std::wstring key = device.serverName;
+            const auto cached = serverAddresses.find(key);
+            if (cached != serverAddresses.end()) {
+                device.serverAddress = cached->second;
+                continue;
+            }
+            try {
+                const std::wstring serverInfo =
+                    ipc.issueCommand(L"SERVER INFO," + device.serverName, 1000);
+                throwIfCommandFailed(serverInfo, "SERVER INFO");
+                const std::wstring address = DeviceParser::parseServerAddress(serverInfo);
+                if (!address.empty()) {
+                    serverAddresses.emplace(key, address);
+                    device.serverAddress = address;
+                }
+            }
+            catch (const std::exception&) {
+                serverAddresses.emplace(key, L"");
+            }
+        }
+        for (ParsedDevice& device : devices) {
+            if (device.serverAddress.empty() && !device.serverName.empty()) {
+                const auto address = serverAddresses.find(device.serverName);
+                if (address != serverAddresses.end()) device.serverAddress = address->second;
+            }
         }
         if (progress) {
             progress(0, devices.size());

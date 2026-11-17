@@ -2421,8 +2421,7 @@ void MainWindow::createControls() {
     SendMessageW(refreshProgressBar_, PBM_SETRANGE32, 0, 100);
 
     if (kAdminBuild && externalPolicyEdit_) {
-        ComboBox_AddString(assignUserEdit_, initialAdminUser.c_str());
-        EnableWindow(assignUserEdit_, FALSE);
+        loadProfilesForComputer(initialComputer);
         EnableWindow(computerEdit_, FALSE);
         EnableWindow(loadComputerButton_, FALSE);
         EnableWindow(openPolicyButton_, FALSE);
@@ -2780,7 +2779,7 @@ void MainWindow::setMainControlsEnabled(bool enabled) {
         EnableWindow(computerEdit_, value && !externalPolicyEdit_);
     }
     if (assignUserEdit_) {
-        EnableWindow(assignUserEdit_, value && !externalPolicyEdit_);
+        EnableWindow(assignUserEdit_, value);
     }
     if (loadComputerButton_) {
         EnableWindow(loadComputerButton_, value && !externalPolicyEdit_);
@@ -4130,7 +4129,8 @@ void MainWindow::loadProfilesForComputer(const std::wstring& computerName) {
         return;
     }
 
-    const std::wstring currentUser = PolicyManager::currentUserName();
+    const std::wstring requestedUser = externalPolicyEdit_ && !externalUserName_.empty()
+        ? externalUserName_ : PolicyManager::currentUserName();
     profileUsers_ = profileUsersForComputer(computerName);
 
     suppressAdminUserChange_ = true;
@@ -4138,7 +4138,7 @@ void MainWindow::loadProfilesForComputer(const std::wstring& computerName) {
     const UserProfileEntry* selected = nullptr;
     for (const UserProfileEntry& profile : profileUsers_) {
         ComboBox_AddString(assignUserEdit_, profile.accountName.c_str());
-        if (!currentUser.empty() && lowerCopy(profile.accountName) == lowerCopy(currentUser)) {
+        if (!requestedUser.empty() && lowerCopy(profile.accountName) == lowerCopy(requestedUser)) {
             selected = &profile;
         }
     }
