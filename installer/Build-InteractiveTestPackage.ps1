@@ -8,8 +8,9 @@ $ErrorActionPreference = "Stop"
 $root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $dist = Join-Path $root "dist"
 $payload = Join-Path $dist "DistControl-Installer.zip"
-$output = Join-Path $dist "DistControl-Interactive-Test-Setup.exe"
-$stub = Join-Path $dist "DistControl-Interactive-Test-Setup.stub.exe"
+$output = Join-Path $dist "DistControl-SystemService-Test-Setup.exe"
+$stub = Join-Path $dist "DistControl-SystemService-Test-Setup.stub.exe"
+$legacyOutput = Join-Path $dist "DistControl-Interactive-Test-Setup.exe"
 $source = Join-Path $PSScriptRoot "SetupBootstrapper.cs"
 $credentialCheck = Join-Path $PSScriptRoot "CredentialCheck.cs"
 $manifest = Join-Path $PSScriptRoot "SetupBootstrapper.manifest"
@@ -28,16 +29,16 @@ if (-not $compiler) {
     throw "C# compiler was not found."
 }
 
-Remove-Item -LiteralPath $stub, $output -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $stub, $output, $legacyOutput -Force -ErrorAction SilentlyContinue
 & $compiler /nologo /codepage:65001 /target:winexe /platform:x64 `
-    /define:INTERACTIVE_DKCLIENT_TEST `
+    /define:SYSTEM_DKCLIENT_TEST `
     "/win32manifest:$manifest" "/out:$stub" `
     /reference:System.Windows.Forms.dll /reference:System.Drawing.dll `
     /reference:System.Security.dll /reference:System.IO.Compression.dll `
     /reference:System.IO.Compression.FileSystem.dll `
     $source $credentialCheck
 if ($LASTEXITCODE -ne 0) {
-    throw "Interactive test bootstrapper build failed."
+    throw "System-service test bootstrapper build failed."
 }
 
 $payloadInfo = Get-Item -LiteralPath $payload
@@ -57,5 +58,5 @@ finally {
 }
 
 $hash = (Get-FileHash -LiteralPath $output -Algorithm SHA256).Hash
-Write-Host "Interactive test setup: $output"
+Write-Host "System-service test setup: $output"
 Write-Host "SHA256: $hash"

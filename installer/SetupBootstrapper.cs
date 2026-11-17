@@ -13,9 +13,9 @@ using System.Text;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-#if INTERACTIVE_DKCLIENT_TEST
-[assembly: AssemblyTitle("DistControl Interactive Test Setup")]
-[assembly: AssemblyDescription("Passwordless interactive dkclient test installer")]
+#if SYSTEM_DKCLIENT_TEST
+[assembly: AssemblyTitle("DistControl System Service Test Setup")]
+[assembly: AssemblyDescription("Passwordless LocalSystem dkclient test installer")]
 #else
 [assembly: AssemblyTitle("DistControl Setup")]
 [assembly: AssemblyDescription("DistControl Windows installer")]
@@ -29,8 +29,8 @@ using Microsoft.Win32;
 
 internal static class SetupBootstrapper
 {
-#if INTERACTIVE_DKCLIENT_TEST
-    private const string ProductName = "DistControl Interactive Test";
+#if SYSTEM_DKCLIENT_TEST
+    private const string ProductName = "DistControl System Service Test";
 #else
     private const string ProductName = "DistControl";
 #endif
@@ -242,7 +242,7 @@ internal static class SetupBootstrapper
                 throw new FileNotFoundException("Installer launcher not found.", launcher);
             }
 
-#if INTERACTIVE_DKCLIENT_TEST
+#if SYSTEM_DKCLIENT_TEST
             ServiceCredentials credentials = PromptInteractiveTestSettings();
 #else
             ServiceCredentials credentials = PromptServiceCredentials();
@@ -264,8 +264,8 @@ internal static class SetupBootstrapper
             }
 
             MessageBox.Show(
-#if INTERACTIVE_DKCLIENT_TEST
-                "Тестовый клиент установлен. dkcl64.exe запущен без пароля от имени пользователя активного сеанса.",
+#if SYSTEM_DKCLIENT_TEST
+                "Тестовый клиент установлен. dkcl64.exe запущен как служба Windows dkclient под LocalSystem. Пароль сотрудника не требуется.",
 #else
                 "Установка DistControl завершена.",
 #endif
@@ -300,7 +300,7 @@ internal static class SetupBootstrapper
         }
     }
 
-#if INTERACTIVE_DKCLIENT_TEST
+#if SYSTEM_DKCLIENT_TEST
     private static ServiceCredentials PromptInteractiveTestSettings()
     {
         string account = InteractiveSessionAccount();
@@ -329,7 +329,7 @@ internal static class SetupBootstrapper
                 Width = 560,
                 Height = 70,
                 Text = "Экспериментальный локальный режим. Сервер управления и автоматические обновления не устанавливаются. " +
-                    "DistKontrolUSB будет запускаться в текущем сеансе Windows без сохранения пароля."
+                    "dkcl64.exe будет работать как автоматически запускаемая служба Windows dkclient под LocalSystem; пароль сотрудника не требуется."
             };
             form.Controls.Add(info);
 
@@ -1216,8 +1216,8 @@ internal static class SetupBootstrapper
             startInfo.EnvironmentVariables["DISTCONTROL_START_MENU_DIR"] = credentials.StartMenuDirectory ?? string.Empty;
             startInfo.EnvironmentVariables["DISTCONTROL_DESKTOP_DIR"] = credentials.DesktopDirectory ?? string.Empty;
             startInfo.EnvironmentVariables["DISTCONTROL_SERVER_URL"] = credentials.ServerUrl ?? string.Empty;
-#if INTERACTIVE_DKCLIENT_TEST
-            startInfo.EnvironmentVariables["DISTCONTROL_DKCLIENT_MODE"] = "InteractiveTask";
+#if SYSTEM_DKCLIENT_TEST
+            startInfo.EnvironmentVariables["DISTCONTROL_DKCLIENT_MODE"] = "SystemService";
 #endif
         }
 
@@ -1390,7 +1390,11 @@ internal static class SetupBootstrapper
             ContainsText(text, "logon failure") ||
             ContainsText(text, "неудача входа"))
         {
+#if SYSTEM_DKCLIENT_TEST
+            return "Windows не смогла зарегистрировать или запустить службу dkclient под LocalSystem. Проверьте dkcl.ini, наличие dkcl64.exe и журнал событий Windows.";
+#else
             return "Windows не смогла зарегистрировать или запустить службу dkclient под указанной учетной записью. Проверьте логин, пароль и право «Вход в качестве службы».";
+#endif
         }
         if (ContainsText(text, "dkcl64.exe is still running") ||
             ContainsText(text, "Cannot stop a conflicting dkcl64.exe"))
@@ -1403,7 +1407,7 @@ internal static class SetupBootstrapper
         }
         if (ContainsText(text, "dkclient pipe did not become ready"))
         {
-            return "служба dkclient запустилась, но не смогла вернуть список USB-токенов. Проверьте учетную запись службы, файл dkcl.ini и доступность серверов из ManualHubs.";
+            return "служба dkclient запустилась, но не смогла вернуть список USB-токенов. Проверьте файл dkcl.ini, доступность серверов из ManualHubs и журнал событий Windows.";
         }
         if (ContainsText(text, "usage state") ||
             ContainsText(text, "UsageStateDir") ||
@@ -1422,7 +1426,11 @@ internal static class SetupBootstrapper
             ContainsText(text, "служба dkclient") ||
             ContainsText(text, "did not reach Running"))
         {
+#if SYSTEM_DKCLIENT_TEST
+            return "служба dkclient под LocalSystem установилась, но не запустилась. Проверьте dkcl.ini, наличие dkcl64.exe и журнал событий Windows.";
+#else
             return "служба dkclient установилась, но не запустилась. Проверьте пароль учетной записи службы, dkcl.ini и журнал событий Windows.";
+#endif
         }
         if (ContainsText(text, "Required installer input is missing") ||
             ContainsText(text, "Required file not found"))

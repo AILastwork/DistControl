@@ -68,10 +68,10 @@ $script:InstallLogPath = $null
 $script:InstallWarnings = New-Object System.Collections.Generic.List[string]
 $VpnProfileId = if ([string]::IsNullOrWhiteSpace($VpnProfileIdInput)) { "" } else { $VpnProfileIdInput.Trim() }
 $DkClientMode = if ([string]::IsNullOrWhiteSpace($DkClientMode)) { "Service" } else { $DkClientMode.Trim() }
-if ($DkClientMode -notin @("Service", "InteractiveTask")) {
+if ($DkClientMode -notin @("Service", "SystemService")) {
     throw "Unknown dkclient mode: $DkClientMode"
 }
-$InteractiveDkClientMode = $DkClientMode -eq "InteractiveTask"
+$SystemDkClientMode = $DkClientMode -eq "SystemService"
 
 function Write-InstallLogLine([string]$Message) {
     if ([string]::IsNullOrWhiteSpace($script:InstallLogPath)) {
@@ -166,6 +166,9 @@ function Convert-InstallErrorToHuman([string]$Message) {
         $lower.Contains("account") -or
         $lower.Contains("service account") -or
         $lower.Contains("неудача входа")) {
+        if ($SystemDkClientMode) {
+            return "Windows не смогла зарегистрировать или запустить службу dkclient под LocalSystem. Проверьте журнал событий Windows, dkcl.ini и наличие dkcl64.exe."
+        }
         return "Windows не смогла зарегистрировать или запустить службу под указанной учетной записью. Проверьте логин, пароль и право входа в качестве службы."
     }
     if ($lower.Contains("dkcl64.exe is still running") -or
@@ -183,11 +186,14 @@ function Convert-InstallErrorToHuman([string]$Message) {
     }
     if ($lower.Contains("pipe did not become ready") -or
         $lower.Contains("dkclient pipe")) {
-        return "Служба dkclient запущена, но штатный клиент не подготовил канал управления. Проверьте доступность хабов из dkcl.ini и файлы профиля пользователя в AppData\Roaming."
+        return "Служба dkclient запущена, но штатный клиент не подготовил канал управления. Проверьте доступность хабов из dkcl.ini и журнал событий Windows."
     }
     if ($lower.Contains("service") -or
         $lower.Contains("start-service") -or
         $lower.Contains("running state")) {
+        if ($SystemDkClientMode) {
+            return "Служба dkclient под LocalSystem не запустилась. Проверьте dkcl.ini, наличие dkcl64.exe и журнал событий Windows."
+        }
         return "Служба dkclient не запустилась. Проверьте пароль учетной записи службы, dkcl.ini и журнал событий Windows."
     }
     if ($lower.Contains("required file") -or
@@ -340,7 +346,13 @@ function Try-StartService([string]$Name) {
         Write-Step "Service $Name is running"
     }
     catch {
-        throw ("Service {0} was installed but did not reach Running state: {1}. Check the account password, Log on as a service right, dkcl.ini, and Windows Event Viewer." -f $Name, $_.Exception.Message)
+        $hint = if ($SystemDkClientMode) {
+            "Check dkcl.ini, dkcl64.exe, and Windows Event Viewer."
+        }
+        else {
+            "Check the account password, Log on as a service right, dkcl.ini, and Windows Event Viewer."
+        }
+        throw ("Service {0} was installed but did not reach Running state: {1}. {2}" -f $Name, $_.Exception.Message, $hint)
     }
 }
 
@@ -1399,8 +1411,8 @@ function Set-DirectoryAcl {
 function Set-DkClientFilesAcl {
     $exePath = Join-Path $InstallDir "dkcl64.exe"
     $iniPath = Join-Path $InstallDir "dkcl.ini"
-    $identity = if ($InteractiveDkClientMode) { $TargetUserAcl } else { Resolve-PrivilegeIdentity "NT SERVICE\$ServiceName" }
-    Write-Step $(if ($InteractiveDkClientMode) { "Allow the interactive user to run dkcl64.exe" } else { "Restrict dkcl64.exe and dkcl.ini to the dkclient service SID" })
+    $identity = Resolve-PrivilegeIdentity "NT SERVICE\$ServiceName"
+    Write-Step "Restrict dkcl64.exe and dkcl.ini to the dkclient service SID"
     Set-ProtectedAcl $exePath @(
         "*S-1-5-18:F",
         "*S-1-5-32-544:F",
@@ -1857,40 +1869,29 @@ function Remove-DkClientInteractiveTask {
     }
 }
 
-function Register-DkClientInteractiveTask {
-    if ([string]::IsNullOrWhiteSpace($ServiceAccount)) {
-        throw "The interactive Windows account was not detected."
-    }
-
+function Register-DkClientSystemService {
     $exePath = Join-Path $InstallDir "dkcl64.exe"
     Remove-DkClientStartup
     Remove-ExistingService $ServiceName
     Stop-InstalledDkClientProcess
     Remove-DkClientInteractiveTask
-    Set-DkClientFilesAcl
-
-    Write-Step "Create interactive dkclient task for $ServiceAccount (password is not stored)"
+    $binPath = "`"$exePath`" -n --config=`"$(Join-Path $InstallDir 'dkcl.ini')`""
+    Write-Step "Create service $ServiceName as LocalSystem (no user password)"
     if ($DryRun) {
-        Write-Step "DRY-RUN: Register-ScheduledTask $InteractiveDkClientTaskName as $ServiceAccount"
-        return
+        Write-Step "DRY-RUN: New-Service -Name $ServiceName -BinaryPathName $binPath -StartupType Automatic"
     }
-
-    # The interactive client must start without service-only switches. It reads
-    # dkcl.ini/dkcl64.ini from the signed-in user's roaming profile prepared above.
-    $action = New-ScheduledTaskAction -Execute $exePath -WorkingDirectory $InstallDir
-    $trigger = New-ScheduledTaskTrigger -AtLogOn -User $ServiceAccount
-    $principal = New-ScheduledTaskPrincipal -UserId $ServiceAccount -LogonType Interactive -RunLevel Limited
-    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-        -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
-    Register-ScheduledTask -TaskName $InteractiveDkClientTaskName -Action $action -Trigger $trigger `
-        -Principal $principal -Settings $settings -Description "Starts DistKontrolUSB in the signed-in user's session." -Force | Out-Null
-    Start-ScheduledTask -TaskName $InteractiveDkClientTaskName
-    Start-Sleep -Milliseconds 1200
-    $taskInfo = Get-ScheduledTaskInfo -TaskName $InteractiveDkClientTaskName -ErrorAction Stop
-    $taskState = (Get-ScheduledTask -TaskName $InteractiveDkClientTaskName -ErrorAction Stop).State
-    Write-Step "Interactive dkclient task state: $taskState; result: $($taskInfo.LastTaskResult)"
-    Test-DkClientPipeReady $ServiceName $(if ($script:VirtualHereDriverInstalledNow) { 40 } else { 20 })
-    Write-Step "Interactive dkclient is ready under $ServiceAccount"
+    else {
+        New-Service -Name $ServiceName -BinaryPathName $binPath -DisplayName $ServiceDisplayName -StartupType Automatic | Out-Null
+        Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\$ServiceName" -Name ImagePath -Value $binPath
+    }
+    Invoke-External "sc.exe" @("sidtype", $ServiceName, "unrestricted")
+    Set-DkClientFilesAcl
+    Invoke-ExternalOptional "sc.exe" @("description", $ServiceName, "DistKontrolUSB client used by DistControl. Actual user is recorded by DistControl.") "Cannot set service description"
+    Invoke-ExternalOptional "sc.exe" @("failure", $ServiceName, "reset=", "86400", "actions=", "restart/60000/restart/60000") "Cannot set service recovery policy"
+    if (-not $NoStartService) {
+        Try-StartService $ServiceName
+        Test-DkClientPipeReady $ServiceName $(if ($script:VirtualHereDriverInstalledNow) { 40 } else { 20 })
+    }
 }
 
 if (-not $DryRun) {
@@ -1954,7 +1955,7 @@ Stop-InstalledDkClientProcess
 
 Copy-RequiredFile (Join-Path $ReleaseDir "DistControl.exe") (Join-Path $InstallDir "DistControl.exe")
 Copy-RequiredFile (Join-Path $ReleaseDir "DistControl.Admin.exe") (Join-Path $InstallDir "DistControl.Admin.exe")
-if ($InteractiveDkClientMode) {
+if ($SystemDkClientMode) {
     foreach ($centralFile in @("DistControl.Agent.exe", "DistControl.Updater.exe", "agent.json", "update-result.json")) {
         $centralPath = Join-Path $InstallDir $centralFile
         if (Test-Path -LiteralPath $centralPath) {
@@ -2024,9 +2025,9 @@ Set-DirectoryAcl
 Initialize-DkClientUserProfile
 Test-UsageStateAccess
 Install-VirtualHereDriver
-if ($InteractiveDkClientMode) {
+if ($SystemDkClientMode) {
     Remove-ExistingService $AgentServiceName
-    Register-DkClientInteractiveTask
+    Register-DkClientSystemService
 }
 else {
     Remove-DkClientInteractiveTask
@@ -2043,7 +2044,7 @@ Write-Step "Installation completed"
 Write-Host "InstallDir: $InstallDir"
 Write-Host "Policy:     $PolicyPath"
 Write-Host "Usage:      $UsageStatePath"
-Write-Host "dkclient:   $(if ($InteractiveDkClientMode) { "interactive task for $ServiceAccount" } else { "service $ServiceName" })"
+Write-Host "dkclient:   $(if ($SystemDkClientMode) { "service $ServiceName as LocalSystem" } else { "service $ServiceName as $ServiceAccount" })"
 if ($script:InstallWarnings.Count -gt 0) {
     Write-Host "Warnings:"
     foreach ($warning in $script:InstallWarnings) {
