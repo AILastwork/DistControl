@@ -1863,7 +1863,6 @@ function Register-DkClientInteractiveTask {
     }
 
     $exePath = Join-Path $InstallDir "dkcl64.exe"
-    $iniPath = Join-Path $InstallDir "dkcl.ini"
     Remove-DkClientStartup
     Remove-ExistingService $ServiceName
     Stop-InstalledDkClientProcess
@@ -1876,7 +1875,9 @@ function Register-DkClientInteractiveTask {
         return
     }
 
-    $action = New-ScheduledTaskAction -Execute $exePath -Argument ("-n --config=`"{0}`"" -f $iniPath) -WorkingDirectory $InstallDir
+    # The interactive client must start without service-only switches. It reads
+    # dkcl.ini/dkcl64.ini from the signed-in user's roaming profile prepared above.
+    $action = New-ScheduledTaskAction -Execute $exePath -WorkingDirectory $InstallDir
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User $ServiceAccount
     $principal = New-ScheduledTaskPrincipal -UserId $ServiceAccount -LogonType Interactive -RunLevel Limited
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
@@ -1884,6 +1885,10 @@ function Register-DkClientInteractiveTask {
     Register-ScheduledTask -TaskName $InteractiveDkClientTaskName -Action $action -Trigger $trigger `
         -Principal $principal -Settings $settings -Description "Starts DistKontrolUSB in the signed-in user's session." -Force | Out-Null
     Start-ScheduledTask -TaskName $InteractiveDkClientTaskName
+    Start-Sleep -Milliseconds 1200
+    $taskInfo = Get-ScheduledTaskInfo -TaskName $InteractiveDkClientTaskName -ErrorAction Stop
+    $taskState = (Get-ScheduledTask -TaskName $InteractiveDkClientTaskName -ErrorAction Stop).State
+    Write-Step "Interactive dkclient task state: $taskState; result: $($taskInfo.LastTaskResult)"
     Test-DkClientPipeReady $ServiceName $(if ($script:VirtualHereDriverInstalledNow) { 40 } else { 20 })
     Write-Step "Interactive dkclient is ready under $ServiceAccount"
 }
