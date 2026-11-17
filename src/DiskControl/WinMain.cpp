@@ -23,6 +23,7 @@ constexpr const wchar_t* kAppTitle = L"DistControl";
 
 struct CommandLineOptions {
     std::wstring policyPath;
+    std::wstring computerName;
     bool syncUsage = false;
     std::wstring sharedUsagePath;
     std::wstring localUsagePath;
@@ -204,6 +205,9 @@ CommandLineOptions parseCommandLine() {
         else if (arg == L"--target-user" && i + 1 < argc) {
             options.targetUser = argv[++i];
         }
+        else if (arg == L"--computer" && i + 1 < argc) {
+            options.computerName = argv[++i];
+        }
         else if (arg == L"--result" && i + 1 < argc) {
             options.resultPath = argv[++i];
         }
@@ -265,6 +269,10 @@ int runApplication(HINSTANCE instance, int showCommand) {
     appendStartupLog(std::wstring(kAppTitle) + L" start. CommandLine=" + GetCommandLineW());
 
     MainWindow window;
+    if (!options.policyPath.empty() &&
+        (!options.computerName.empty() || !options.targetUser.empty())) {
+        window.setPolicyEditContext(options.computerName, options.targetUser);
+    }
     if (!window.create(instance, showCommand)) {
         AuditLogger::trace(startupOperation,
             L"Главное окно создать не удалось. GetLastError=" + std::to_wstring(GetLastError()) + L".");

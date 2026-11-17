@@ -1,6 +1,7 @@
 #include "DeviceParser.h"
 
 #include <cwctype>
+#include <map>
 #include <regex>
 #include <set>
 
@@ -122,6 +123,23 @@ std::vector<ParsedDevice> DeviceParser::parseList(const std::wstring& text) {
     std::vector<ParsedDevice> devices;
     std::set<std::wstring> seen;
     const std::wregex endpointPattern(LR"(\(([^()\s]+-Gr-\d+\.\d+)\))");
+    const std::wregex serverPattern(
+        LR"(^\s*([^()\s]+-Gr-\d+)\s+\(((?:\d{1,3}\.){3}\d{1,3})(?::\d+)?\)\s*$)",
+        std::regex_constants::icase);
+    std::map<std::wstring, std::wstring> serverAddresses;
+
+    size_t serverLineStart = 0;
+    while (serverLineStart <= text.size()) {
+        const size_t serverLineEnd = text.find_first_of(L"\r\n", serverLineStart);
+        const std::wstring serverLine = text.substr(serverLineStart,
+            serverLineEnd == std::wstring::npos ? std::wstring::npos : serverLineEnd - serverLineStart);
+        serverLineStart = serverLineEnd == std::wstring::npos ? text.size() + 1 : serverLineEnd + 1;
+
+        std::wsmatch serverMatch;
+        if (std::regex_match(serverLine, serverMatch, serverPattern) && serverMatch.size() >= 3) {
+            serverAddresses.emplace(lowerCopy(serverMatch[1].str()), serverMatch[2].str());
+        }
+    }
 
     size_t lineStart = 0;
     while (lineStart <= text.size()) {
@@ -158,6 +176,13 @@ std::vector<ParsedDevice> DeviceParser::parseList(const std::wstring& text) {
         device.nickname = nickname;
         device.inUseBy = readListUsage(line);
         device.listLine = trim(line);
+        const size_t deviceSeparator = endpoint.find_last_of(L'.');
+        if (deviceSeparator != std::wstring::npos) {
+            const auto server = serverAddresses.find(lowerCopy(endpoint.substr(0, deviceSeparator)));
+            if (server != serverAddresses.end()) {
+                device.serverAddress = server->second;
+            }
+        }
         devices.push_back(device);
     }
 

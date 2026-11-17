@@ -18,8 +18,8 @@ using System.Windows.Forms;
 
 [assembly: AssemblyTitle("DistControl Central Admin")]
 [assembly: AssemblyProduct("DistControl")]
-[assembly: AssemblyVersion("0.8.8.0")]
-[assembly: AssemblyFileVersion("0.8.8.0")]
+[assembly: AssemblyVersion("0.8.9.0")]
+[assembly: AssemblyFileVersion("0.8.9.0")]
 
 namespace DistControl.CentralAdmin
 {
@@ -903,7 +903,8 @@ namespace DistControl.CentralAdmin
                 string adminExe = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "DistControl.Admin.exe");
                 if (!File.Exists(adminExe)) throw new FileNotFoundException("Рядом с центральной консолью нет DistControl.Admin.exe.", adminExe);
 
-                ProcessStartInfo start = new ProcessStartInfo(adminExe, "--policy \"" + policyPath + "\"");
+                ProcessStartInfo start = new ProcessStartInfo(adminExe,
+                    BuildPolicyEditorArguments(policyPath, client.MachineName, client.UserName));
                 start.UseShellExecute = true;
                 Process process = Process.Start(start);
                 SetBusy(true, "Ожидаем завершения редактирования доступов и VPN…");
@@ -997,6 +998,13 @@ namespace DistControl.CentralAdmin
                 Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(directory);
             return directory;
+        }
+
+        private static string BuildPolicyEditorArguments(string policyPath, string machineName, string userName)
+        {
+            return "--policy \"" + (policyPath ?? "").Replace("\"", "") +
+                "\" --computer \"" + (machineName ?? "").Replace("\"", "") +
+                "\" --target-user \"" + (userName ?? "").Replace("\"", "") + "\"";
         }
 
         private static void TryDeletePolicyEditSession(string directory)
@@ -1507,12 +1515,15 @@ namespace DistControl.CentralAdmin
 
         private ClientSummary SelectedClient()
         {
-            if (clientsGrid.CurrentRow == null)
+            DataGridViewRow selectedRow = clientsGrid.SelectedRows.Count == 1
+                ? clientsGrid.SelectedRows[0]
+                : clientsGrid.CurrentRow;
+            if (selectedRow == null)
             {
                 MessageBox.Show(this, "Выберите компьютер на вкладке «Компьютеры».", "DistControl", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return null;
             }
-            string id = Convert.ToString(clientsGrid.CurrentRow.Cells["Id"].Value);
+            string id = Convert.ToString(selectedRow.Cells["Id"].Value);
             return clients.FirstOrDefault(delegate(ClientSummary c) { return c.Id == id; });
         }
 

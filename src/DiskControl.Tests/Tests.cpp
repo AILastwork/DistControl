@@ -762,7 +762,11 @@ void testParseList() {
     require(devices.size() == 2, "parseList should return unique endpoints.");
     require(devices[0].endpoint == L"OFFICE-HUB-Gr-1.3", "Unexpected first endpoint.");
     require(devices[0].nickname == L"KeyOne", "LIST nickname should be parsed without DEVICE INFO.");
+    require(devices[0].serverAddress == L"192.168.1.10",
+        "USB server IPv4 address should be associated with its tokens.");
     require(devices[1].endpoint == L"OFFICE-HUB-Gr-1.4", "Unexpected second endpoint.");
+    require(devices[1].serverAddress == L"192.168.1.10",
+        "All tokens in a USB server group should keep its IPv4 address.");
 
     const std::wstring occupiedSample =
         L"--> Token A (OFFICE-HUB-Gr-1.5) (In-use by:d.karev (d.karev) at 10.14.32.148 (WRK-114))\n";

@@ -23,6 +23,7 @@ struct UserProfileEntry {
 
 class MainWindow {
 public:
+    void setPolicyEditContext(std::wstring computerName, std::wstring userName);
     bool create(HINSTANCE instance, int showCommand);
 
 private:
@@ -207,6 +208,9 @@ private:
     bool adminAccessLoaded_ = false;
     bool adminAccessDirty_ = false;
     bool suppressAdminUserChange_ = false;
+    bool externalPolicyEdit_ = false;
+    std::wstring externalComputerName_;
+    std::wstring externalUserName_;
     int sortColumn_ = 0;
     bool sortAscending_ = true;
 #ifdef DISKCONTROL_ADMIN

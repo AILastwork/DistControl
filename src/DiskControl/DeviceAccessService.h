@@ -28,6 +28,8 @@ struct DeviceViewModel {
     std::wstring infoInUseBy;
     // UTC start of the current usage period (FILETIME ticks), 0 when unknown.
     unsigned long long usageStartedFileTime = 0;
+    // IPv4 address reported by dkclient for the USB server owning this token.
+    std::wstring serverAddress;
 };
 
 // True when the token's LIST line is identical to the one previously read

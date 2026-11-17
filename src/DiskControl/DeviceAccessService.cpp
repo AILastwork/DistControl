@@ -254,7 +254,7 @@ void throwIfCommandFailed(const std::wstring& response, const char* action) {
 
 DeviceViewModel toViewModel(const ParsedDevice& device, bool allowed, std::wstring usageStartedAt = {}) {
     const DeviceUsageInfo usage = DeviceParser::parseUsage(device.inUseBy, PolicyManager::currentUserName());
-    return {
+    DeviceViewModel result = {
         device.endpoint,
         device.nickname,
         device.product,
@@ -267,15 +267,19 @@ DeviceViewModel toViewModel(const ParsedDevice& device, bool allowed, std::wstri
         L"",
         allowed
     };
+    result.serverAddress = device.serverAddress;
+    return result;
 }
 
 ParsedDevice toParsedDevice(const DeviceViewModel& device) {
-    return {
+    ParsedDevice result = {
         device.endpoint,
         device.nickname,
         device.product,
         device.inUseBy
     };
+    result.serverAddress = device.serverAddress;
+    return result;
 }
 
 std::wstring endpointListForAudit(const std::vector<DeviceViewModel>& devices) {

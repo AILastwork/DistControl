@@ -1038,7 +1038,7 @@ bool matchesSearch(const DeviceViewModel& device, const std::wstring& query) {
 }
 
 std::wstring endpointGroupName(const std::wstring& endpoint);
-std::wstring adminEndpointGroupName(const std::wstring& endpoint);
+std::wstring adminEndpointGroupName(const DeviceViewModel& device);
 std::wstring adminRemainingText(const DeviceViewModel& device);
 void updateAdminListTimers(HWND listView, const std::vector<DeviceViewModel>& devices);
 
@@ -1216,7 +1216,7 @@ void populateGroupedDeviceList(HWND listView, const std::vector<DeviceViewModel>
     std::map<std::wstring, int> groupIds;
     int nextGroupId = 1;
     for (const DeviceViewModel& device : devices) {
-        const std::wstring groupName = adminEndpointGroupName(device.endpoint);
+        const std::wstring groupName = adminEndpointGroupName(device);
         if (groupIds.find(groupName) != groupIds.end()) {
             continue;
         }
@@ -1233,7 +1233,7 @@ void populateGroupedDeviceList(HWND listView, const std::vector<DeviceViewModel>
 
     for (size_t i = 0; i < devices.size(); ++i) {
         const DeviceViewModel& device = devices[i];
-        const std::wstring groupName = adminEndpointGroupName(device.endpoint);
+        const std::wstring groupName = adminEndpointGroupName(device);
         LVITEMW item{};
         item.mask = LVIF_TEXT | LVIF_GROUPID;
         item.iItem = static_cast<int>(i);
@@ -1737,8 +1737,8 @@ std::wstring endpointGroupName(const std::wstring& endpoint) {
     return endpoint.substr(0, dot);
 }
 
-std::wstring adminEndpointGroupName(const std::wstring& endpoint) {
-    const std::wstring lowered = lowerCopy(endpoint);
+std::wstring adminEndpointGroupName(const DeviceViewModel& device) {
+    const std::wstring lowered = lowerCopy(device.endpoint);
     std::wstring hubType = L"USB";
     if (lowered.find(L"usb64") != std::wstring::npos) {
         hubType = L"USB 64";
@@ -1750,7 +1750,10 @@ std::wstring adminEndpointGroupName(const std::wstring& endpoint) {
         hubType = L"USB 16";
     }
 
-    return hubType + L" - " + endpointGroupName(endpoint);
+    if (!device.serverAddress.empty()) {
+        return device.serverAddress + L" - " + hubType;
+    }
+    return L"Адрес неизвестен - " + hubType + L" - " + endpointGroupName(device.endpoint);
 }
 
 std::wstring adminRemainingText(const DeviceViewModel& device) {
@@ -1860,6 +1863,12 @@ HIMAGELIST createTreeImageList() {
     }
     return images;
 }
+}
+
+void MainWindow::setPolicyEditContext(std::wstring computerName, std::wstring userName) {
+    externalPolicyEdit_ = true;
+    externalComputerName_ = std::move(computerName);
+    externalUserName_ = std::move(userName);
 }
 
 bool MainWindow::create(HINSTANCE instance, int showCommand) {
@@ -2366,11 +2375,15 @@ void MainWindow::createControls() {
         hwnd_, controlId(IDC_DIAGNOSTICS), instance_, nullptr);
     assignUserLabel_ = CreateWindowW(L"STATIC", L"Пользователь:", adminActionStyle | SS_LEFTNOWORDWRAP,
         0, 0, 0, 0, hwnd_, nullptr, instance_, nullptr);
-    assignUserEdit_ = CreateWindowExW(WS_EX_CLIENTEDGE, L"COMBOBOX", PolicyManager::currentUserName().c_str(),
+    const std::wstring initialAdminUser = externalPolicyEdit_ && !externalUserName_.empty()
+        ? externalUserName_ : PolicyManager::currentUserName();
+    const std::wstring initialComputer = externalPolicyEdit_ && !externalComputerName_.empty()
+        ? externalComputerName_ : currentComputerName();
+    assignUserEdit_ = CreateWindowExW(WS_EX_CLIENTEDGE, L"COMBOBOX", initialAdminUser.c_str(),
         adminActionStyle | CBS_DROPDOWN | CBS_AUTOHSCROLL | WS_VSCROLL, 0, 0, 0, 0, hwnd_, nullptr, instance_, nullptr);
     computerLabel_ = CreateWindowW(L"STATIC", L"Компьютер:", adminActionStyle | SS_LEFTNOWORDWRAP,
         0, 0, 0, 0, hwnd_, nullptr, instance_, nullptr);
-    computerEdit_ = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", currentComputerName().c_str(),
+    computerEdit_ = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", initialComputer.c_str(),
         adminActionStyle | ES_AUTOHSCROLL, 0, 0, 0, 0, hwnd_, controlId(IDC_COMPUTER), instance_, nullptr);
     loadComputerButton_ = CreateWindowW(L"BUTTON", L"Загрузить", adminActionStyle, 0, 0, 0, 0,
         hwnd_, controlId(IDC_LOAD_COMPUTER), instance_, nullptr);
@@ -2407,7 +2420,14 @@ void MainWindow::createControls() {
         WS_CHILD | PBS_SMOOTH | PBS_MARQUEE, 0, 0, 0, 0, hwnd_, nullptr, instance_, nullptr);
     SendMessageW(refreshProgressBar_, PBM_SETRANGE32, 0, 100);
 
-    if (kAdminBuild) {
+    if (kAdminBuild && externalPolicyEdit_) {
+        ComboBox_AddString(assignUserEdit_, initialAdminUser.c_str());
+        EnableWindow(assignUserEdit_, FALSE);
+        EnableWindow(computerEdit_, FALSE);
+        EnableWindow(loadComputerButton_, FALSE);
+        EnableWindow(openPolicyButton_, FALSE);
+    }
+    else if (kAdminBuild) {
         loadProfilesForComputer(currentComputerName());
     }
 
@@ -2751,19 +2771,19 @@ void MainWindow::setMainControlsEnabled(bool enabled) {
         }
     }
     if (openPolicyButton_) {
-        EnableWindow(openPolicyButton_, value);
+        EnableWindow(openPolicyButton_, value && !externalPolicyEdit_);
     }
     if (savePolicyButton_) {
         EnableWindow(savePolicyButton_, value && adminAccessLoaded_ && adminAccessDirty_);
     }
     if (computerEdit_) {
-        EnableWindow(computerEdit_, value);
+        EnableWindow(computerEdit_, value && !externalPolicyEdit_);
     }
     if (assignUserEdit_) {
-        EnableWindow(assignUserEdit_, value);
+        EnableWindow(assignUserEdit_, value && !externalPolicyEdit_);
     }
     if (loadComputerButton_) {
-        EnableWindow(loadComputerButton_, value);
+        EnableWindow(loadComputerButton_, value && !externalPolicyEdit_);
     }
     if (searchEdit_) {
         EnableWindow(searchEdit_, value);

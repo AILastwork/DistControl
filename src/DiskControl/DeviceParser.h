@@ -10,6 +10,8 @@ struct ParsedDevice {
     std::wstring inUseBy;
     // Trimmed LIST line, including usage markers; empty when not read from LIST.
     std::wstring listLine;
+    // IPv4 address reported by dkclient for the USB server owning this endpoint.
+    std::wstring serverAddress;
 };
 
 struct DeviceUsageInfo {

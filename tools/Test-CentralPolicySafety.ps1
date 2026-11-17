@@ -41,6 +41,16 @@ if ($summary.BeforeCount -ne 24 -or $summary.AfterCount -ne 165 -or
 }
 
 $createSession = $formType.GetMethod("CreatePolicyEditSessionDirectory", $flags)
+$buildEditorArguments = $formType.GetMethod("BuildPolicyEditorArguments", $flags)
+$editorArguments = $buildEditorArguments.Invoke($null, @(
+    [string]'C:\Temp\WRK-380 policy\allow.json',
+    [string]'WRK-380',
+    [string]'OSNOVA\o.ponomarenko'))
+if ($editorArguments -notmatch '--computer "WRK-380"' -or
+    $editorArguments -notmatch '--target-user "OSNOVA\\o\.ponomarenko"' -or
+    $editorArguments -notmatch '--policy "C:\\Temp\\WRK-380 policy\\allow\.json"') {
+    throw "Selected computer context was not passed to the policy editor."
+}
 $settingsRoot = Join-Path $env:TEMP ("DistControl-policy-session-test-" + [Guid]::NewGuid().ToString("N"))
 $settingsPath = Join-Path $settingsRoot "settings.json"
 [IO.Directory]::CreateDirectory($settingsRoot) | Out-Null
