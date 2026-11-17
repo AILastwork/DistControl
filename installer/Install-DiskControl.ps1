@@ -22,6 +22,7 @@ param(
     [string]$VpnTokenIdentity = $env:DISKCONTROL_VPN_TOKEN,
     [string]$VpnProfilesFile = $env:DISKCONTROL_VPN_PROFILES_FILE,
     [string]$CentralServerUrl = $env:DISTCONTROL_SERVER_URL,
+    [string]$DkClientMode = $env:DISTCONTROL_DKCLIENT_MODE,
     [securestring]$ServicePassword,
     [switch]$SkipBuild,
     [switch]$NoStartService,
@@ -49,6 +50,7 @@ $UsageStatePath = Join-Path $UsageStateRoot "usage.json"
 $LogsDir = Join-Path $ProgramDataDir "logs"
 $InstallerDir = Join-Path $InstallDir "installer"
 $AgentServiceName = "DistControlAgent"
+$InteractiveDkClientTaskName = "DistControl Interactive dkclient"
 $AgentConfigPath = Join-Path $InstallDir "agent.json"
 $ManagedHubRoutesPath = Join-Path $ProgramDataDir "managed-hub-routes.json"
 $EffectiveTargetUserSid = if ([string]::IsNullOrWhiteSpace($TargetUserSid)) { [Security.Principal.WindowsIdentity]::GetCurrent().User.Value } else { $TargetUserSid.Trim() }
@@ -65,6 +67,11 @@ $LegacyDistControlUninstallRegistryPath = "HKLM:\Software\Microsoft\Windows\Curr
 $script:InstallLogPath = $null
 $script:InstallWarnings = New-Object System.Collections.Generic.List[string]
 $VpnProfileId = if ([string]::IsNullOrWhiteSpace($VpnProfileIdInput)) { "" } else { $VpnProfileIdInput.Trim() }
+$DkClientMode = if ([string]::IsNullOrWhiteSpace($DkClientMode)) { "Service" } else { $DkClientMode.Trim() }
+if ($DkClientMode -notin @("Service", "InteractiveTask")) {
+    throw "Unknown dkclient mode: $DkClientMode"
+}
+$InteractiveDkClientMode = $DkClientMode -eq "InteractiveTask"
 
 function Write-InstallLogLine([string]$Message) {
     if ([string]::IsNullOrWhiteSpace($script:InstallLogPath)) {
@@ -1392,8 +1399,8 @@ function Set-DirectoryAcl {
 function Set-DkClientFilesAcl {
     $exePath = Join-Path $InstallDir "dkcl64.exe"
     $iniPath = Join-Path $InstallDir "dkcl.ini"
-    $identity = Resolve-PrivilegeIdentity "NT SERVICE\$ServiceName"
-    Write-Step "Restrict dkcl64.exe and dkcl.ini to the dkclient service SID"
+    $identity = if ($InteractiveDkClientMode) { $TargetUserAcl } else { Resolve-PrivilegeIdentity "NT SERVICE\$ServiceName" }
+    Write-Step $(if ($InteractiveDkClientMode) { "Allow the interactive user to run dkcl64.exe" } else { "Restrict dkcl64.exe and dkcl.ini to the dkclient service SID" })
     Set-ProtectedAcl $exePath @(
         "*S-1-5-18:F",
         "*S-1-5-32-544:F",
@@ -1838,6 +1845,49 @@ function Register-DkClientService {
     }
 }
 
+function Remove-DkClientInteractiveTask {
+    $task = Get-ScheduledTask -TaskName $InteractiveDkClientTaskName -ErrorAction SilentlyContinue
+    if (-not $task) {
+        return
+    }
+    Write-Step "Remove scheduled task $InteractiveDkClientTaskName"
+    if (-not $DryRun) {
+        Stop-ScheduledTask -TaskName $InteractiveDkClientTaskName -ErrorAction SilentlyContinue
+        Unregister-ScheduledTask -TaskName $InteractiveDkClientTaskName -Confirm:$false
+    }
+}
+
+function Register-DkClientInteractiveTask {
+    if ([string]::IsNullOrWhiteSpace($ServiceAccount)) {
+        throw "The interactive Windows account was not detected."
+    }
+
+    $exePath = Join-Path $InstallDir "dkcl64.exe"
+    $iniPath = Join-Path $InstallDir "dkcl.ini"
+    Remove-DkClientStartup
+    Remove-ExistingService $ServiceName
+    Stop-InstalledDkClientProcess
+    Remove-DkClientInteractiveTask
+    Set-DkClientFilesAcl
+
+    Write-Step "Create interactive dkclient task for $ServiceAccount (password is not stored)"
+    if ($DryRun) {
+        Write-Step "DRY-RUN: Register-ScheduledTask $InteractiveDkClientTaskName as $ServiceAccount"
+        return
+    }
+
+    $action = New-ScheduledTaskAction -Execute $exePath -Argument ("-n --config=`"{0}`"" -f $iniPath) -WorkingDirectory $InstallDir
+    $trigger = New-ScheduledTaskTrigger -AtLogOn -User $ServiceAccount
+    $principal = New-ScheduledTaskPrincipal -UserId $ServiceAccount -LogonType Interactive -RunLevel Limited
+    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+        -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
+    Register-ScheduledTask -TaskName $InteractiveDkClientTaskName -Action $action -Trigger $trigger `
+        -Principal $principal -Settings $settings -Description "Starts DistKontrolUSB in the signed-in user's session." -Force | Out-Null
+    Start-ScheduledTask -TaskName $InteractiveDkClientTaskName
+    Test-DkClientPipeReady $ServiceName $(if ($script:VirtualHereDriverInstalledNow) { 40 } else { 20 })
+    Write-Step "Interactive dkclient is ready under $ServiceAccount"
+}
+
 if (-not $DryRun) {
     Assert-Admin
     Assert-AbsoluteDirectoryParameter "InstallDir" $InstallDir
@@ -1899,8 +1949,21 @@ Stop-InstalledDkClientProcess
 
 Copy-RequiredFile (Join-Path $ReleaseDir "DistControl.exe") (Join-Path $InstallDir "DistControl.exe")
 Copy-RequiredFile (Join-Path $ReleaseDir "DistControl.Admin.exe") (Join-Path $InstallDir "DistControl.Admin.exe")
-Copy-RequiredFile (Join-Path $SourceRoot "build\central\DistControl.Agent.exe") (Join-Path $InstallDir "DistControl.Agent.exe")
-Copy-RequiredFile (Join-Path $SourceRoot "build\central\DistControl.Updater.exe") (Join-Path $InstallDir "DistControl.Updater.exe")
+if ($InteractiveDkClientMode) {
+    foreach ($centralFile in @("DistControl.Agent.exe", "DistControl.Updater.exe", "agent.json", "update-result.json")) {
+        $centralPath = Join-Path $InstallDir $centralFile
+        if (Test-Path -LiteralPath $centralPath) {
+            Write-Step "Remove central component from local test mode: $centralPath"
+            if (-not $DryRun) {
+                Remove-Item -LiteralPath $centralPath -Force
+            }
+        }
+    }
+}
+else {
+    Copy-RequiredFile (Join-Path $SourceRoot "build\central\DistControl.Agent.exe") (Join-Path $InstallDir "DistControl.Agent.exe")
+    Copy-RequiredFile (Join-Path $SourceRoot "build\central\DistControl.Updater.exe") (Join-Path $InstallDir "DistControl.Updater.exe")
+}
 Copy-RequiredFile (Join-Path $SourceRoot "dkcl64.exe") (Join-Path $InstallDir "dkcl64.exe")
 Copy-RequiredFile (Join-Path $SourceRoot "dkcl.ini") (Join-Path $InstallDir "dkcl.ini")
 Set-DistKontrolHubRoutes (Join-Path $SourceRoot "dkcl.ini")
@@ -1953,12 +2016,19 @@ Set-PolicyUsageStatePath
 Write-Step "VPN profiles are managed in Windows and assigned to tokens in DistControl Admin; installer does not create or update VPN connections"
 Initialize-UsageState
 Set-DirectoryAcl
-Initialize-CentralAgentConfig
 Initialize-DkClientUserProfile
 Test-UsageStateAccess
 Install-VirtualHereDriver
-Register-DkClientService
-Install-CentralAgentService
+if ($InteractiveDkClientMode) {
+    Remove-ExistingService $AgentServiceName
+    Register-DkClientInteractiveTask
+}
+else {
+    Remove-DkClientInteractiveTask
+    Initialize-CentralAgentConfig
+    Register-DkClientService
+    Install-CentralAgentService
+}
 Remove-LegacyInstallDirectory
 Remove-LegacyBranding
 Install-Shortcuts
@@ -1968,7 +2038,7 @@ Write-Step "Installation completed"
 Write-Host "InstallDir: $InstallDir"
 Write-Host "Policy:     $PolicyPath"
 Write-Host "Usage:      $UsageStatePath"
-Write-Host "Service:    $ServiceName"
+Write-Host "dkclient:   $(if ($InteractiveDkClientMode) { "interactive task for $ServiceAccount" } else { "service $ServiceName" })"
 if ($script:InstallWarnings.Count -gt 0) {
     Write-Host "Warnings:"
     foreach ($warning in $script:InstallWarnings) {

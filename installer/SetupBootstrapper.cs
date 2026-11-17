@@ -13,8 +13,13 @@ using System.Text;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
+#if INTERACTIVE_DKCLIENT_TEST
+[assembly: AssemblyTitle("DistControl Interactive Test Setup")]
+[assembly: AssemblyDescription("Passwordless interactive dkclient test installer")]
+#else
 [assembly: AssemblyTitle("DistControl Setup")]
 [assembly: AssemblyDescription("DistControl Windows installer")]
+#endif
 [assembly: AssemblyCompany("DistControl")]
 [assembly: AssemblyProduct("DistControl")]
 [assembly: AssemblyCopyright("Copyright 2026")]
@@ -24,7 +29,11 @@ using Microsoft.Win32;
 
 internal static class SetupBootstrapper
 {
+#if INTERACTIVE_DKCLIENT_TEST
+    private const string ProductName = "DistControl Interactive Test";
+#else
     private const string ProductName = "DistControl";
+#endif
     private const string DefaultUsageStateDirectory = @"\\dfs\fs\IT\soft\DistKontrol\time";
     private static readonly byte[] Marker = Encoding.ASCII.GetBytes("DKSETUP1");
 
@@ -233,7 +242,11 @@ internal static class SetupBootstrapper
                 throw new FileNotFoundException("Installer launcher not found.", launcher);
             }
 
+#if INTERACTIVE_DKCLIENT_TEST
+            ServiceCredentials credentials = PromptInteractiveTestSettings();
+#else
             ServiceCredentials credentials = PromptServiceCredentials();
+#endif
             if (credentials == null)
             {
                 return 1;
@@ -251,7 +264,11 @@ internal static class SetupBootstrapper
             }
 
             MessageBox.Show(
+#if INTERACTIVE_DKCLIENT_TEST
+                "Тестовый клиент установлен. dkcl64.exe запущен без пароля от имени пользователя активного сеанса.",
+#else
                 "Установка DistControl завершена.",
+#endif
                 ProductName + " Setup",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
@@ -282,6 +299,108 @@ internal static class SetupBootstrapper
             }
         }
     }
+
+#if INTERACTIVE_DKCLIENT_TEST
+    private static ServiceCredentials PromptInteractiveTestSettings()
+    {
+        string account = InteractiveSessionAccount();
+        if (string.IsNullOrWhiteSpace(account))
+        {
+            throw new InvalidOperationException("Не удалось определить пользователя активного сеанса Windows.");
+        }
+        UserInstallContext installContext = ResolveUserInstallContext(account);
+        ServiceCredentials credentials = null;
+
+        using (Form form = new Form())
+        {
+            form.Text = ProductName;
+            form.Width = 610;
+            form.Height = 350;
+            form.FormBorderStyle = FormBorderStyle.FixedDialog;
+            form.StartPosition = FormStartPosition.CenterScreen;
+            form.MaximizeBox = false;
+            form.MinimizeBox = false;
+            form.ShowInTaskbar = true;
+
+            Label info = new Label
+            {
+                Left = 16,
+                Top = 16,
+                Width = 560,
+                Height = 70,
+                Text = "Экспериментальный локальный режим. Сервер управления и автоматические обновления не устанавливаются. " +
+                    "DistKontrolUSB будет запускаться в текущем сеансе Windows без сохранения пароля."
+            };
+            form.Controls.Add(info);
+
+            form.Controls.Add(new Label { Left = 16, Top = 100, Width = 130, Height = 20, Text = "Пользователь" });
+            TextBox accountBox = new TextBox
+            {
+                Left = 150,
+                Top = 96,
+                Width = 420,
+                ReadOnly = true,
+                Text = account
+            };
+            form.Controls.Add(accountBox);
+
+            form.Controls.Add(new Label { Left = 16, Top = 140, Width = 130, Height = 20, Text = "Папка таймеров" });
+            TextBox usageBox = new TextBox
+            {
+                Left = 150,
+                Top = 136,
+                Width = 420,
+                Text = DefaultUsageStateDirectoryValue()
+            };
+            form.Controls.Add(usageBox);
+            form.Controls.Add(new Label
+            {
+                Left = 150,
+                Top = 166,
+                Width = 420,
+                Height = 42,
+                Text = "Можно оставить пустой: тогда таймеры сохраняются локально в профиле пользователя."
+            });
+
+            Button installButton = new Button { Left = 370, Top = 250, Width = 95, Height = 30, Text = "Установить" };
+            Button cancelButton = new Button { Left = 475, Top = 250, Width = 95, Height = 30, Text = "Отмена" };
+            form.Controls.Add(installButton);
+            form.Controls.Add(cancelButton);
+
+            installButton.Click += delegate
+            {
+                string usageStateDirectory = usageBox.Text.Trim();
+                if (!string.IsNullOrWhiteSpace(usageStateDirectory) && !Path.IsPathRooted(usageStateDirectory))
+                {
+                    MessageBox.Show("Папка таймеров должна быть полным путём.", ProductName,
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+                credentials = new ServiceCredentials
+                {
+                    Account = account,
+                    Password = string.Empty,
+                    UsageStateDirectory = usageStateDirectory,
+                    TargetUserSid = installContext.Sid,
+                    TargetProfileDirectory = installContext.ProfileDirectory,
+                    InstallDirectory = installContext.InstallDirectory,
+                    DataDirectory = installContext.DataDirectory,
+                    RoamingAppDataDirectory = installContext.RoamingAppDataDirectory,
+                    StartMenuDirectory = installContext.StartMenuDirectory,
+                    DesktopDirectory = installContext.DesktopDirectory,
+                    ServerUrl = string.Empty
+                };
+                form.DialogResult = DialogResult.OK;
+                form.Close();
+            };
+            cancelButton.Click += delegate { form.DialogResult = DialogResult.Cancel; form.Close(); };
+            form.AcceptButton = installButton;
+            form.CancelButton = cancelButton;
+            if (form.ShowDialog() != DialogResult.OK) return null;
+        }
+        return credentials;
+    }
+#endif
 
     private static ServiceCredentials PromptServiceCredentials()
     {
@@ -1097,6 +1216,9 @@ internal static class SetupBootstrapper
             startInfo.EnvironmentVariables["DISTCONTROL_START_MENU_DIR"] = credentials.StartMenuDirectory ?? string.Empty;
             startInfo.EnvironmentVariables["DISTCONTROL_DESKTOP_DIR"] = credentials.DesktopDirectory ?? string.Empty;
             startInfo.EnvironmentVariables["DISTCONTROL_SERVER_URL"] = credentials.ServerUrl ?? string.Empty;
+#if INTERACTIVE_DKCLIENT_TEST
+            startInfo.EnvironmentVariables["DISTCONTROL_DKCLIENT_MODE"] = "InteractiveTask";
+#endif
         }
 
         try

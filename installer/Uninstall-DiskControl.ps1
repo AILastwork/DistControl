@@ -24,6 +24,7 @@ $EffectiveTargetUserSid = if ([string]::IsNullOrWhiteSpace($TargetUserSid)) { [S
 $UninstallRegistryPath = "Registry::HKEY_USERS\$EffectiveTargetUserSid\Software\Microsoft\Windows\CurrentVersion\Uninstall\DistControl"
 $ClientStartupShortcut = Join-Path (Split-Path -Parent $UserStartMenuDir) "Startup\DistControl dkclient.lnk"
 $AgentServiceName = "DistControlAgent"
+$InteractiveDkClientTaskName = "DistControl Interactive dkclient"
 $LogsDir = Join-Path $ProgramDataDir "logs"
 $ManagedHubRoutesPath = Join-Path $ProgramDataDir "managed-hub-routes.json"
 $script:UninstallLogPath = $null
@@ -318,6 +319,15 @@ foreach ($serviceToRemove in @($AgentServiceName, $ServiceName)) {
     Write-Step "Delete service $serviceToRemove"
     Invoke-External "sc.exe" @("delete", $serviceToRemove)
     Start-Sleep -Milliseconds 500
+}
+
+$interactiveTask = Get-ScheduledTask -TaskName $InteractiveDkClientTaskName -ErrorAction SilentlyContinue
+if ($interactiveTask) {
+    Write-Step "Remove scheduled task $InteractiveDkClientTaskName"
+    if (-not $DryRun) {
+        Stop-ScheduledTask -TaskName $InteractiveDkClientTaskName -ErrorAction SilentlyContinue
+        Unregister-ScheduledTask -TaskName $InteractiveDkClientTaskName -Confirm:$false
+    }
 }
 
 Stop-InstalledDkClientProcess
