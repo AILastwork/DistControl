@@ -23,6 +23,11 @@ constexpr const wchar_t* kAppTitle = L"DistControl Admin";
 constexpr const wchar_t* kAppTitle = L"DistControl";
 #endif
 
+#ifndef DISKCONTROL_ADMIN
+constexpr const wchar_t* kInteractiveClientMutex = L"Local\\DistControl.InteractiveClient";
+constexpr const wchar_t* kClientWindowClass = L"DistControlMainWindow";
+#endif
+
 struct CommandLineOptions {
     std::wstring policyPath;
     std::wstring computerName;
@@ -178,6 +183,27 @@ void showFatalError(const std::wstring& message, const std::wstring& logPath) {
     MessageBoxW(nullptr, text.c_str(), kAppTitle, MB_ICONERROR | MB_OK);
 }
 
+#ifndef DISKCONTROL_ADMIN
+void activateExistingClientWindow() {
+    // The first process may still be creating its window when the second one
+    // observes the mutex, so give it a short moment to become visible.
+    for (int attempt = 0; attempt < 20; ++attempt) {
+        HWND window = FindWindowW(kClientWindowClass, nullptr);
+        if (window) {
+            if (IsIconic(window)) {
+                ShowWindow(window, SW_RESTORE);
+            }
+            else {
+                ShowWindow(window, SW_SHOW);
+            }
+            SetForegroundWindow(window);
+            return;
+        }
+        Sleep(100);
+    }
+}
+#endif
+
 CommandLineOptions parseCommandLine() {
     int argc = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
@@ -256,6 +282,15 @@ int runApplication(HINSTANCE instance, int showCommand) {
             return 2;
         }
     }
+
+#ifndef DISKCONTROL_ADMIN
+    HANDLE interactiveClientMutex = CreateMutexW(nullptr, TRUE, kInteractiveClientMutex);
+    if (interactiveClientMutex && GetLastError() == ERROR_ALREADY_EXISTS) {
+        activateExistingClientWindow();
+        CloseHandle(interactiveClientMutex);
+        return 0;
+    }
+#endif
     const std::wstring startupOperation = AuditLogger::createOperationId(L"APP");
     AuditLogger::trace(startupOperation,
         std::wstring(L"Запуск приложения «") + kAppTitle + L"». Командная строка: " + GetCommandLineW());
@@ -279,6 +314,11 @@ int runApplication(HINSTANCE instance, int showCommand) {
             L"Главное окно создать не удалось. GetLastError=" + std::to_wstring(GetLastError()) + L".");
         const std::wstring logPath = appendStartupLog(std::wstring(kAppTitle) + L" failed to create main window. GetLastError=" + std::to_wstring(GetLastError()));
         showFatalError(L"Не удалось открыть окно DistControl. Перезапустите приложение, а если ошибка повторится, отправьте администратору файл журнала.", logPath);
+#ifndef DISKCONTROL_ADMIN
+        if (interactiveClientMutex) {
+            CloseHandle(interactiveClientMutex);
+        }
+#endif
         return 1;
     }
     AuditLogger::trace(startupOperation,
@@ -293,6 +333,11 @@ int runApplication(HINSTANCE instance, int showCommand) {
     const int exitCode = static_cast<int>(message.wParam);
     AuditLogger::trace(startupOperation,
         L"Приложение завершает работу. Код выхода: " + std::to_wstring(exitCode) + L".");
+#ifndef DISKCONTROL_ADMIN
+    if (interactiveClientMutex) {
+        CloseHandle(interactiveClientMutex);
+    }
+#endif
     return exitCode;
 }
 }
