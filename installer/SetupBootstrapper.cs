@@ -18,8 +18,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("DistControl")]
 [assembly: AssemblyProduct("DistControl")]
 [assembly: AssemblyCopyright("Copyright 2026")]
-[assembly: AssemblyVersion("0.8.10.0")]
-[assembly: AssemblyFileVersion("0.8.10.0")]
+[assembly: AssemblyVersion("0.8.11.0")]
+[assembly: AssemblyFileVersion("0.8.11.0")]
 [assembly: ComVisible(false)]
 
 internal static class SetupBootstrapper

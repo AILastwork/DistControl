@@ -788,6 +788,12 @@ void testParseList() {
     require(occupiedDevices[0].inUseBy == L"d.karev (d.karev) at 10.14.32.148 (WRK-114)",
         "LIST In-use by value should be preserved.");
 
+    const auto ownDevices = DeviceParser::parseList(
+        L"--> Own token (OFFICE-HUB-Gr-1.6) (In-use by you)\r\n");
+    require(ownDevices.size() == 1 && ownDevices[0].inUseBy == L"you" &&
+        DeviceParser::parseUsage(ownDevices[0].inUseBy, L"OSNOVA\\a.nikitin").isUsedByCurrentUser,
+        "LIST 'In-use by you' form should be recognized for forced disconnect.");
+
     const auto autoUseDevices = DeviceParser::parseList(
         L"* --> Auto Key (OFFICE-HUB-Gr-1.7)\n");
     require(autoUseDevices.size() == 1 && autoUseDevices[0].nickname == L"Auto Key",

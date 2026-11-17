@@ -110,7 +110,7 @@ bool isSystemUsage(const std::wstring& inUseBy) {
 }
 
 std::wstring readListUsage(const std::wstring& line) {
-    const std::wregex inUsePattern(LR"(\(\s*In-use\s+by\s*:\s*(.*)\)\s*$)", std::regex_constants::icase);
+    const std::wregex inUsePattern(LR"(\(\s*In-use\s+by\s*:?\s*(.*)\)\s*$)", std::regex_constants::icase);
     std::wsmatch match;
     if (std::regex_search(line, match, inUsePattern) && match.size() >= 2) {
         return trim(match[1].str());

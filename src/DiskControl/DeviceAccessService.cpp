@@ -1265,6 +1265,20 @@ std::wstring DeviceAccessService::forceDisconnectLocalTokens(const std::wstring&
         throw std::runtime_error("Some local tokens could not be verified or disconnected. Released: " +
             std::to_string(released) + ", errors: " + std::to_string(failures) + ".");
     }
+    const std::wstring verificationResponse = ipc.issueCommand(L"LIST", kVpnRecoveryCommandTimeoutMs);
+    throwIfCommandFailed(verificationResponse, "LIST");
+    size_t stillActive = 0;
+    for (const ParsedDevice& device : DeviceParser::parseList(verificationResponse)) {
+        const DeviceUsageInfo usage = DeviceParser::parseUsage(device.inUseBy, userName);
+        if (usage.isUsedByCurrentUser &&
+            (usage.locationText.empty() || equalsIgnoreCase(usage.locationText, currentComputer))) {
+            ++stillActive;
+        }
+    }
+    if (stillActive > 0) {
+        throw std::runtime_error("Forced disconnect verification failed. Active local tokens remaining: " +
+            std::to_string(stillActive) + ".");
+    }
     return released == 0
         ? L"Активных токенов этого пользователя на компьютере не найдено."
         : L"Принудительно отключено токенов: " + std::to_wstring(released) + L".";
