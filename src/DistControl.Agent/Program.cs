@@ -14,8 +14,8 @@ using System.Web.Script.Serialization;
 
 [assembly: AssemblyTitle("DistControl Central Agent")]
 [assembly: AssemblyProduct("DistControl")]
-[assembly: AssemblyVersion("0.8.14.0")]
-[assembly: AssemblyFileVersion("0.8.14.0")]
+[assembly: AssemblyVersion("0.8.15.0")]
+[assembly: AssemblyFileVersion("0.8.15.0")]
 
 namespace DistControl.Agent
 {

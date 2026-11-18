@@ -15,11 +15,17 @@ MSI запускает тот же установщик DistControl, котор�
 интерактивного окна. Если установка не завершилась, MSI откатывается и его можно запустить
 повторно.
 
-Устанавливайте MSI интерактивно из сеанса целевого пользователя с подтверждением
-прав администратора:
+Для ручной установки запустите MSI из сеанса целевого пользователя. Пакет также поддерживает
+скрытую установку в активном сеансе пользователя, в том числе через политику:
 
 ```powershell
-msiexec.exe /i .\DistControl-Client-0.8.14.msi
+msiexec.exe /i .\DistControl-Client-0.8.15.msi
+```
+
+Скрытая установка:
+
+```powershell
+msiexec.exe /i .\DistControl-Client-0.8.15.msi /qn /norestart
 ```
 
 ## Сборка с другими адресами
@@ -34,8 +40,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\installer\Build-MsiPac
 
 Результат появится в `dist`:
 
-- `DistControl-Client-0.8.14.msi`;
-- `DistControl-Client-0.8.14.msi.sha256`.
+- `DistControl-Client-0.8.15.msi`;
+- `DistControl-Client-0.8.15.msi.sha256`.
 
 WiX Toolset загружается автоматически в `build\tools` и не устанавливается в
 Windows. Для сборки без повторной компиляции приложения добавьте `-SkipBuild`.

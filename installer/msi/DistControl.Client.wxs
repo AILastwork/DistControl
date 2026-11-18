@@ -20,9 +20,6 @@
     <MediaTemplate EmbedCab="yes" />
     <Property Id="ARPNOMODIFY" Value="1" />
     <Property Id="ARPNOREPAIR" Value="1" />
-    <Condition Message="Запустите MSI интерактивно из сеанса пользователя, для которого устанавливается DistControl.">
-      Installed OR UILevel &gt;= 3
-    </Condition>
 
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="ProgramFiles64Folder">

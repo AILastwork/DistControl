@@ -39,7 +39,7 @@ try {
 catch {
 }
 $ProductName = "DistControl"
-$ProductVersion = "0.8.14"
+$ProductVersion = "0.8.15"
 $Publisher = "DistControl"
 $SourceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $ReleaseDir = Join-Path $SourceRoot "build\x64\Release"
@@ -126,6 +126,15 @@ function Test-LocalProgramDataUsageStatePath {
         (Normalize-FullPath $UsageStatePath),
         (Normalize-FullPath $defaultUsageStatePath),
         [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Test-RunningAsLocalSystem {
+    try {
+        return [Security.Principal.WindowsIdentity]::GetCurrent().User.Value -eq "S-1-5-18"
+    }
+    catch {
+        return $false
+    }
 }
 
 function Write-InstallWarning([string]$Message) {
@@ -1296,6 +1305,11 @@ function Initialize-UsageState {
         return
     }
 
+    if ((Test-RunningAsLocalSystem) -and -not (Test-LocalProgramDataUsageStatePath)) {
+        Write-Step "Defer external usage state initialization until DistControl starts as the signed-in user: $UsageStatePath"
+        return
+    }
+
     if (Test-Path -LiteralPath $UsageStatePath) {
         Write-Step "Keep existing usage state: $UsageStatePath"
         return
@@ -1316,6 +1330,10 @@ function Test-UsageStateAccess {
         $stream.Close()
     }
     catch {
+        if ((Test-RunningAsLocalSystem) -and -not (Test-LocalProgramDataUsageStatePath)) {
+            Write-InstallWarning "LocalSystem cannot validate the external usage state file. The signed-in user will validate it when DistControl starts: $UsageStatePath"
+            return
+        }
         throw "Cannot read/write usage state file $UsageStatePath. Check network share and NTFS permissions: $($_.Exception.Message)"
     }
 }
