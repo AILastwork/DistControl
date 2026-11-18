@@ -12,6 +12,7 @@
 #include <fstream>
 #include <iomanip>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 
 #pragma comment(linker, "\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
@@ -285,10 +286,19 @@ int runApplication(HINSTANCE instance, int showCommand) {
 
 #ifndef DISKCONTROL_ADMIN
     HANDLE interactiveClientMutex = CreateMutexW(nullptr, TRUE, kInteractiveClientMutex);
-    if (interactiveClientMutex && GetLastError() == ERROR_ALREADY_EXISTS) {
+    const DWORD interactiveClientMutexError = GetLastError();
+    if ((interactiveClientMutex && interactiveClientMutexError == ERROR_ALREADY_EXISTS) ||
+        (!interactiveClientMutex && interactiveClientMutexError == ERROR_ACCESS_DENIED)) {
         activateExistingClientWindow();
-        CloseHandle(interactiveClientMutex);
+        if (interactiveClientMutex) {
+            CloseHandle(interactiveClientMutex);
+        }
         return 0;
+    }
+    if (!interactiveClientMutex) {
+        throw std::runtime_error(
+            "Cannot create the single-instance guard. Windows error " +
+            std::to_string(interactiveClientMutexError) + ".");
     }
 #endif
     const std::wstring startupOperation = AuditLogger::createOperationId(L"APP");
