@@ -10,12 +10,15 @@
 MSI запускает тот же установщик DistControl, который определяет пользователя
 активного сеанса, устанавливает программу в его профиль, регистрирует службы
 `dkclient` и `DistControlAgent`, настраивает драйвер и отправляет заявку серверу.
+Вложенный установщик кэшируется в `C:\Program Files\DistControl Installer`,
+чтобы доменные политики не блокировали его запуск из `%TEMP%`.
+Повторный запуск MSI снова открывает установщик, если первая попытка не завершилась.
 
 Устанавливайте MSI интерактивно из сеанса целевого пользователя с подтверждением
 прав администратора:
 
 ```powershell
-msiexec.exe /i .\DistControl-Client-0.8.12.msi
+msiexec.exe /i .\DistControl-Client-0.8.13.msi
 ```
 
 ## Сборка с другими адресами
@@ -30,8 +33,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\installer\Build-MsiPac
 
 Результат появится в `dist`:
 
-- `DistControl-Client-0.8.12.msi`;
-- `DistControl-Client-0.8.12.msi.sha256`.
+- `DistControl-Client-0.8.13.msi`;
+- `DistControl-Client-0.8.13.msi.sha256`.
 
 WiX Toolset загружается автоматически в `build\tools` и не устанавливается в
 Windows. Для сборки без повторной компиляции приложения добавьте `-SkipBuild`.
