@@ -23,8 +23,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("DistControl")]
 [assembly: AssemblyProduct("DistControl")]
 [assembly: AssemblyCopyright("Copyright 2026")]
-[assembly: AssemblyVersion("0.8.13.0")]
-[assembly: AssemblyFileVersion("0.8.13.0")]
+[assembly: AssemblyVersion("0.8.14.0")]
+[assembly: AssemblyFileVersion("0.8.14.0")]
 [assembly: ComVisible(false)]
 
 internal static class SetupBootstrapper
@@ -52,6 +52,9 @@ internal static class SetupBootstrapper
 
     [DllImport("Wtsapi32.dll")]
     private static extern void WTSFreeMemory(IntPtr memory);
+
+    [DllImport("Kernel32.dll")]
+    private static extern uint WTSGetActiveConsoleSessionId();
 
     private sealed class PowerShellResult
     {
@@ -226,6 +229,8 @@ internal static class SetupBootstrapper
         Application.EnableVisualStyles();
 
         string tempRoot = null;
+        ServiceCredentials credentials = null;
+        bool silentMsiInstall = HasCommandLineArgument("--msi-silent");
         try
         {
             tempRoot = Path.Combine(Path.GetTempPath(), "DistControl-Setup-" + Guid.NewGuid().ToString("N"));
@@ -242,46 +247,63 @@ internal static class SetupBootstrapper
             }
 
 #if SYSTEM_DKCLIENT_TEST
-            ServiceCredentials credentials = PromptInteractiveTestSettings();
+            credentials = PromptInteractiveTestSettings();
 #else
-            ServiceCredentials credentials = PromptManagedSystemServiceSettings();
+            credentials = silentMsiInstall
+                ? CreateManagedSystemServiceDefaults()
+                : PromptManagedSystemServiceSettings();
 #endif
             if (credentials == null)
             {
                 return 1;
             }
-            PowerShellResult result = ShowInstallProgress(launcher, tempRoot, credentials);
+            PowerShellResult result = silentMsiInstall
+                ? RunPowerShell(launcher, tempRoot, credentials, null)
+                : ShowInstallProgress(launcher, tempRoot, credentials);
             credentials.Password = string.Empty;
             if (result.ExitCode != 0)
             {
-                MessageBox.Show(
-                    BuildInstallFailureMessage(result.ExitCode, result.Output),
-                    ProductName + " Setup",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Error);
+                string failure = BuildInstallFailureMessage(result.ExitCode, result.Output);
+                WriteBootstrapLog(credentials, failure + Environment.NewLine + result.Output);
+                if (!silentMsiInstall)
+                {
+                    MessageBox.Show(
+                        failure,
+                        ProductName + " Setup",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Error);
+                }
                 return result.ExitCode;
             }
 
-            MessageBox.Show(
+            WriteBootstrapLog(credentials, "Установка DistControl завершена успешно.");
+            if (!silentMsiInstall)
+            {
+                MessageBox.Show(
 #if SYSTEM_DKCLIENT_TEST
-                "Тестовый клиент установлен. dkcl64.exe запущен как служба Windows dkclient под LocalSystem. Пароль сотрудника не требуется.",
+                    "Тестовый клиент установлен. dkcl64.exe запущен как служба Windows dkclient под LocalSystem. Пароль сотрудника не требуется.",
 #else
-                "Установка DistControl завершена.",
+                    "Установка DistControl завершена.",
 #endif
-                ProductName + " Setup",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
+                    ProductName + " Setup",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+            }
             return 0;
         }
         catch (Exception ex)
         {
-            MessageBox.Show(
-                "Не удалось завершить установку DistControl.\r\n\r\n" +
-                "Попробуйте запустить установщик от имени администратора. Если ошибка повторится, отправьте администратору текст ошибки ниже.\r\n\r\n" +
-                "Техническая причина: " + ex.Message,
-                ProductName + " Setup",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Error);
+            string failure = "Не удалось завершить установку DistControl.\r\n\r\n" +
+                "Техническая причина: " + ex.Message;
+            WriteBootstrapLog(credentials, failure + Environment.NewLine + ex);
+            if (!silentMsiInstall)
+            {
+                MessageBox.Show(
+                    failure + "\r\n\r\nОтправьте администратору журнал установки.",
+                    ProductName + " Setup",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
+            }
             return 1;
         }
         finally
@@ -296,6 +318,63 @@ internal static class SetupBootstrapper
                 {
                 }
             }
+        }
+    }
+
+    private static bool HasCommandLineArgument(string expected)
+    {
+        foreach (string argument in Environment.GetCommandLineArgs())
+        {
+            if (string.Equals(argument, expected, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static ServiceCredentials CreateManagedSystemServiceDefaults()
+    {
+        string account = InteractiveSessionAccount();
+        if (string.IsNullOrWhiteSpace(account))
+        {
+            throw new InvalidOperationException("Не удалось определить пользователя активного сеанса Windows.");
+        }
+
+        UserInstallContext installContext = ResolveUserInstallContext(account);
+        return new ServiceCredentials
+        {
+            Account = account,
+            Password = string.Empty,
+            UsageStateDirectory = DefaultUsageStateDirectoryValue(),
+            TargetUserSid = installContext.Sid,
+            TargetProfileDirectory = installContext.ProfileDirectory,
+            InstallDirectory = installContext.InstallDirectory,
+            DataDirectory = installContext.DataDirectory,
+            RoamingAppDataDirectory = installContext.RoamingAppDataDirectory,
+            StartMenuDirectory = installContext.StartMenuDirectory,
+            DesktopDirectory = installContext.DesktopDirectory,
+            ServerUrl = DefaultServerUrlValue()
+        };
+    }
+
+    private static void WriteBootstrapLog(ServiceCredentials credentials, string message)
+    {
+        try
+        {
+            string root = credentials != null && !string.IsNullOrWhiteSpace(credentials.DataDirectory)
+                ? credentials.DataDirectory
+                : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "DistControlInstaller");
+            string logsDirectory = Path.Combine(root, "logs");
+            Directory.CreateDirectory(logsDirectory);
+            string path = Path.Combine(logsDirectory, "msi-setup.log");
+            File.AppendAllText(
+                path,
+                DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " " + message + Environment.NewLine,
+                new UTF8Encoding(false));
+        }
+        catch
+        {
         }
     }
 
@@ -1193,6 +1272,14 @@ internal static class SetupBootstrapper
         try
         {
             int sessionId = Process.GetCurrentProcess().SessionId;
+            if (sessionId == 0)
+            {
+                uint activeSessionId = WTSGetActiveConsoleSessionId();
+                if (activeSessionId != 0xFFFFFFFF)
+                {
+                    sessionId = unchecked((int)activeSessionId);
+                }
+            }
             string userName = QuerySessionString(sessionId, WtsInfoClass.UserName);
             if (string.IsNullOrWhiteSpace(userName))
             {

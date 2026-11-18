@@ -43,13 +43,13 @@
     <CustomAction
         Id="RunDistControlSetup"
         FileKey="DistControlSetupExe"
-        ExeCommand="--from-msi"
-        Execute="immediate"
-        Impersonate="yes"
-        Return="ignore" />
+        ExeCommand="--msi-silent"
+        Execute="deferred"
+        Impersonate="no"
+        Return="check" />
 
-    <InstallUISequence>
-      <Custom Action="RunDistControlSetup" After="ExecuteAction">NOT REMOVE~="ALL" AND NOT ACTION="ADMIN"</Custom>
-    </InstallUISequence>
+    <InstallExecuteSequence>
+      <Custom Action="RunDistControlSetup" After="InstallFiles">NOT Installed AND NOT ACTION="ADMIN"</Custom>
+    </InstallExecuteSequence>
   </Product>
 </Wix>
