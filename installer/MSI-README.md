@@ -15,7 +15,7 @@ MSI запускает тот же установщик DistControl, котор�
 прав администратора:
 
 ```powershell
-msiexec.exe /i .\DistControl-Client-0.8.11.msi
+msiexec.exe /i .\DistControl-Client-0.8.12.msi
 ```
 
 ## Сборка с другими адресами
@@ -30,8 +30,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\installer\Build-MsiPac
 
 Результат появится в `dist`:
 
-- `DistControl-Client-0.8.11.msi`;
-- `DistControl-Client-0.8.11.msi.sha256`.
+- `DistControl-Client-0.8.12.msi`;
+- `DistControl-Client-0.8.12.msi.sha256`.
 
 WiX Toolset загружается автоматически в `build\tools` и не устанавливается в
 Windows. Для сборки без повторной компиляции приложения добавьте `-SkipBuild`.

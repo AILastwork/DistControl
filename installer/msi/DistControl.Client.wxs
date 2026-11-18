@@ -42,16 +42,17 @@
       <ComponentRef Id="SetupBootstrapComponent" />
     </Feature>
 
+    <Binary Id="DistControlSetupBinary" SourceFile="$(var.SetupExePath)" />
     <CustomAction
         Id="RunDistControlSetup"
-        FileKey="DistControlSetupExe"
+        BinaryKey="DistControlSetupBinary"
         ExeCommand="--from-msi"
         Execute="immediate"
         Impersonate="yes"
         Return="check" />
 
-    <InstallExecuteSequence>
-      <Custom Action="RunDistControlSetup" After="InstallFinalize">NOT Installed AND NOT ACTION="ADMIN"</Custom>
-    </InstallExecuteSequence>
+    <InstallUISequence>
+      <Custom Action="RunDistControlSetup" Before="ExecuteAction">NOT Installed AND NOT ACTION="ADMIN"</Custom>
+    </InstallUISequence>
   </Product>
 </Wix>
