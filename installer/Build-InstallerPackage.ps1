@@ -6,6 +6,8 @@ param(
     [string]$CertificateThumbprint,
     [string]$CertificatePath,
     [string]$CertificatePassword,
+    [string]$DefaultServerUrl = "http://10.14.32.179:8765",
+    [string]$DefaultUsageStateDirectory = "\\dfs\fs\IT\soft\DistKontrol\time",
     [string]$TimestampUrl = "http://timestamp.digicert.com"
 )
 
@@ -18,6 +20,7 @@ $ZipPath = Join-Path $DistDir "DistControl-Installer.zip"
 $SetupExePath = Join-Path $DistDir "DistControl-Setup.exe"
 $SetupStubPath = Join-Path $DistDir "DistControl-Setup.stub.exe"
 $SetupSourcePath = Join-Path $PSScriptRoot "SetupBootstrapper.cs"
+$SetupDefaultsSourcePath = Join-Path $DistDir "SetupDefaults.generated.cs"
 $SetupManifestPath = Join-Path $PSScriptRoot "SetupBootstrapper.manifest"
 $UninstallExePath = Join-Path $DistDir "Uninstall-DistControl.exe"
 $UninstallSourcePath = Join-Path $PSScriptRoot "UninstallBootstrapper.cs"
@@ -95,6 +98,26 @@ function Add-FileToStream([System.IO.Stream]$Output, [string]$Path) {
     }
 }
 
+function ConvertTo-CSharpStringLiteral([string]$Value) {
+    if ($null -eq $Value) {
+        return '""'
+    }
+    return '"' + $Value.Replace('\', '\\').Replace('"', '\"').Replace("`r", '\r').Replace("`n", '\n') + '"'
+}
+
+function Write-SetupDefaultsSource {
+    $serverLiteral = ConvertTo-CSharpStringLiteral $DefaultServerUrl
+    $usageLiteral = ConvertTo-CSharpStringLiteral $DefaultUsageStateDirectory
+    $source = @"
+internal static class SetupDefaults
+{
+    public const string ServerUrl = $serverLiteral;
+    public const string UsageStateDirectory = $usageLiteral;
+}
+"@
+    [IO.File]::WriteAllText($SetupDefaultsSourcePath, $source, (New-Object Text.UTF8Encoding($false)))
+}
+
 function Build-SetupExe {
     if ($SkipSetupExe) {
         return
@@ -108,6 +131,7 @@ function Build-SetupExe {
     }
 
     $csc = Get-CSharpCompiler
+    Write-SetupDefaultsSource
     $setupOutputPath = $SetupExePath
     if (Test-Path -LiteralPath $SetupStubPath) {
         Remove-Item -LiteralPath $SetupStubPath -Force
@@ -135,6 +159,7 @@ function Build-SetupExe {
         /reference:System.IO.Compression.dll `
         /reference:System.IO.Compression.FileSystem.dll `
         $SetupSourcePath `
+        $SetupDefaultsSourcePath `
         (Join-Path $PSScriptRoot "CredentialCheck.cs")
 
     if ($LASTEXITCODE -ne 0) {
@@ -155,7 +180,7 @@ function Build-SetupExe {
         $output.Dispose()
     }
 
-    Remove-Item -LiteralPath $SetupStubPath -Force
+    Remove-Item -LiteralPath $SetupStubPath, $SetupDefaultsSourcePath -Force -ErrorAction SilentlyContinue
     Write-Host "Setup executable: $setupOutputPath"
     return $setupOutputPath
 }

@@ -68,10 +68,11 @@ $script:InstallLogPath = $null
 $script:InstallWarnings = New-Object System.Collections.Generic.List[string]
 $VpnProfileId = if ([string]::IsNullOrWhiteSpace($VpnProfileIdInput)) { "" } else { $VpnProfileIdInput.Trim() }
 $DkClientMode = if ([string]::IsNullOrWhiteSpace($DkClientMode)) { "Service" } else { $DkClientMode.Trim() }
-if ($DkClientMode -notin @("Service", "SystemService")) {
+if ($DkClientMode -notin @("Service", "SystemService", "SystemServiceLocal")) {
     throw "Unknown dkclient mode: $DkClientMode"
 }
-$SystemDkClientMode = $DkClientMode -eq "SystemService"
+$SystemDkClientMode = $DkClientMode -in @("SystemService", "SystemServiceLocal")
+$LocalOnlyMode = $DkClientMode -eq "SystemServiceLocal"
 
 function Write-InstallLogLine([string]$Message) {
     if ([string]::IsNullOrWhiteSpace($script:InstallLogPath)) {
@@ -1955,7 +1956,7 @@ Stop-InstalledDkClientProcess
 
 Copy-RequiredFile (Join-Path $ReleaseDir "DistControl.exe") (Join-Path $InstallDir "DistControl.exe")
 Copy-RequiredFile (Join-Path $ReleaseDir "DistControl.Admin.exe") (Join-Path $InstallDir "DistControl.Admin.exe")
-if ($SystemDkClientMode) {
+if ($LocalOnlyMode) {
     foreach ($centralFile in @("DistControl.Agent.exe", "DistControl.Updater.exe", "agent.json", "update-result.json")) {
         $centralPath = Join-Path $InstallDir $centralFile
         if (Test-Path -LiteralPath $centralPath) {
@@ -2025,14 +2026,20 @@ Set-DirectoryAcl
 Initialize-DkClientUserProfile
 Test-UsageStateAccess
 Install-VirtualHereDriver
+if (-not $LocalOnlyMode) {
+    Initialize-CentralAgentConfig
+}
 if ($SystemDkClientMode) {
-    Remove-ExistingService $AgentServiceName
     Register-DkClientSystemService
 }
 else {
     Remove-DkClientInteractiveTask
-    Initialize-CentralAgentConfig
     Register-DkClientService
+}
+if ($LocalOnlyMode) {
+    Remove-ExistingService $AgentServiceName
+}
+else {
     Install-CentralAgentService
 }
 Remove-LegacyInstallDirectory

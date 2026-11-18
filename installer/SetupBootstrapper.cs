@@ -34,7 +34,6 @@ internal static class SetupBootstrapper
 #else
     private const string ProductName = "DistControl";
 #endif
-    private const string DefaultUsageStateDirectory = @"\\dfs\fs\IT\soft\DistKontrol\time";
     private static readonly byte[] Marker = Encoding.ASCII.GetBytes("DKSETUP1");
 
     private enum WtsInfoClass
@@ -245,7 +244,7 @@ internal static class SetupBootstrapper
 #if SYSTEM_DKCLIENT_TEST
             ServiceCredentials credentials = PromptInteractiveTestSettings();
 #else
-            ServiceCredentials credentials = PromptServiceCredentials();
+            ServiceCredentials credentials = PromptManagedSystemServiceSettings();
 #endif
             if (credentials == null)
             {
@@ -401,6 +400,130 @@ internal static class SetupBootstrapper
         return credentials;
     }
 #endif
+
+    private static ServiceCredentials PromptManagedSystemServiceSettings()
+    {
+        string account = InteractiveSessionAccount();
+        if (string.IsNullOrWhiteSpace(account))
+        {
+            throw new InvalidOperationException("Не удалось определить пользователя активного сеанса Windows.");
+        }
+        UserInstallContext installContext = ResolveUserInstallContext(account);
+        ServiceCredentials credentials = null;
+
+        using (Form form = new Form())
+        {
+            form.Text = ProductName + " - установка клиента";
+            form.Width = 620;
+            form.Height = 390;
+            form.FormBorderStyle = FormBorderStyle.FixedDialog;
+            form.StartPosition = FormStartPosition.CenterScreen;
+            form.MaximizeBox = false;
+            form.MinimizeBox = false;
+            form.ShowInTaskbar = true;
+
+            form.Controls.Add(new Label
+            {
+                Left = 16,
+                Top = 16,
+                Width = 570,
+                Height = 58,
+                Text = "Клиент устанавливается для текущего пользователя. dkcl64.exe будет работать как служба Windows " +
+                    "dkclient под LocalSystem; пароль сотрудника не требуется."
+            });
+            form.Controls.Add(new Label { Left = 16, Top = 88, Width = 130, Height = 20, Text = "Пользователь" });
+            form.Controls.Add(new TextBox
+            {
+                Left = 150,
+                Top = 84,
+                Width = 430,
+                ReadOnly = true,
+                Text = account
+            });
+
+            form.Controls.Add(new Label { Left = 16, Top = 128, Width = 130, Height = 20, Text = "Сервер управления" });
+            TextBox serverBox = new TextBox
+            {
+                Left = 150,
+                Top = 124,
+                Width = 430,
+                Text = DefaultServerUrlValue()
+            };
+            form.Controls.Add(serverBox);
+
+            form.Controls.Add(new Label { Left = 16, Top = 168, Width = 130, Height = 20, Text = "Папка таймеров" });
+            TextBox usageBox = new TextBox
+            {
+                Left = 150,
+                Top = 164,
+                Width = 430,
+                Text = DefaultUsageStateDirectoryValue()
+            };
+            form.Controls.Add(usageBox);
+            form.Controls.Add(new Label
+            {
+                Left = 150,
+                Top = 194,
+                Width = 430,
+                Height = 58,
+                Text = "Компьютер отправит заявку на центральный сервер. Общая папка используется для отображения " +
+                    "реального пользователя токена при работе dkclient под LocalSystem."
+            });
+
+            Button installButton = new Button { Left = 380, Top = 292, Width = 95, Height = 30, Text = "Установить" };
+            Button cancelButton = new Button { Left = 485, Top = 292, Width = 95, Height = 30, Text = "Отмена" };
+            form.Controls.Add(installButton);
+            form.Controls.Add(cancelButton);
+
+            installButton.Click += delegate
+            {
+                string serverUrl = serverBox.Text.Trim();
+                Uri parsedServer;
+                if (string.IsNullOrWhiteSpace(serverUrl) ||
+                    !Uri.TryCreate(serverUrl, UriKind.Absolute, out parsedServer) ||
+                    (parsedServer.Scheme != Uri.UriSchemeHttp && parsedServer.Scheme != Uri.UriSchemeHttps))
+                {
+                    MessageBox.Show("Укажите полный адрес сервера, например http://server:8765.", ProductName,
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    serverBox.Focus();
+                    return;
+                }
+
+                string usageStateDirectory = usageBox.Text.Trim();
+                if (string.IsNullOrWhiteSpace(usageStateDirectory) ||
+                    usageStateDirectory.EndsWith(".json", StringComparison.OrdinalIgnoreCase) ||
+                    !Path.IsPathRooted(usageStateDirectory))
+                {
+                    MessageBox.Show("Укажите полный путь к общей папке таймеров, а не к файлу usage.json.", ProductName,
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    usageBox.Focus();
+                    return;
+                }
+
+                credentials = new ServiceCredentials
+                {
+                    Account = account,
+                    Password = string.Empty,
+                    UsageStateDirectory = usageStateDirectory,
+                    TargetUserSid = installContext.Sid,
+                    TargetProfileDirectory = installContext.ProfileDirectory,
+                    InstallDirectory = installContext.InstallDirectory,
+                    DataDirectory = installContext.DataDirectory,
+                    RoamingAppDataDirectory = installContext.RoamingAppDataDirectory,
+                    StartMenuDirectory = installContext.StartMenuDirectory,
+                    DesktopDirectory = installContext.DesktopDirectory,
+                    ServerUrl = serverUrl
+                };
+                form.DialogResult = DialogResult.OK;
+                form.Close();
+            };
+            cancelButton.Click += delegate { form.DialogResult = DialogResult.Cancel; form.Close(); };
+            form.AcceptButton = installButton;
+            form.CancelButton = cancelButton;
+            if (form.ShowDialog() != DialogResult.OK) return null;
+        }
+        return credentials;
+    }
 
     private static ServiceCredentials PromptServiceCredentials()
     {
@@ -1053,8 +1176,16 @@ internal static class SetupBootstrapper
     {
         string configuredDirectory = Environment.GetEnvironmentVariable("DISKCONTROL_USAGE_STATE_DIR");
         return string.IsNullOrWhiteSpace(configuredDirectory)
-            ? DefaultUsageStateDirectory
+            ? SetupDefaults.UsageStateDirectory
             : configuredDirectory.Trim();
+    }
+
+    private static string DefaultServerUrlValue()
+    {
+        string configuredUrl = Environment.GetEnvironmentVariable("DISTCONTROL_SERVER_URL");
+        return string.IsNullOrWhiteSpace(configuredUrl)
+            ? SetupDefaults.ServerUrl
+            : configuredUrl.Trim();
     }
 
     private static string InteractiveSessionAccount()
@@ -1217,6 +1348,8 @@ internal static class SetupBootstrapper
             startInfo.EnvironmentVariables["DISTCONTROL_DESKTOP_DIR"] = credentials.DesktopDirectory ?? string.Empty;
             startInfo.EnvironmentVariables["DISTCONTROL_SERVER_URL"] = credentials.ServerUrl ?? string.Empty;
 #if SYSTEM_DKCLIENT_TEST
+            startInfo.EnvironmentVariables["DISTCONTROL_DKCLIENT_MODE"] = "SystemServiceLocal";
+#else
             startInfo.EnvironmentVariables["DISTCONTROL_DKCLIENT_MODE"] = "SystemService";
 #endif
         }

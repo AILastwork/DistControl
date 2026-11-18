@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product
+      Id="*"
+      Name="DistControl Client"
+      Language="1049"
+      Codepage="1251"
+      Version="$(var.ProductVersion)"
+      Manufacturer="DistControl"
+      UpgradeCode="8E2503E8-7098-4FF1-9278-7AC5C473E0CF">
+    <Package
+        InstallerVersion="500"
+        Compressed="yes"
+        InstallScope="perMachine"
+        Platform="x64"
+        SummaryCodepage="1251"
+        Description="DistControl client installation package" />
+
+    <MajorUpgrade DowngradeErrorMessage="A newer DistControl client package is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+    <Property Id="ARPNOMODIFY" Value="1" />
+    <Property Id="ARPNOREPAIR" Value="1" />
+    <Condition Message="Запустите MSI интерактивно из сеанса пользователя, для которого устанавливается DistControl.">
+      Installed OR UILevel &gt;= 3
+    </Condition>
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="CommonAppDataFolder">
+        <Directory Id="DistControlDataFolder" Name="DistControl">
+          <Directory Id="INSTALLFOLDER" Name="MsiCache" />
+        </Directory>
+      </Directory>
+    </Directory>
+
+    <DirectoryRef Id="INSTALLFOLDER">
+      <Component Id="SetupBootstrapComponent" Guid="9FE8EE3B-3EA0-48CC-A9E5-EDECA2928C6B">
+        <File Id="DistControlSetupExe" Source="$(var.SetupExePath)" KeyPath="yes" Checksum="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <Feature Id="ProductFeature" Title="DistControl Client" Level="1">
+      <ComponentRef Id="SetupBootstrapComponent" />
+    </Feature>
+
+    <CustomAction
+        Id="RunDistControlSetup"
+        FileKey="DistControlSetupExe"
+        ExeCommand="--from-msi"
+        Execute="immediate"
+        Impersonate="yes"
+        Return="check" />
+
+    <InstallExecuteSequence>
+      <Custom Action="RunDistControlSetup" After="InstallFinalize">NOT Installed AND NOT ACTION="ADMIN"</Custom>
+    </InstallExecuteSequence>
+  </Product>
+</Wix>

@@ -36,7 +36,7 @@ Remove-Item -LiteralPath $stub, $output, $legacyOutput -Force -ErrorAction Silen
     /reference:System.Windows.Forms.dll /reference:System.Drawing.dll `
     /reference:System.Security.dll /reference:System.IO.Compression.dll `
     /reference:System.IO.Compression.FileSystem.dll `
-    $source $credentialCheck
+    $source (Join-Path $PSScriptRoot "SetupDefaults.cs") $credentialCheck
 if ($LASTEXITCODE -ne 0) {
     throw "System-service test bootstrapper build failed."
 }
