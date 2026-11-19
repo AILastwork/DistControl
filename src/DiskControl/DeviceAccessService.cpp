@@ -61,6 +61,13 @@ bool containsTechnicalText(const char* text, const char* needle) {
 std::wstring humanErrorDescription(const char* error) {
     const std::wstring technical = widenAscii(error);
     std::wstring explanation;
+    if (containsTechnicalText(error, "DEVICE MISMATCH: ")) {
+        const std::wstring prefix = L"DEVICE MISMATCH: ";
+        const size_t begin = technical.find(prefix) + prefix.size();
+        const size_t end = technical.find(L". Device", begin);
+        return L"На порту " + technical.substr(begin, end - begin) +
+            L" теперь другой токен, обратитесь к администратору";
+    }
     if (containsTechnicalText(error, "device catalog is temporarily empty")) {
         explanation = L"Служба DistKontrolUSB временно вернула пустой список устройств";
     }
@@ -269,6 +276,7 @@ DeviceViewModel toViewModel(const ParsedDevice& device, bool allowed, std::wstri
         allowed
     };
     result.serverAddress = device.serverAddress;
+    result.serial = device.serial;
     return result;
 }
 
@@ -280,6 +288,7 @@ ParsedDevice toParsedDevice(const DeviceViewModel& device) {
         device.inUseBy
     };
     result.serverAddress = device.serverAddress;
+    result.serial = device.serial;
     return result;
 }
 
@@ -300,6 +309,8 @@ std::wstring endpointListForAudit(const std::vector<DeviceViewModel>& devices) {
 }
 
 bool equalsIgnoreCase(const std::wstring& left, const std::wstring& right);
+void applyAccessEvaluation(DeviceViewModel& view, const ParsedDevice& device,
+    const std::vector<DeviceRule>& rules, const std::wstring& subjectUser);
 
 DeviceViewModel loadCurrentDevice(
     const IpcClient& ipc,
@@ -359,7 +370,10 @@ DeviceViewModel waitForDeviceAfterVpn(
                     trace.step(L"USB-концентратор снова авторизован в DistKontrolUSB.");
                 }
                 DeviceViewModel current = loadCurrentDevice(ipc, device, kVpnRecoveryCommandTimeoutMs);
-                if (!policy.isAllowed(toParsedDevice(current))) {
+                applyAccessEvaluation(current, toParsedDevice(current), policy.effectiveRules(), PolicyManager::currentUserName());
+                if (!current.allowed) {
+                    if (current.deviceMismatch) throw std::runtime_error(
+                        "DEVICE MISMATCH: " + narrowAsciiForError(current.endpoint) + ". Device is not allowed by policy.");
                     throw std::runtime_error("Device is no longer allowed by policy after VPN connection.");
                 }
                 trace.step(L"DEVICE INFO получен, доступ по политике подтверждён.");
@@ -367,6 +381,7 @@ DeviceViewModel waitForDeviceAfterVpn(
             }
         }
         catch (const std::exception& error) {
+            if (containsTechnicalText(error.what(), "DEVICE MISMATCH: ")) throw;
             lastError = error.what();
             trace.step(L"Каталог ещё не готов. " + humanErrorDescription(error.what()) + L".");
         }
@@ -427,10 +442,11 @@ bool equalsIgnoreCase(const std::wstring& left, const std::wstring& right) {
 
 bool isPotentiallyAllowedByRules(const ParsedDevice& device, const std::vector<DeviceRule>& rules) {
     for (const DeviceRule& rule : rules) {
+        if (!rule.serial.empty() && (device.serial.empty() || !equalsIgnoreCase(rule.serial, device.serial))) continue;
         if (!equalsIgnoreCase(rule.endpoint, device.endpoint)) {
             continue;
         }
-        if (!rule.nickname.empty() && !device.nickname.empty() &&
+        if (rule.strictNickname && !rule.nickname.empty() && !device.nickname.empty() &&
             !equalsIgnoreCase(rule.nickname, device.nickname)) {
             continue;
         }
@@ -445,20 +461,44 @@ bool isPotentiallyAllowedByRules(const ParsedDevice& device, const std::vector<D
 
 std::wstring vpnProfileIdForDevice(const ParsedDevice& device, const std::vector<DeviceRule>& rules) {
     for (const DeviceRule& rule : rules) {
-        if (!equalsIgnoreCase(rule.endpoint, device.endpoint)) {
-            continue;
-        }
-        if (!rule.nickname.empty() && !device.nickname.empty() &&
-            !equalsIgnoreCase(rule.nickname, device.nickname)) {
-            continue;
-        }
-        if (!rule.product.empty() && !device.product.empty() &&
-            !equalsIgnoreCase(rule.product, device.product)) {
-            continue;
-        }
-        return rule.vpnProfileId;
+        if (PolicyManager::isAllowedByRules(device, { rule })) return rule.vpnProfileId;
     }
     return {};
+}
+
+void applyAccessEvaluation(DeviceViewModel& view, const ParsedDevice& device,
+    const std::vector<DeviceRule>& rules, const std::wstring& subjectUser) {
+    const auto evaluation = PolicyManager::evaluateByRules(device, rules);
+    view.allowed = evaluation.allowed;
+    view.nicknameChanged = evaluation.nicknameChanged;
+    view.deviceMismatch = evaluation.deviceMismatch;
+    view.previousNickname = evaluation.previousNickname;
+    view.statusText = DeviceParser::parseUsage(device.inUseBy, PolicyManager::currentUserName()).statusText;
+    if (view.deviceMismatch) {
+        view.statusText = L"На порту " + device.endpoint + L" теперь другой токен, обратитесь к администратору";
+    }
+    if (view.nicknameChanged || view.deviceMismatch) {
+        AuditEvent event;
+        event.action = view.nicknameChanged ? L"NICKNAME CHANGED" : L"DEVICE MISMATCH";
+        event.endpoint = device.endpoint;
+        event.nickname = device.nickname;
+        event.product = device.product;
+        event.result = view.allowed ? L"ALLOWED" : L"DENIED";
+        event.details = L"user=" + subjectUser;
+        if (view.nicknameChanged) {
+            event.details += L"; oldNickname=" + view.previousNickname + L"; newNickname=" + device.nickname;
+        }
+        else {
+            event.details += L"; actualSerial=" + device.serial;
+            for (const DeviceRule& rule : rules) {
+                if (equalsIgnoreCase(rule.endpoint, device.endpoint) ||
+                    (!rule.serial.empty() && equalsIgnoreCase(rule.serial, device.serial))) {
+                    event.details += L"; expectedProduct=" + rule.product + L"; expectedSerial=" + rule.serial;
+                }
+            }
+        }
+        AuditLogger::logOnce(event);
+    }
 }
 
 std::wstring vpnProfileDisplayName(
@@ -848,6 +888,9 @@ bool usesSameVpn(const std::wstring& leftId, const std::wstring& rightId,
 }
 
 bool canReuseDeviceInfo(const ParsedDevice& fromList, const DeviceViewModel& previous) {
+    // LIST has neither product nor serial. A replacement may keep the same
+    // nickname, so refresh granted identities and mismatch warnings from INFO.
+    if (previous.allowed || previous.deviceMismatch || !previous.serial.empty()) return false;
     return !previous.listLine.empty() && !fromList.listLine.empty() &&
         CompareStringOrdinal(fromList.endpoint.c_str(), -1, previous.endpoint.c_str(), -1, TRUE) == CSTR_EQUAL &&
         fromList.listLine == previous.listLine;
@@ -1526,6 +1569,7 @@ std::wstring DeviceAccessService::saveVpnAssignmentsForDevices(
         assignment.endpoint = device.endpoint;
         assignment.nickname = device.nickname;
         assignment.product = device.product;
+        assignment.serial = device.serial;
         assignment.vpnProfileId = device.vpnProfileId;
         assignments.push_back(std::move(assignment));
     }
@@ -1585,6 +1629,7 @@ std::wstring DeviceAccessService::updateAccessForUser(
     for (DeviceViewModel& device : devices) {
         const ParsedDevice parsed = toParsedDevice(device);
         device.allowed = PolicyManager::isAllowedByRules(parsed, rules);
+        applyAccessEvaluation(device, parsed, rules, userName);
         device.vpnProfileId = vpnProfileIdForDevice(parsed, rules);
         device.vpnProfileDisplay = vpnProfileDisplayName(device.vpnProfileId, policy.vpnProfiles());
     }
@@ -1598,6 +1643,16 @@ std::wstring DeviceAccessService::currentUserSummary() const {
 std::wstring DeviceAccessService::currentPolicyPath() const {
     PolicyManager policy;
     return policy.configPath();
+}
+
+std::wstring DeviceAccessService::updateNicknamesFromHub(const std::vector<DeviceViewModel>& devices,
+    const std::wstring& expectedRevision) const {
+    std::vector<ParsedDevice> parsed;
+    for (const auto& device : devices) {
+        // An empty listLine means DEVICE INFO was not successfully read.
+        if (!device.listLine.empty()) parsed.push_back(toParsedDevice(device));
+    }
+    return PolicyManager().updateNicknamesFromHub(parsed, expectedRevision);
 }
 
 std::vector<DeviceViewModel> DeviceAccessService::listDevices(
@@ -1717,6 +1772,7 @@ std::vector<DeviceViewModel> DeviceAccessService::listDevices(
             if (unchanged) {
                 device.nickname = unchanged->nickname;
                 device.product = unchanged->product;
+                device.serial = unchanged->serial;
                 device.inUseBy = unchanged->infoInUseBy;
                 deviceInfoLoaded = true;
             }
@@ -1759,10 +1815,14 @@ std::vector<DeviceViewModel> DeviceAccessService::listDevices(
             const bool allowed = deviceInfoLoaded
                 ? PolicyManager::isAllowedByRules(device, activeRules)
                 : isPotentiallyAllowedByRules(device, activeRules);
+            const auto evaluation = deviceInfoLoaded
+                ? PolicyManager::evaluateByRules(device, activeRules) : DeviceAccessEvaluation{};
             const bool connectedByCurrentUser =
                 DeviceParser::parseUsage(device.inUseBy, PolicyManager::currentUserName()).isUsedByCurrentUser;
-            if (allowed || includeDenied || connectedByCurrentUser) {
+            if (allowed || includeDenied || connectedByCurrentUser || evaluation.deviceMismatch) {
                 DeviceViewModel view = toViewModel(device, allowed, usageStartedAt);
+                if (deviceInfoLoaded) applyAccessEvaluation(view, device, activeRules,
+                    policyUser.empty() ? PolicyManager::currentUserName() : policyUser);
                 view.usageStartedFileTime = usageStartedFileTime;
                 view.listLine = deviceInfoLoaded ? device.listLine : std::wstring{};
                 view.infoInUseBy = infoInUseBy;
@@ -1811,8 +1871,12 @@ DeviceViewModel DeviceAccessService::enrichAndVerify(const DeviceViewModel& devi
 
     const DeviceViewModel loaded = loadCurrentDevice(ipc, device, 3000);
     ParsedDevice current = toParsedDevice(loaded);
+    DeviceViewModel evaluated = toViewModel(current, false);
+    applyAccessEvaluation(evaluated, current, policy.effectiveRules(), PolicyManager::currentUserName());
     if (!policy.isAllowed(current)) {
         AuditLogger::logDeviceAction(L"DENY", toViewModel(current, false), L"DENIED", L"Device is not allowed by policy.");
+        if (evaluated.deviceMismatch) throw std::runtime_error(
+            "DEVICE MISMATCH: " + narrowAsciiForError(current.endpoint) + ". Device is not allowed by policy.");
         throw std::runtime_error("Device is not allowed by policy.");
     }
 

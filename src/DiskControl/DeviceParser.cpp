@@ -216,13 +216,18 @@ void DeviceParser::applyDeviceInfo(ParsedDevice& device, const std::wstring& tex
             std::regex_constants::icase);
         std::wsmatch match;
         if (std::regex_search(text, match, pattern) && match.size() >= 3) {
-            return match[2].str();
+            return trim(match[2].str());
         }
         return L"";
     };
 
     const std::wstring nickname = readField(L"NICKNAME");
     const std::wstring product = readField(L"PRODUCT");
+    // Only explicit per-device serial fields are trustworthy. In particular,
+    // VENDOR ID / PRODUCT ID identify a model, not a physical token.
+    device.serial = readField(L"SERIAL(?: NUMBER)?");
+    if (device.serial.empty()) device.serial = readField(L"SERIALNUMBER");
+    if (device.serial.empty()) device.serial = readField(L"SERIAL_NUMBER");
     if (!nickname.empty()) {
         device.nickname = nickname;
     }

@@ -23,8 +23,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("DistControl")]
 [assembly: AssemblyProduct("DistControl")]
 [assembly: AssemblyCopyright("Copyright 2026")]
-[assembly: AssemblyVersion("0.8.17.0")]
-[assembly: AssemblyFileVersion("0.8.17.0")]
+[assembly: AssemblyVersion("0.8.21.0")]
+[assembly: AssemblyFileVersion("0.8.21.0")]
 [assembly: ComVisible(false)]
 
 internal static class SetupBootstrapper
@@ -35,6 +35,7 @@ internal static class SetupBootstrapper
     private const string ProductName = "DistControl";
 #endif
     private static readonly byte[] Marker = Encoding.ASCII.GetBytes("DKSETUP1");
+    private const string MachineInstallContextRegistryPath = @"SOFTWARE\DistControl\ClientInstall";
 
     private enum WtsInfoClass
     {
@@ -116,6 +117,15 @@ internal static class SetupBootstrapper
         public string InstallDirectory;
         public string DataDirectory;
         public string RoamingAppDataDirectory;
+        public string StartMenuDirectory;
+        public string DesktopDirectory;
+    }
+
+    private sealed class MsiUninstallContext
+    {
+        public string TargetUserSid;
+        public string InstallDirectory;
+        public string DataDirectory;
         public string StartMenuDirectory;
         public string DesktopDirectory;
     }
@@ -205,6 +215,7 @@ internal static class SetupBootstrapper
             _detailsBox.ReadOnly = true;
             _detailsBox.ScrollBars = ScrollBars.Vertical;
             Controls.Add(_detailsBox);
+            DistControl.VersionFooter.AddTo(this);
         }
 
         protected override void OnShown(EventArgs e)
@@ -261,8 +272,14 @@ internal static class SetupBootstrapper
         string tempRoot = null;
         ServiceCredentials credentials = null;
         bool silentMsiInstall = HasCommandLineArgument("--msi-silent");
+        bool silentMsiUninstall = HasCommandLineArgument("--msi-uninstall");
         try
         {
+            if (silentMsiUninstall)
+            {
+                return RunMsiUninstall();
+            }
+
             tempRoot = Path.Combine(Path.GetTempPath(), "DistControl-Setup-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(tempRoot);
 
@@ -287,6 +304,11 @@ internal static class SetupBootstrapper
             {
                 return 1;
             }
+            if (silentMsiInstall && CommandLineValue("--ensure-user") == "1" && IsClientAlreadyInstalled(credentials))
+            {
+                WriteBootstrapLog(credentials, "Пользовательский клиент уже установлен; повторная установка через GPO не требуется.");
+                return 0;
+            }
             PowerShellResult result = silentMsiInstall
                 ? RunPowerShell(launcher, tempRoot, credentials, null)
                 : ShowInstallProgress(launcher, tempRoot, credentials);
@@ -307,7 +329,7 @@ internal static class SetupBootstrapper
             }
 
             WriteBootstrapLog(credentials, "Установка DistControl завершена успешно.");
-            if (!silentMsiInstall)
+            if (!silentMsiInstall && !silentMsiUninstall)
             {
                 MessageBox.Show(
 #if SYSTEM_DKCLIENT_TEST
@@ -326,7 +348,7 @@ internal static class SetupBootstrapper
             string failure = "Не удалось завершить установку DistControl.\r\n\r\n" +
                 "Техническая причина: " + ex.Message;
             WriteBootstrapLog(credentials, failure + Environment.NewLine + ex);
-            if (!silentMsiInstall)
+            if (!silentMsiInstall && !silentMsiUninstall)
             {
                 MessageBox.Show(
                     failure + "\r\n\r\nОтправьте администратору журнал установки.",
@@ -363,6 +385,19 @@ internal static class SetupBootstrapper
         return false;
     }
 
+    private static bool IsClientAlreadyInstalled(ServiceCredentials credentials)
+    {
+        using (RegistryKey key = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\DistControl\Clients\" + credentials.TargetUserSid))
+        using (RegistryKey service = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Services\DistControlAgent-" + credentials.TargetUserSid))
+        {
+            return key != null && service != null &&
+                String.Equals(RegistryString(key, "InstallDir"), credentials.InstallDirectory, StringComparison.OrdinalIgnoreCase) &&
+                File.Exists(Path.Combine(credentials.InstallDirectory, "DistControl.exe")) &&
+                File.Exists(Path.Combine(credentials.InstallDirectory, "DistControl.Agent.exe")) &&
+                File.Exists(Path.Combine(credentials.InstallDirectory, "Uninstall-DistControl.exe"));
+        }
+    }
+
     private static string CommandLineValue(string name)
     {
         string[] arguments = Environment.GetCommandLineArgs();
@@ -381,6 +416,169 @@ internal static class SetupBootstrapper
             }
         }
         return string.Empty;
+    }
+
+    private static int RunMsiUninstall()
+    {
+        string tempDirectory = Path.Combine(Path.GetTempPath(), "DistControl-MsiUninstall-" + Guid.NewGuid().ToString("N"));
+        string logDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "DistControl", "logs");
+        Directory.CreateDirectory(logDirectory);
+        string logPath = Path.Combine(logDirectory, "msi-uninstall.log");
+        try
+        {
+            // Use the current package's worker/scripts even when the installed
+            // uninstaller is missing or predates the self-lock fix.
+            Directory.CreateDirectory(tempDirectory);
+            string zip = Path.Combine(tempDirectory, "payload.zip");
+            ExtractAppendedPayload(zip);
+            ZipFile.ExtractToDirectory(zip, tempDirectory);
+            foreach (MsiUninstallContext context in ReadMsiUninstallContexts())
+            {
+                string uninstaller = Path.Combine(tempDirectory, "Uninstall-DistControl.exe");
+                StringBuilder arguments = new StringBuilder("--from-temp --silent --skip-msi-unregister");
+                AppendProcessOption(arguments, "--launcher", Path.Combine(tempDirectory, "installer", "Launch-Uninstall-DiskControl.ps1"));
+                AppendProcessOption(arguments, "--install-dir", context.InstallDirectory);
+                AppendProcessOption(arguments, "--data-dir", context.DataDirectory);
+                AppendProcessOption(arguments, "--user-sid", context.TargetUserSid);
+                AppendProcessOption(arguments, "--start-menu-dir", context.StartMenuDirectory);
+                AppendProcessOption(arguments, "--desktop-dir", context.DesktopDirectory);
+                ProcessStartInfo startInfo = new ProcessStartInfo
+                {
+                    FileName = uninstaller,
+                    Arguments = arguments.ToString(),
+                    WorkingDirectory = tempDirectory,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+                File.AppendAllText(logPath, DateTime.Now.ToString("s") + " Remove client " + context.TargetUserSid + " from " + context.InstallDirectory + Environment.NewLine);
+                using (Process process = Process.Start(startInfo))
+                {
+                    if (process == null) throw new InvalidOperationException("Не удалось запустить удалятор DistControl из MSI.");
+                    process.WaitForExit();
+                    File.AppendAllText(logPath, "Worker exit code: " + process.ExitCode + Environment.NewLine);
+                    if (process.ExitCode != 0) return process.ExitCode;
+                }
+            }
+            return 0;
+        }
+        catch (Exception error)
+        {
+            File.AppendAllText(logPath, error.ToString() + Environment.NewLine);
+            throw;
+        }
+        finally
+        {
+            try { Directory.Delete(tempDirectory, true); } catch { }
+        }
+    }
+
+    private static void AppendProcessOption(StringBuilder arguments, string name, string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return;
+        }
+        arguments.Append(' ');
+        arguments.Append(name);
+        arguments.Append(' ');
+        arguments.Append(Quote(value));
+    }
+
+    private static List<MsiUninstallContext> ReadMsiUninstallContexts()
+    {
+        List<MsiUninstallContext> contexts = new List<MsiUninstallContext>();
+        HashSet<string> owners = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        using (RegistryKey clients = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\DistControl\Clients"))
+        {
+            if (clients != null)
+                foreach (string sid in clients.GetSubKeyNames())
+                    using (RegistryKey key = clients.OpenSubKey(sid))
+                    {
+                        MsiUninstallContext context = ContextFromRegistryKey(key);
+                        if (context != null && owners.Add(context.TargetUserSid)) contexts.Add(context);
+                    }
+        }
+        using (RegistryKey key = Registry.LocalMachine.OpenSubKey(MachineInstallContextRegistryPath))
+        {
+            MsiUninstallContext context = ContextFromRegistryKey(key);
+            if (context != null && owners.Add(context.TargetUserSid)) contexts.Add(context);
+        }
+
+        // Compatibility fallback for clients installed before the machine context
+        // was introduced. Their per-user uninstall entry is available while the
+        // user's registry hive is loaded.
+        foreach (string sid in Registry.Users.GetSubKeyNames())
+        {
+            if (!sid.StartsWith("S-1-", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+            using (RegistryKey key = Registry.Users.OpenSubKey(
+                sid + @"\Software\Microsoft\Windows\CurrentVersion\Uninstall\DistControl"))
+            {
+                string installDirectory = RegistryString(key, "InstallLocation");
+                if (string.IsNullOrWhiteSpace(installDirectory) ||
+                    owners.Contains(sid))
+                {
+                    continue;
+                }
+
+                string profileDirectory = ProfileDirectoryForSid(sid);
+                contexts.Add(new MsiUninstallContext
+                {
+                    TargetUserSid = sid,
+                    InstallDirectory = installDirectory,
+                    DataDirectory = string.IsNullOrWhiteSpace(profileDirectory)
+                        ? string.Empty
+                        : Path.Combine(profileDirectory, "AppData", "Local", "DistControl"),
+                    StartMenuDirectory = string.IsNullOrWhiteSpace(profileDirectory)
+                        ? string.Empty
+                        : Path.Combine(profileDirectory, "AppData", "Roaming", "Microsoft", "Windows", "Start Menu", "Programs", "DistControl"),
+                    DesktopDirectory = string.IsNullOrWhiteSpace(profileDirectory)
+                        ? string.Empty
+                        : Path.Combine(profileDirectory, "Desktop")
+                });
+                owners.Add(sid);
+            }
+        }
+        return contexts;
+    }
+
+    private static MsiUninstallContext ContextFromRegistryKey(RegistryKey key)
+    {
+        if (key == null)
+        {
+            return null;
+        }
+        string installDirectory = RegistryString(key, "InstallDir");
+        if (string.IsNullOrWhiteSpace(installDirectory))
+        {
+            return null;
+        }
+        return new MsiUninstallContext
+        {
+            TargetUserSid = RegistryString(key, "TargetUserSid"),
+            InstallDirectory = installDirectory,
+            DataDirectory = RegistryString(key, "ProgramDataDir"),
+            StartMenuDirectory = RegistryString(key, "UserStartMenuDir"),
+            DesktopDirectory = RegistryString(key, "UserDesktopDir")
+        };
+    }
+
+    private static string RegistryString(RegistryKey key, string name)
+    {
+        object value = key == null ? null : key.GetValue(name, string.Empty, RegistryValueOptions.DoNotExpandEnvironmentNames);
+        return value == null ? string.Empty : value.ToString().Trim();
+    }
+
+    private static string ProfileDirectoryForSid(string sid)
+    {
+        using (RegistryKey key = Registry.LocalMachine.OpenSubKey(
+            @"SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\" + sid))
+        {
+            string path = RegistryString(key, "ProfileImagePath");
+            return string.IsNullOrWhiteSpace(path) ? string.Empty : Environment.ExpandEnvironmentVariables(path);
+        }
     }
 
     private static ServiceCredentials CreateManagedSystemServiceDefaults()
@@ -547,6 +745,7 @@ internal static class SetupBootstrapper
             cancelButton.Click += delegate { form.DialogResult = DialogResult.Cancel; form.Close(); };
             form.AcceptButton = installButton;
             form.CancelButton = cancelButton;
+            DistControl.VersionFooter.AddTo(form);
             if (form.ShowDialog() != DialogResult.OK) return null;
         }
         return credentials;
@@ -672,6 +871,7 @@ internal static class SetupBootstrapper
             cancelButton.Click += delegate { form.DialogResult = DialogResult.Cancel; form.Close(); };
             form.AcceptButton = installButton;
             form.CancelButton = cancelButton;
+            DistControl.VersionFooter.AddTo(form);
             if (form.ShowDialog() != DialogResult.OK) return null;
         }
         return credentials;
@@ -920,6 +1120,7 @@ internal static class SetupBootstrapper
             form.AcceptButton = okButton;
             form.CancelButton = cancelButton;
 
+            DistControl.VersionFooter.AddTo(form);
             if (form.ShowDialog() != DialogResult.OK)
             {
                 return null;
@@ -1019,6 +1220,7 @@ internal static class SetupBootstrapper
             cancelButton.Click += delegate { form.DialogResult = DialogResult.Cancel; form.Close(); };
             form.AcceptButton = okButton;
             form.CancelButton = cancelButton;
+            DistControl.VersionFooter.AddTo(form);
             form.ShowDialog();
         }
         return result;
@@ -1237,6 +1439,7 @@ internal static class SetupBootstrapper
             form.CancelButton = cancelButton;
             refreshList();
             updateEnabled();
+            DistControl.VersionFooter.AddTo(form);
             return form.ShowDialog() == DialogResult.OK;
         }
     }
@@ -1448,6 +1651,7 @@ internal static class SetupBootstrapper
     {
         using (InstallProgressForm form = new InstallProgressForm(launcher, workingDirectory, credentials))
         {
+            DistControl.VersionFooter.AddTo(form);
             form.ShowDialog();
             if (form.Error != null)
             {

@@ -14,6 +14,8 @@ struct ParsedDevice {
     std::wstring serverName;
     // IPv4 address reported by dkclient for the USB server owning this endpoint.
     std::wstring serverAddress;
+    // Per-device serial, never USB vendor/product IDs or the port address.
+    std::wstring serial;
 };
 
 struct DeviceUsageInfo {

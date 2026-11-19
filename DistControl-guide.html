@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>DistControl 0.8.17 - руководство администратора</title>
+  <title>DistControl 0.8.18 - руководство администратора</title>
   <style>
     :root {
       color-scheme: light;
@@ -326,7 +326,7 @@
   <header class="top">
     <div class="top-inner">
       <p class="eyebrow">Руководство администратора</p>
-      <h1>DistControl 0.8.17</h1>
+      <h1>DistControl 0.8.18</h1>
       <p class="lead">Установка сервера и клиентов, развёртывание через доменную GPO, управление USB-токенами и VPN, централизованные обновления, журналы, резервное копирование и перенос серверной части.</p>
       <div class="version-row">
         <span>Сервер: TCP 8765</span>
@@ -365,15 +365,15 @@
       <section id="quick-start">
         <h2>Быстрый запуск</h2>
         <ol class="steps">
-          <li><strong>Установите сервер.</strong> Запустите <code>DistControl-Server-Setup-0.8.17.exe</code> от имени администратора на постоянно включённом компьютере Windows.</li>
+          <li><strong>Установите сервер.</strong> Запустите <code>DistControl-Server-Setup-0.8.18.exe</code> от имени администратора на постоянно включённом компьютере Windows.</li>
           <li><strong>Проверьте сервер.</strong> Откройте <code>http://имя-сервера:8765/health</code>. Ответ должен подтверждать, что сервер работает.</li>
           <li><strong>Откройте центральную админку.</strong> Используйте ярлык или <code>DistControl.CentralAdmin.exe</code> под доменной учётной записью из группы <code>Domain Admins</code>.</li>
           <li><strong>Укажите USB-серверы.</strong> На вкладке «USB-серверы» сохраните адреса по одному в строке, например <code>10.14.0.71:6565</code>.</li>
-          <li><strong>Разверните клиент.</strong> Для домена используйте <code>DistControl-Client-GPO-0.8.17.msi</code> через фоновое задание GPO. Для одного компьютера можно запустить обычный установщик.</li>
+          <li><strong>Разверните клиент.</strong> Для домена используйте <code>DistControl-Client-GPO-0.8.18.msi</code> через фоновое задание GPO. Для одного компьютера можно запустить обычный установщик.</li>
           <li><strong>Разрешите заявку.</strong> Новый компьютер появится на вкладке «Заявки». После подтверждения агент получит регистрацию.</li>
           <li><strong>Назначьте токены и VPN.</strong> На вкладке «Компьютеры» выберите нужный хост и нажмите «Изменить доступы и VPN».</li>
         </ol>
-        <div class="note ok"><strong>Готовый комплект</strong>Все файлы, описанные в этой инструкции, находятся в одной папке <code>dist\CURRENT-0.8.17</code>.</div>
+        <div class="note ok"><strong>Готовый комплект</strong>Все файлы, описанные в этой инструкции, находятся в одной папке <code>dist\CURRENT-0.8.18</code>.</div>
       </section>
 
       <section id="architecture">
@@ -393,17 +393,17 @@
       </section>
 
       <section id="packages">
-        <h2>Файлы дистрибутива 0.8.17</h2>
+        <h2>Файлы дистрибутива 0.8.18</h2>
         <table>
           <thead><tr><th>Файл</th><th>Назначение</th></tr></thead>
           <tbody>
-            <tr><td><code>DistControl-Server-Setup-0.8.17.exe</code></td><td>Основной графический установщик серверной части. PowerShell вручную запускать не нужно.</td></tr>
-            <tr><td><code>DistControl-Server-0.8.17.zip</code></td><td>Резервный серверный пакет с ручными сценариями установки и удаления.</td></tr>
-            <tr><td><code>DistControl.CentralAdmin-0.8.17.exe</code></td><td>Переносимая центральная консоль. Её можно запускать на другом административном ПК.</td></tr>
-            <tr><td><code>DistControl-Setup-0.8.17.exe</code></td><td>Обычная интерактивная установка клиента на один компьютер.</td></tr>
-            <tr><td><code>DistControl-Client-GPO-0.8.17.msi</code></td><td>Пакет для фоновой установки через задание планировщика GPO.</td></tr>
-            <tr><td><code>DistControl-Client-0.8.17.msi</code></td><td>MSI для ручной тихой установки и тестов.</td></tr>
-            <tr><td><code>DistControl-Update-0.8.17.zip</code></td><td>Пакет централизованного обновления уже установленных клиентов.</td></tr>
+            <tr><td><code>DistControl-Server-Setup-0.8.18.exe</code></td><td>Основной графический установщик серверной части. PowerShell вручную запускать не нужно.</td></tr>
+            <tr><td><code>DistControl-Server-0.8.18.zip</code></td><td>Резервный серверный пакет с ручными сценариями установки и удаления.</td></tr>
+            <tr><td><code>DistControl-AdminConsole-0.8.19.zip</code></td><td>Консоль администратора с редактором доступов. Распакуйте ZIP целиком: оба EXE должны лежать рядом. Версия показана справа внизу окна.</td></tr>
+            <tr><td><code>DistControl-Setup-0.8.18.exe</code></td><td>Обычная интерактивная установка клиента на один компьютер.</td></tr>
+            <tr><td><code>DistControl-Client-GPO-0.8.18.msi</code></td><td>Пакет для фоновой установки через задание планировщика GPO.</td></tr>
+            <tr><td><code>DistControl-Client-0.8.18.msi</code></td><td>MSI для ручной тихой установки и тестов.</td></tr>
+            <tr><td><code>DistControl-Update-0.8.18.zip</code></td><td>Пакет централизованного обновления уже установленных клиентов.</td></tr>
             <tr><td><code>README-GPO.txt</code></td><td>Короткая текстовая памятка по GPO.</td></tr>
             <tr><td><code>SHA256SUMS.txt</code></td><td>Контрольные суммы дистрибутивов.</td></tr>
           </tbody>
@@ -421,7 +421,7 @@
         </ul>
         <h3>Установка</h3>
         <ol>
-          <li>Запустите <code>DistControl-Server-Setup-0.8.17.exe</code>.</li>
+          <li>Запустите <code>DistControl-Server-Setup-0.8.18.exe</code>.</li>
           <li>Подтвердите UAC.</li>
           <li>Установщик остановит предыдущую версию, обновит файлы, защитит каталог данных, создаст службу и правило брандмауэра.</li>
           <li>После сообщения об успехе проверьте службу и адрес здоровья.</li>
@@ -442,7 +442,7 @@ Invoke-RestMethod http://localhost:8765/health</code></pre>
 
       <section id="central-admin">
         <h2>Центральная админка</h2>
-        <p>Центральную консоль можно запускать на сервере или на другом административном компьютере. Установка полноценного клиента для этого не нужна: достаточно <code>DistControl.CentralAdmin-0.8.17.exe</code>, сетевой доступ к серверу и членство текущей Windows-учётной записи в <code>Domain Admins</code>.</p>
+        <p>Центральную консоль можно запускать на сервере или на другом административном компьютере. Установка полноценного клиента для этого не нужна: достаточно <code>DistControl.CentralAdmin-0.8.18.exe</code>, сетевой доступ к серверу и членство текущей Windows-учётной записи в <code>Domain Admins</code>.</p>
         <ol>
           <li>Запустите консоль под доменным администратором.</li>
           <li>В поле «Сервер» укажите <code>http://10.14.32.179:8765</code> или актуальный адрес.</li>
@@ -468,7 +468,7 @@ Invoke-RestMethod http://localhost:8765/health</code></pre>
 
       <section id="client-install">
         <h2>Установка клиента на один компьютер</h2>
-        <p>Запустите <code>DistControl-Setup-0.8.17.exe</code> в сеансе сотрудника. UAC может подтвердить администратор, но файлы приложения и политика создаются в профиле целевого пользователя.</p>
+        <p>Запустите <code>DistControl-Setup-0.8.18.exe</code> в сеансе сотрудника. UAC может подтвердить администратор, но файлы приложения и политика создаются в профиле целевого пользователя.</p>
         <ol class="steps">
           <li>Установщик определяет вошедшего пользователя и каталоги его профиля.</li>
           <li>Копирует приложение в <code>%LOCALAPPDATA%\Programs\DistControl</code> и данные в <code>%LOCALAPPDATA%\DistControl</code>.</li>
@@ -483,6 +483,10 @@ Invoke-RestMethod http://localhost:8765/health</code></pre>
 Test-NetConnection 10.14.32.179 -Port 8765
 Get-Content "$env:LOCALAPPDATA\Programs\DistControl\agent.json"</code></pre>
         <p>Обе службы должны иметь состояние <code>Running</code>. Новый компьютер должен появиться на вкладке «Заявки» центральной консоли.</p>
+        <h3>Полное удаление клиента</h3>
+        <p>Версия 0.8.18 использует единый сценарий удаления. «Программы и компоненты» и <code>msiexec /x</code> вызывают штатный удалятор, который останавливает и удаляет службы <code>dkclient</code> и <code>DistControlAgent</code>, приложение, ярлыки и управляемые маршруты. Удаление через <code>Uninstall-DistControl.exe</code> дополнительно снимает регистрацию MSI по UpgradeCode <code>{8E2503E8-7098-4FF1-9278-7AC5C473E0CF}</code>.</p>
+        <pre><code>msiexec.exe /x "DistControl-Client-0.8.18.msi" /qn /norestart /l*v C:\Windows\Temp\DistControl-uninstall.log</code></pre>
+        <div class="note"><strong>Журналы сохраняются по умолчанию</strong>Обычное удаление оставляет <code>%LOCALAPPDATA%\DistControl</code>, чтобы не потерять журналы и резервную политику. Полное удаление данных можно выбрать в отдельном EXE-удаляторе.</div>
       </section>
 
       <section id="gpo">
@@ -492,7 +496,7 @@ Get-Content "$env:LOCALAPPDATA\Programs\DistControl\agent.json"</code></pre>
 
         <h3>Подготовка</h3>
         <ol>
-          <li>Положите <code>DistControl-Client-GPO-0.8.17.msi</code> в сетевую папку, доступную компьютерам домена на чтение. Текущий пример: <code>\\dfs\fs\IT\GPO\distcontrol\</code>.</li>
+          <li>Положите <code>DistControl-Client-GPO-0.8.18.msi</code> в сетевую папку, доступную компьютерам домена на чтение. Текущий пример: <code>\\dfs\fs\IT\GPO\distcontrol\</code>.</li>
           <li>Если ранее MSI был назначен через «Конфигурация пользователя → Политики → Конфигурация программ → Установка программ», удалите назначение и выберите вариант, который <strong>не удаляет</strong> уже установленную программу.</li>
           <li>Не включайте <code>SyncForegroundPolicy=1</code> и политику «Всегда ждать сеть при запуске компьютера и входе в систему» — для фоновой схемы они не нужны.</li>
         </ol>
@@ -512,7 +516,7 @@ Get-Content "$env:LOCALAPPDATA\Programs\DistControl\agent.json"</code></pre>
             <tr><td>Параметры</td><td>Запускать при первой возможности после пропущенного запуска; если задача уже выполняется — не запускать новый экземпляр.</td></tr>
           </tbody>
         </table>
-        <pre><code>/c "sc query DistControlAgent &gt;nul 2&gt;&amp;1 || msiexec.exe /i ""\\dfs\fs\IT\GPO\distcontrol\DistControl-Client-GPO-0.8.17.msi"" /qn /norestart /l*v C:\Windows\Temp\DistControl-GPO-bootstrap.log"</code></pre>
+        <pre><code>/c "sc query DistControlAgent &gt;nul 2&gt;&amp;1 || msiexec.exe /i ""\\dfs\fs\IT\GPO\distcontrol\DistControl-Client-GPO-0.8.18.msi"" /qn /norestart /l*v C:\Windows\Temp\DistControl-GPO-bootstrap.log"</code></pre>
         <p>Условие <code>sc query DistControlAgent</code> делает задание первичным установщиком: если агент уже есть, MSI повторно не запускается. Дальнейшие версии доставляются через центральное обновление.</p>
 
         <h3>Фильтрация безопасности</h3>
@@ -581,7 +585,7 @@ Get-Service dkclient, DistControlAgent</code></pre>
       <section id="updates">
         <h2>Централизованное обновление клиентов</h2>
         <ol class="steps">
-          <li>На вкладке «Обновления» укажите версию <code>0.8.17</code> и выберите <code>DistControl-Update-0.8.17.zip</code>.</li>
+          <li>На вкладке «Обновления» укажите версию <code>0.8.18</code> и выберите <code>DistControl-Update-0.8.18.zip</code>.</li>
           <li>Нажмите «Опубликовать пакет». Сервер проверит и сохранит архив в каталоге <code>packages</code>.</li>
           <li>Выберите один или несколько компьютеров в списке обновлений.</li>
           <li>Нажмите «Назначить выбранным компьютерам».</li>
@@ -614,7 +618,7 @@ Get-Service dkclient, DistControlAgent</code></pre>
             <tr><td><code>%LOCALAPPDATA%\DistControl\logs</code></td><td>Локальные журналы приложения, аудита, запуска и установки.</td></tr>
             <tr><td><code>%LOCALAPPDATA%\DistControl\state</code></td><td>Состояние сети, использования и локальной синхронизации.</td></tr>
             <tr><td><code>%LOCALAPPDATA%\DistControl\managed-hub-routes.json</code></td><td>Маршруты /32, созданные для USB-серверов через физический шлюз.</td></tr>
-            <tr><td><code>\\dfs\fs\IT\soft\DistKontrol\time\usage.json</code></td><td>Текущий общий файл таймеров. Путь встроен в готовые установщики 0.8.17 и записывается в политику клиента.</td></tr>
+            <tr><td><code>\\dfs\fs\IT\soft\DistKontrol\time\usage.json</code></td><td>Текущий общий файл таймеров. Путь встроен в готовые установщики 0.8.18 и записывается в политику клиента.</td></tr>
             <tr><td><code>C:\Program Files\DistControl Installer</code></td><td>Кэш вложенного установщика MSI, используемый для обслуживания и удаления.</td></tr>
           </tbody>
         </table>
@@ -666,7 +670,7 @@ Invoke-RestMethod http://localhost:8765/health</code></pre>
         <p>Заранее используйте DNS-имя, например <code>http://distcontrol.osnova.local:8765</code>. При переносе меняется DNS-запись, а клиенты продолжают использовать тот же URL. Если текущие клиенты настроены на IP <code>10.14.32.179</code>, самый бесшовный вариант — передать этот IP новому серверу или временно обеспечить маршрутизацию/переадресацию.</p>
         <ol class="steps">
           <li>На старом сервере остановите <code>DistControlServer</code> и скопируйте весь <code>C:\ProgramData\DistControlServer</code>.</li>
-          <li>Установите <code>DistControl-Server-Setup-0.8.17.exe</code> на новом сервере.</li>
+          <li>Установите <code>DistControl-Server-Setup-0.8.18.exe</code> на новом сервере.</li>
           <li>Остановите новую службу <code>DistControlServer</code>.</li>
           <li>Замените новый каталог данных сохранённой копией, сохранив права доступа.</li>
           <li>Запустите службу и проверьте <code>http://новый-сервер:8765/health</code>.</li>
@@ -685,7 +689,7 @@ $config.ServerUrl = "http://distcontrol.osnova.local:8765"
 $text = $config | ConvertTo-Json -Compress
 [IO.File]::WriteAllText($path, $text, (New-Object Text.UTF8Encoding($false)))
 Restart-Service DistControlAgent</code></pre>
-        <div class="note warn"><strong>Если база сервера потеряна</strong>Старые клиентские токены больше не будут приняты. Агент 0.8.17 сбросит недействительную регистрацию и создаст новую заявку. После подтверждения компьютер снова начнёт управляться, но прежние центральные политики и история без резервной копии не восстановятся.</div>
+        <div class="note warn"><strong>Если база сервера потеряна</strong>Старые клиентские токены больше не будут приняты. Агент 0.8.18 сбросит недействительную регистрацию и создаст новую заявку. После подтверждения компьютер снова начнёт управляться, но прежние центральные политики и история без резервной копии не восстановятся.</div>
       </section>
 
       <section id="security">
@@ -793,6 +797,6 @@ Get-WinEvent -LogName System -MaxEvents 100 | Where-Object Message -match "dkcli
     </main>
   </div>
 
-  <footer>DistControl 0.8.17 · автономное руководство · внешние ресурсы для открытия не требуются</footer>
+  <footer>DistControl 0.8.18 · автономное руководство · внешние ресурсы для открытия не требуются</footer>
 </body>
 </html>

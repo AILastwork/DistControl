@@ -56,6 +56,32 @@ try {
     if (-not (Test-Path -LiteralPath (Join-Path $testDirectory "managed-hub-routes.json"))) {
         throw "Agent route synchronization did not create its state file."
     }
+    $sharedDirectory = Join-Path $testDirectory 'SharedRuntime'
+    $sharedState = Join-Path $testDirectory 'SharedState'
+    [IO.Directory]::CreateDirectory($sharedDirectory) | Out-Null
+    [IO.File]::WriteAllText((Join-Path $sharedDirectory 'dkcl.ini'), "[Settings]`r`nManualHubs=10.14.0.99:6565`r`n", [Text.Encoding]::ASCII)
+    $serviceName = 'DistControlAgent-S-1-5-21-101-102-103-1002'
+    [IO.File]::WriteAllText($configPath, (@{
+        PolicyPath = $policyPath
+        InstallDirectory = $testDirectory
+        LogsDirectory = (Join-Path $testDirectory 'logs')
+        ServiceName = $serviceName
+        DkClientDirectory = $sharedDirectory
+        RuntimeStateDirectory = $sharedState
+    } | ConvertTo-Json), [Text.Encoding]::UTF8)
+    $sharedWorker = [Activator]::CreateInstance($workerType, [object[]]@([string]$configPath))
+    $sharedWorker.Initialize()
+    if ([string]$readCurrent.Invoke($sharedWorker, $null) -ne '10.14.0.99:6565') {
+        throw 'Per-user agent read the obsolete per-profile USB configuration.'
+    }
+    $applyRoutes.Invoke($sharedWorker, $routeArguments) | Out-Null
+    if (-not (Test-Path -LiteralPath (Join-Path $sharedState 'managed-hub-routes.json'))) {
+        throw 'Per-user agent did not share route ownership with the USB runtime.'
+    }
+    $serviceType = $assembly.GetType('DistControl.Agent.AgentService', $true)
+    $service = [Activator]::CreateInstance($serviceType, [object[]]@([string]$configPath, [string]$serviceName))
+    if ($service.ServiceName -ne $serviceName) { throw 'Agent ignores its per-user Windows service name.' }
+    $service.Dispose()
     Write-Host "Agent USB server configuration tests passed."
 }
 finally {

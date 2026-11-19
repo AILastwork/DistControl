@@ -160,6 +160,7 @@ function Build-SetupExe {
         /reference:System.IO.Compression.FileSystem.dll `
         $SetupSourcePath `
         $SetupDefaultsSourcePath `
+        (Join-Path $Root "src\Shared\VersionFooter.cs") `
         (Join-Path $PSScriptRoot "CredentialCheck.cs")
 
     if ($LASTEXITCODE -ne 0) {
@@ -206,7 +207,9 @@ function Build-UninstallExe {
         "/win32manifest:$UninstallManifestPath" `
         "/out:$UninstallExePath" `
         /reference:System.Windows.Forms.dll `
-        $UninstallSourcePath
+        /reference:System.Drawing.dll `
+        $UninstallSourcePath `
+        (Join-Path $Root "src\Shared\VersionFooter.cs")
 
     if ($LASTEXITCODE -ne 0) {
         throw "Uninstall bootstrapper build failed."
@@ -272,7 +275,10 @@ New-Item -ItemType Directory -Path $DistDir -Force | Out-Null
 foreach ($relative in @(
     "install.cmd",
     "uninstall.cmd",
+    "repair-uninstall.cmd",
+    "tools\Repair-Uninstall-DistControl.ps1",
     "installer\Install-DiskControl.ps1",
+    "installer\ClientLifecycle.ps1",
     "installer\Uninstall-DiskControl.ps1",
     "installer\Launch-Install-DiskControl.ps1",
     "installer\Launch-Uninstall-DiskControl.ps1",
@@ -309,8 +315,27 @@ if (Test-Path -LiteralPath $ZipPath) {
 }
 Compress-Archive -Path (Join-Path $StageDir "*") -DestinationPath $ZipPath -Force
 
+# Self-contained recovery for machines whose cached MSI/uninstaller is broken.
+# Keep the same relative layout as the full package; no installed EXE is needed.
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$repairVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($UninstallExePath)
+$repairZip = Join-Path $DistDir ('DistControl-UninstallRepair-{0}.{1}.{2}.zip' -f $repairVersion.FileMajorPart, $repairVersion.FileMinorPart, $repairVersion.FileBuildPart)
+if (Test-Path -LiteralPath $repairZip) { Remove-Item -LiteralPath $repairZip -Force }
+$repairArchive = [IO.Compression.ZipFile]::Open($repairZip, [IO.Compression.ZipArchiveMode]::Create)
+try {
+    foreach ($relative in @('repair-uninstall.cmd', 'tools\Repair-Uninstall-DistControl.ps1',
+        'installer\ClientLifecycle.ps1', 'installer\Uninstall-DiskControl.ps1', 'installer\Launch-Uninstall-DiskControl.ps1')) {
+        [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($repairArchive, (Join-Path $StageDir $relative), $relative.Replace('\', '/')) | Out-Null
+    }
+}
+finally { $repairArchive.Dispose() }
+Write-Host "Uninstall repair package: $repairZip"
+
 Write-Host "Installer package: $ZipPath"
 $builtSetupPath = Build-SetupExe
 if ($builtSetupPath -and (Test-Path -LiteralPath $builtSetupPath)) {
     Invoke-CodeSigning -Files @($builtSetupPath)
 }
+
+& (Join-Path $Root "tools\Build-AdminConsolePackage.ps1") -SkipBuild
+if ($LASTEXITCODE -ne 0) { throw "Admin console package build failed." }

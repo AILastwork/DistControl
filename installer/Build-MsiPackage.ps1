@@ -2,7 +2,7 @@
 [CmdletBinding()]
 param(
     [switch]$SkipBuild,
-    [string]$Version = "0.8.17",
+    [string]$Version = "0.8.21",
     [string]$DefaultServerUrl = "http://10.14.32.179:8765",
     [string]$DefaultUsageStateDirectory = "\\dfs\fs\IT\soft\DistKontrol\time",
     [string]$WixVersion = "3.14.1"
@@ -25,7 +25,7 @@ $Output = Join-Path $DistDir "DistControl-Client-$Version.msi"
 $HashOutput = "$Output.sha256"
 
 if ($Version -notmatch '^\d+\.\d+\.\d+$') {
-    throw "MSI version must contain three numeric parts, for example 0.8.17."
+    throw "MSI version must contain three numeric parts, for example 0.8.21."
 }
 if ([string]::IsNullOrWhiteSpace($DefaultServerUrl)) {
     throw "DefaultServerUrl is required."

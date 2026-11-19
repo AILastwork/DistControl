@@ -18,16 +18,19 @@ DistControl Client {{VERSION}} - установка через доменную 
   3. Откройте: Конфигурация пользователя -> Настройка -> Панель управления ->
      Назначенные задания и создайте "Назначенное задание (Windows 7 и выше)".
   4. На вкладке "Общие" укажите:
-       Имя: DistControl Background Install
+       Имя: DistControl Install %LogonUserSid%
        Действие: Обновить
        Выполнять от имени: СИСТЕМА (NT AUTHORITY\SYSTEM)
        Выполнять с наивысшими правами: включено
-  5. Добавьте триггер "При входе в систему" для любого пользователя с задержкой
-     30 секунд.
+  5. Добавьте триггер "При входе в систему" для конкретного пользователя
+     %LogonDomain%\%LogonUser% с задержкой 30 секунд.
   6. Добавьте действие:
-       Программа: cmd.exe
+       Программа: msiexec.exe
        Аргументы:
-       /c "sc query DistControlAgent >nul 2>&1 || msiexec.exe /i ""{{MSI_UNC_PATH}}"" /qn /norestart /l*v C:\Windows\Temp\DistControl-GPO-bootstrap.log"
+       /i "{{MSI_UNC_PATH}}" /qn /norestart DISTCONTROLTARGETUSERSID=%LogonUserSid% DISTCONTROLENSUREUSER=1 /l*v C:\Windows\Temp\DistControl-GPO-%LogonUserSid%.log
+     Переменные %LogonUserSid%, %LogonDomain% и %LogonUser% должны подставляться
+     именно GPP при применении политики. Вручную в командной строке они не работают.
+     Не заменяйте SID на %USERNAME%: задача выполняется от SYSTEM.
   7. На вкладке "Параметры" включите запуск при первой возможности после
      пропущенного запуска и выберите "Не запускать новый экземпляр", если задача
      уже выполняется.
@@ -41,16 +44,22 @@ DistControl Client {{VERSION}} - установка через доменную 
   систему": для этой схемы она не нужна и может замедлить вход.
   Не назначайте MSI одновременно через "Установку программ" и через планировщик.
   Задача служит для первичной установки. Последующие обновления выполняет
-  DistControlAgent через центральный сервер.
+  индивидуальная служба DistControlAgent-<SID> через центральный сервер.
+  Повторный вход уже установленного пользователя не переустанавливает клиент.
+  Удалите старую общую задачу DistControl Background Install.
 
 Диагностика:
-  Журнал MSI: C:\Windows\Temp\DistControl-GPO-bootstrap.log
-  Службы после установки: dkclient и DistControlAgent
+  Журнал MSI: C:\Windows\Temp\DistControl-GPO-<SID>.log
+  Службы после установки: общий dkclient и индивидуальный DistControlAgent-<SID>
   Код результата задачи 0 означает успешный запуск команды. Окончательный
   результат всегда проверяйте по журналу и состоянию служб.
 
 Проверка тихой установки в открытом сеансе:
   msiexec.exe /i "DistControl-Client-GPO-{{VERSION}}.msi" /qn /norestart /l*v C:\Windows\Temp\DistControl-GPO.log
 
-Удаление:
+Удаление только текущего пользователя:
+  Запустите DistControl -> Удалить в меню Пуск этого пользователя.
+  Общий USB-клиент останется до удаления последнего пользовательского клиента.
+
+Полное удаление MSI и всех зарегистрированных пользовательских клиентов:
   msiexec.exe /x "DistControl-Client-GPO-{{VERSION}}.msi" /qn /norestart

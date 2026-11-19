@@ -12,8 +12,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("DistControl")]
 [assembly: AssemblyProduct("DistControl")]
 [assembly: AssemblyCopyright("Copyright 2026")]
-[assembly: AssemblyVersion("0.8.17.0")]
-[assembly: AssemblyFileVersion("0.8.17.0")]
+[assembly: AssemblyVersion("0.8.21.0")]
+[assembly: AssemblyFileVersion("0.8.21.0")]
 [assembly: ComVisible(false)]
 
 internal static class UninstallBootstrapper
@@ -24,11 +24,15 @@ internal static class UninstallBootstrapper
     {
         public bool FromTemp;
         public bool RemoveData;
+        public bool SkipMsiUnregister;
+        public bool Silent;
         public string InstallDir;
         public string DataDir;
         public string UserSid;
         public string StartMenuDir;
         public string DesktopDir;
+        public string Launcher;
+        public int WaitPid;
     }
 
     private sealed class PowerShellResult
@@ -45,44 +49,67 @@ internal static class UninstallBootstrapper
         try
         {
             Options options = ParseOptions(args);
+            if (options.WaitPid > 0)
+            {
+                try
+                {
+                    using (Process parent = Process.GetProcessById(options.WaitPid))
+                    {
+                        if (!parent.WaitForExit(30000)) throw new TimeoutException("Исходный удалятор не завершился.");
+                    }
+                }
+                catch (ArgumentException) { }
+            }
             string baseDir = AppDomain.CurrentDomain.BaseDirectory;
             string installDir = ResolveInstallDirectory(baseDir, options.InstallDir);
             options.InstallDir = installDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            ResolveOwnerContext(options);
 
             if (!options.FromTemp && IsPathInside(baseDir, installDir))
             {
-                RelaunchFromTemp(options);
-                return 0;
+                return RelaunchFromTemp(options);
             }
 
-            string launcher = FindLauncher(baseDir, installDir);
+            string launcher = string.IsNullOrWhiteSpace(options.Launcher) ? FindLauncher(baseDir, installDir) : options.Launcher;
             PowerShellResult result = RunPowerShell(launcher, SafeWorkingDirectory(), options);
+            WriteBootstrapLog("Worker exit code: " + result.ExitCode + Environment.NewLine + result.Output);
             if (result.ExitCode != 0)
             {
-                MessageBox.Show(
-                    BuildUninstallFailureMessage(result.ExitCode, result.Output),
-                    ProductName + " Uninstall",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Error);
+                if (!options.Silent)
+                {
+                    DistControl.VersionFooter.ShowMessage(
+                        BuildUninstallFailureMessage(result.ExitCode, result.Output),
+                        ProductName + " Uninstall",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Error);
+                }
                 return result.ExitCode;
             }
 
-            MessageBox.Show(
-                "DistControl удалён.",
-                ProductName + " Uninstall",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
+            if (!options.Silent)
+            {
+                DistControl.VersionFooter.ShowMessage(
+                    "DistControl удалён.",
+                    ProductName + " Uninstall",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+            }
             return 0;
         }
         catch (Exception ex)
         {
-            MessageBox.Show(
-                "Не удалось завершить удаление DistControl.\r\n\r\n" +
-                "Запустите удаление от имени администратора. Если ошибка повторится, отправьте администратору текст ниже.\r\n\r\n" +
-                "Техническая причина: " + ex.Message,
-                ProductName + " Uninstall",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Error);
+            WriteBootstrapLog(ex.ToString());
+            bool silent = HasArgument(args, "--silent");
+            if (!silent)
+            {
+                DistControl.VersionFooter.ShowMessage(
+                    "Не удалось завершить удаление DistControl.\r\n\r\n" +
+                    "Запустите удаление от имени администратора. Если ошибка повторится, отправьте администратору текст ниже.\r\n\r\n" +
+                    "Техническая причина: " + ex.Message,
+                    ProductName + " Uninstall",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
+            }
             return 1;
         }
     }
@@ -97,9 +124,26 @@ internal static class UninstallBootstrapper
             {
                 options.FromTemp = true;
             }
+            else if (EqualsArg(arg, "--silent"))
+            {
+                options.Silent = true;
+            }
+            else if (EqualsArg(arg, "--launcher") && i + 1 < args.Length)
+            {
+                options.Launcher = args[++i];
+            }
+            else if (EqualsArg(arg, "--wait-pid") && i + 1 < args.Length)
+            {
+                if (!Int32.TryParse(args[++i], out options.WaitPid) || options.WaitPid <= 0)
+                    throw new ArgumentException("Invalid uninstaller parent process ID.");
+            }
             else if (EqualsArg(arg, "--remove-data") || EqualsArg(arg, "-RemoveData") || EqualsArg(arg, "/RemoveData"))
             {
                 options.RemoveData = true;
+            }
+            else if (EqualsArg(arg, "--skip-msi-unregister") || EqualsArg(arg, "-SkipMsiUnregister"))
+            {
+                options.SkipMsiUnregister = true;
             }
             else if ((EqualsArg(arg, "--install-dir") || EqualsArg(arg, "-InstallDir")) && i + 1 < args.Length)
             {
@@ -130,6 +174,30 @@ internal static class UninstallBootstrapper
         return options;
     }
 
+    private static void WriteBootstrapLog(string message)
+    {
+        try
+        {
+            string directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "DistControl", "logs");
+            Directory.CreateDirectory(directory);
+            File.AppendAllText(Path.Combine(directory, "uninstall-bootstrap.log"),
+                DateTime.Now.ToString("s") + " " + message + Environment.NewLine, new UTF8Encoding(false));
+        }
+        catch { }
+    }
+
+    private static bool HasArgument(string[] args, string expected)
+    {
+        foreach (string arg in args)
+        {
+            if (EqualsArg(arg ?? string.Empty, expected))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static bool EqualsArg(string left, string right)
     {
         return string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
@@ -142,15 +210,15 @@ internal static class UninstallBootstrapper
             return FullPathWithSlash(overrideDir);
         }
 
+        if (File.Exists(Path.Combine(baseDir, "installer", "Launch-Uninstall-DiskControl.ps1")))
+        {
+            return FullPathWithSlash(baseDir);
+        }
+
         string registryDir = ReadInstallLocationFromRegistry();
         if (!string.IsNullOrWhiteSpace(registryDir))
         {
             return FullPathWithSlash(registryDir);
-        }
-
-        if (File.Exists(Path.Combine(baseDir, "installer", "Launch-Uninstall-DiskControl.ps1")))
-        {
-            return FullPathWithSlash(baseDir);
         }
 
         string userInstallDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "DistControl");
@@ -166,6 +234,49 @@ internal static class UninstallBootstrapper
         }
 
         return FullPathWithSlash(baseDir);
+    }
+
+    private static void ResolveOwnerContext(Options options)
+    {
+        using (RegistryKey clients = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\DistControl\Clients"))
+        {
+            if (clients != null)
+                foreach (string sid in clients.GetSubKeyNames())
+                    using (RegistryKey key = clients.OpenSubKey(sid))
+                        if (ApplyOwnerContext(options, key)) return;
+        }
+        using (RegistryKey key = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\DistControl\ClientInstall"))
+            if (ApplyOwnerContext(options, key)) return;
+        foreach (string sid in Registry.Users.GetSubKeyNames())
+        {
+            if (!sid.StartsWith("S-1-", StringComparison.OrdinalIgnoreCase)) continue;
+            using (RegistryKey key = Registry.Users.OpenSubKey(sid + @"\Software\Microsoft\Windows\CurrentVersion\Uninstall\DistControl"))
+            {
+                if (key == null || !String.Equals(FullPathWithSlash(Convert.ToString(key.GetValue("InstallLocation"))),
+                    FullPathWithSlash(options.InstallDir), StringComparison.OrdinalIgnoreCase)) continue;
+                using (RegistryKey profile = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\" + sid))
+                {
+                    string directory = profile == null ? "" : Environment.ExpandEnvironmentVariables(Convert.ToString(profile.GetValue("ProfileImagePath")));
+                    if (String.IsNullOrWhiteSpace(directory)) continue;
+                    if (String.IsNullOrWhiteSpace(options.UserSid)) options.UserSid = sid;
+                    if (String.IsNullOrWhiteSpace(options.DataDir)) options.DataDir = Path.Combine(directory, "AppData", "Local", "DistControl");
+                    if (String.IsNullOrWhiteSpace(options.StartMenuDir)) options.StartMenuDir = Path.Combine(directory, "AppData", "Roaming", "Microsoft", "Windows", "Start Menu", "Programs", "DistControl");
+                    if (String.IsNullOrWhiteSpace(options.DesktopDir)) options.DesktopDir = Path.Combine(directory, "Desktop");
+                    return;
+                }
+            }
+        }
+    }
+
+    private static bool ApplyOwnerContext(Options options, RegistryKey key)
+    {
+        if (key == null || !String.Equals(FullPathWithSlash(Convert.ToString(key.GetValue("InstallDir"))),
+            FullPathWithSlash(options.InstallDir), StringComparison.OrdinalIgnoreCase)) return false;
+        if (String.IsNullOrWhiteSpace(options.UserSid)) options.UserSid = Convert.ToString(key.GetValue("TargetUserSid"));
+        if (String.IsNullOrWhiteSpace(options.DataDir)) options.DataDir = Convert.ToString(key.GetValue("ProgramDataDir"));
+        if (String.IsNullOrWhiteSpace(options.StartMenuDir)) options.StartMenuDir = Convert.ToString(key.GetValue("UserStartMenuDir"));
+        if (String.IsNullOrWhiteSpace(options.DesktopDir)) options.DesktopDir = Convert.ToString(key.GetValue("UserDesktopDir"));
+        return true;
     }
 
     private static string FullPathWithSlash(string path)
@@ -195,7 +306,7 @@ internal static class UninstallBootstrapper
         return fullCandidate.StartsWith(fullParent, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static void RelaunchFromTemp(Options options)
+    private static int RelaunchFromTemp(Options options)
     {
         string tempDir = Path.Combine(Path.GetTempPath(), "DistControl-Uninstall-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
@@ -207,6 +318,8 @@ internal static class UninstallBootstrapper
         StringBuilder arguments = new StringBuilder();
         arguments.Append("--from-temp --install-dir ");
         arguments.Append(Quote(options.InstallDir));
+        arguments.Append(" --wait-pid " + Process.GetCurrentProcess().Id);
+        AppendOption(arguments, "--launcher", options.Launcher);
         AppendOption(arguments, "--data-dir", options.DataDir);
         AppendOption(arguments, "--user-sid", options.UserSid);
         AppendOption(arguments, "--start-menu-dir", options.StartMenuDir);
@@ -214,6 +327,14 @@ internal static class UninstallBootstrapper
         if (options.RemoveData)
         {
             arguments.Append(" --remove-data");
+        }
+        if (options.SkipMsiUnregister)
+        {
+            arguments.Append(" --skip-msi-unregister");
+        }
+        if (options.Silent)
+        {
+            arguments.Append(" --silent");
         }
 
         var startInfo = new ProcessStartInfo
@@ -224,7 +345,16 @@ internal static class UninstallBootstrapper
             UseShellExecute = false
         };
 
-        Process.Start(startInfo);
+        using (Process process = Process.Start(startInfo))
+        {
+            if (process == null)
+            {
+                throw new InvalidOperationException("Не удалось перезапустить удалятор из временной папки.");
+            }
+            // The installed parent must exit before the worker removes its EXE.
+            // MSI uses an already-external worker and waits for its actual result.
+            return 0;
+        }
     }
 
     private static void AppendOption(StringBuilder arguments, string name, string value)
@@ -322,6 +452,10 @@ internal static class UninstallBootstrapper
         if (options.RemoveData)
         {
             arguments.Append(" -RemoveData");
+        }
+        if (options.SkipMsiUnregister)
+        {
+            arguments.Append(" -SkipMsiUnregister");
         }
 
         var startInfo = new ProcessStartInfo

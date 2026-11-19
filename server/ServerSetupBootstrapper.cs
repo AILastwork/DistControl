@@ -18,8 +18,8 @@ using System.Windows.Forms;
 [assembly: AssemblyCompany("DistControl")]
 [assembly: AssemblyProduct("DistControl Server")]
 [assembly: AssemblyCopyright("Copyright 2026")]
-[assembly: AssemblyVersion("0.8.11.0")]
-[assembly: AssemblyFileVersion("0.8.11.0")]
+[assembly: AssemblyVersion("0.8.21.0")]
+[assembly: AssemblyFileVersion("0.8.21.0")]
 [assembly: ComVisible(false)]
 
 internal static class ServerSetupBootstrapper
@@ -141,6 +141,7 @@ internal static class ServerSetupBootstrapper
             _details.ReadOnly = true;
             _details.ScrollBars = ScrollBars.Vertical;
             Controls.Add(_details);
+            DistControl.VersionFooter.AddTo(this);
         }
 
         protected override void OnShown(EventArgs e)

@@ -16,6 +16,9 @@ struct AuditEvent {
 class AuditLogger {
 public:
     static void log(const AuditEvent& event);
+    // Persist an observation receipt in the user's log directory so refreshes
+    // and restarts do not repeat the same identity warning.
+    static bool logOnce(const AuditEvent& event);
     static void logDeviceAction(
         const std::wstring& action,
         const DeviceViewModel& device,

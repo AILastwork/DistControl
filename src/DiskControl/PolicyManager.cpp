@@ -533,9 +533,12 @@ bool ruleMatchesDevice(const JsonValue& ruleValue, const ParsedDevice& device) {
     if (ruleValue.type != JsonValue::Type::Object) {
         return false;
     }
-    return equalsIgnoreCase(stringValue(ruleValue.find(L"endpoint")), device.endpoint) &&
-        equalsIgnoreCase(stringValue(ruleValue.find(L"nickname")), device.nickname) &&
-        equalsIgnoreCase(stringValue(ruleValue.find(L"product")), device.product);
+    const std::wstring serial = stringValue(ruleValue.find(L"serial"));
+    const std::wstring product = stringValue(ruleValue.find(L"product"));
+    return (serial.empty()
+        ? equalsIgnoreCase(stringValue(ruleValue.find(L"endpoint")), device.endpoint)
+        : !device.serial.empty() && equalsIgnoreCase(serial, device.serial)) &&
+        (product.empty() || equalsIgnoreCase(product, device.product));
 }
 
 JsonValue makeDeviceRule(const ParsedDevice& device, const std::wstring& vpnProfileId = {}) {
@@ -547,10 +550,11 @@ JsonValue makeDeviceRule(const ParsedDevice& device, const std::wstring& vpnProf
     if (!vpnProfileId.empty()) {
         rule.objectValue[L"vpnProfile"] = makeString(vpnProfileId);
     }
+    if (!device.serial.empty()) rule.objectValue[L"serial"] = makeString(device.serial);
     return rule;
 }
 
-std::vector<DeviceRule> rulesFromJsonArray(const JsonValue* devices) {
+std::vector<DeviceRule> rulesFromJsonArray(const JsonValue* devices, bool strictNickname = false) {
     std::vector<DeviceRule> rules;
     if (!devices || devices->type != JsonValue::Type::Array) {
         return rules;
@@ -565,7 +569,9 @@ std::vector<DeviceRule> rulesFromJsonArray(const JsonValue* devices) {
         rule.nickname = stringValue(device.find(L"nickname"));
         rule.product = stringValue(device.find(L"product"));
         rule.vpnProfileId = stringValue(device.find(L"vpnProfile"));
-        if (!rule.endpoint.empty()) {
+        rule.serial = stringValue(device.find(L"serial"));
+        rule.strictNickname = boolValue(device.find(L"strictNickname"), strictNickname);
+        if (!rule.endpoint.empty() || !rule.serial.empty()) {
             rules.push_back(rule);
         }
     }
@@ -577,8 +583,7 @@ std::wstring existingVpnProfileForDevice(const JsonValue* existingRules, const P
         return {};
     }
     for (const JsonValue& existing : existingRules->arrayValue) {
-        if (existing.type == JsonValue::Type::Object &&
-            equalsIgnoreCase(stringValue(existing.find(L"endpoint")), device.endpoint)) {
+        if (ruleMatchesDevice(existing, device)) {
             return stringValue(existing.find(L"vpnProfile"));
         }
     }
@@ -600,9 +605,17 @@ JsonValue makeDeviceRulesArray(const std::vector<ParsedDevice>& devices, const J
             }
         }
         if (!exists) {
-            rules.arrayValue.push_back(makeDeviceRule(
-                device,
-                existingVpnProfileForDevice(existingRules, device)));
+            JsonValue rule = makeDeviceRule(device, existingVpnProfileForDevice(existingRules, device));
+            if (existingRules && existingRules->type == JsonValue::Type::Array) {
+                for (const JsonValue& existing : existingRules->arrayValue) {
+                    if (ruleMatchesDevice(existing, device)) {
+                        // Preserve per-rule strictNickname and administrator metadata.
+                        rule = existing;
+                        break;
+                    }
+                }
+            }
+            rules.arrayValue.push_back(std::move(rule));
         }
     }
     return rules;
@@ -945,7 +958,8 @@ std::wstring PolicyManager::applyDeviceAccessChanges(
             std::remove_if(rules.arrayValue.begin(), rules.arrayValue.end(),
                 [&removed](const JsonValue& rule) {
                     return rule.type == JsonValue::Type::Object &&
-                        equalsIgnoreCase(stringValue(rule.find(L"endpoint")), removed.endpoint);
+                        (ruleMatchesDevice(rule, removed) ||
+                            equalsIgnoreCase(stringValue(rule.find(L"endpoint")), removed.endpoint));
                 }),
             rules.arrayValue.end());
     }
@@ -966,7 +980,8 @@ std::wstring PolicyManager::applyDeviceAccessChanges(
         JsonValue* existingRule = nullptr;
         for (JsonValue& rule : rules.arrayValue) {
             if (rule.type == JsonValue::Type::Object &&
-                equalsIgnoreCase(stringValue(rule.find(L"endpoint")), added.endpoint)) {
+                (ruleMatchesDevice(rule, added) ||
+                    equalsIgnoreCase(stringValue(rule.find(L"endpoint")), added.endpoint))) {
                 existingRule = &rule;
                 break;
             }
@@ -975,6 +990,8 @@ std::wstring PolicyManager::applyDeviceAccessChanges(
             existingRule->objectValue[L"endpoint"] = makeString(added.endpoint);
             existingRule->objectValue[L"nickname"] = makeString(added.nickname);
             existingRule->objectValue[L"product"] = makeString(added.product);
+            if (!added.serial.empty()) existingRule->objectValue[L"serial"] = makeString(added.serial);
+            else existingRule->objectValue.erase(L"serial");
             if (stringValue(existingRule->find(L"vpnProfile")).empty()) {
                 existingRule->objectValue[L"vpnProfile"] = makeString(defaultVpnProfile());
             }
@@ -1021,8 +1038,7 @@ void PolicyManager::setVpnProfileForDevice(
             break;
         }
         for (JsonValue& rule : devices.arrayValue) {
-            if (rule.type != JsonValue::Type::Object ||
-                !equalsIgnoreCase(stringValue(rule.find(L"endpoint")), device.endpoint)) {
+            if (!ruleMatchesDevice(rule, device)) {
                 continue;
             }
             if (vpnProfileId.empty()) {
@@ -1109,8 +1125,7 @@ std::wstring PolicyManager::saveVpnProfileForDevices(
     for (const ParsedDevice& device : devices) {
         JsonValue* matchedRule = nullptr;
         for (JsonValue& rule : rules.arrayValue) {
-            if (rule.type == JsonValue::Type::Object &&
-                equalsIgnoreCase(stringValue(rule.find(L"endpoint")), device.endpoint)) {
+            if (ruleMatchesDevice(rule, device)) {
                 matchedRule = &rule;
                 break;
             }
@@ -1162,8 +1177,7 @@ std::wstring PolicyManager::clearVpnProfileForDevices(
         for (const ParsedDevice& device : devices) {
             bool matched = false;
             for (JsonValue& rule : rules.arrayValue) {
-                if (rule.type == JsonValue::Type::Object &&
-                    equalsIgnoreCase(stringValue(rule.find(L"endpoint")), device.endpoint)) {
+                if (ruleMatchesDevice(rule, device)) {
                     rule.objectValue.erase(L"vpnProfile");
                     matched = true;
                     break;
@@ -1247,10 +1261,19 @@ std::wstring PolicyManager::saveVpnAssignmentsForDevices(
         throw std::runtime_error("Config allowedDevices must be an array.");
     }
     for (const DeviceRule& deviceAssignment : deviceAssignments) {
+        ParsedDevice device;
+        device.endpoint = deviceAssignment.endpoint;
+        device.product = deviceAssignment.product;
+        device.serial = deviceAssignment.serial;
         JsonValue* matchedRule = nullptr;
         for (JsonValue& rule : rules.arrayValue) {
-            if (rule.type == JsonValue::Type::Object &&
-                equalsIgnoreCase(stringValue(rule.find(L"endpoint")), deviceAssignment.endpoint)) {
+            // The administrative bulk API also accepts legacy endpoint-only
+            // selectors. These select an existing mapping and never grant access.
+            const bool legacySelector = deviceAssignment.product.empty() && deviceAssignment.serial.empty();
+            if (legacySelector
+                ? rule.type == JsonValue::Type::Object &&
+                    equalsIgnoreCase(stringValue(rule.find(L"endpoint")), deviceAssignment.endpoint)
+                : ruleMatchesDevice(rule, device)) {
                 matchedRule = &rule;
                 break;
             }
@@ -1389,19 +1412,59 @@ std::wstring PolicyManager::removeVpnProfileChecked(
 }
 
 bool PolicyManager::isAllowedByRules(const ParsedDevice& device, const std::vector<DeviceRule>& rules) {
+    return evaluateByRules(device, rules).allowed;
+}
+
+DeviceAccessEvaluation PolicyManager::evaluateByRules(const ParsedDevice& device, const std::vector<DeviceRule>& rules) {
+    DeviceAccessEvaluation result;
+    bool knownIdentity = false;
     for (const DeviceRule& rule : rules) {
-        if (!equalsIgnoreCase(rule.endpoint, device.endpoint)) {
+        const bool sameEndpoint = !rule.endpoint.empty() && equalsIgnoreCase(rule.endpoint, device.endpoint);
+        const bool identityMatches = rule.serial.empty() ? sameEndpoint
+            : !device.serial.empty() && equalsIgnoreCase(rule.serial, device.serial);
+        const bool productMatches = rule.product.empty() || equalsIgnoreCase(rule.product, device.product);
+        if (!identityMatches || !productMatches) {
+            if (!knownIdentity && (sameEndpoint || identityMatches)) result.deviceMismatch = true;
             continue;
         }
-        if (!rule.nickname.empty() && !equalsIgnoreCase(rule.nickname, device.nickname)) {
+        const bool renamed = !rule.nickname.empty() && !equalsIgnoreCase(rule.nickname, device.nickname);
+        if (renamed && rule.strictNickname) {
+            knownIdentity = true;
+            result.deviceMismatch = false;
+            result.nicknameChanged = true;
+            result.previousNickname = rule.nickname;
             continue;
         }
-        if (!rule.product.empty() && !equalsIgnoreCase(rule.product, device.product)) {
-            continue;
-        }
-        return true;
+        return { true, renamed, false, rule.nickname };
     }
-    return false;
+    return result;
+}
+
+std::wstring PolicyManager::updateNicknamesFromHub(const std::vector<ParsedDevice>& devices,
+    const std::wstring& expectedRevision) const {
+    ConfigWriteLock writeLock(configPath_);
+    std::wstring currentRevision;
+    JsonValue root = readPolicyRoot(configPath_, &currentRevision);
+    verifyPolicyRevision(currentRevision, expectedRevision);
+    // Update every assignment, including groups, without changing grants,
+    // serial bindings, strict mode, VPN mappings, or unrelated JSON fields.
+    for (JsonValue& assignment : root.objectValue[L"userAssignments"].arrayValue) {
+        if (assignment.type != JsonValue::Type::Object) continue;
+        const auto found = assignment.objectValue.find(L"allowedDevices");
+        if (found == assignment.objectValue.end() || found->second.type != JsonValue::Type::Array) continue;
+        JsonValue& rules = found->second;
+        for (JsonValue& rule : rules.arrayValue) {
+            for (const ParsedDevice& device : devices) {
+                if (!device.nickname.empty() && ruleMatchesDevice(rule, device)) {
+                    rule.objectValue[L"nickname"] = makeString(device.nickname);
+                    break;
+                }
+            }
+        }
+    }
+    const std::wstring serialized = serializeJson(root);
+    writeUtf8File(configPath_, serialized);
+    return policyRevisionForText(serialized);
 }
 
 void PolicyManager::setConfigPathOverride(std::wstring configPath) {
@@ -1519,7 +1582,8 @@ std::vector<DeviceRule> PolicyManager::rulesForUser(const std::wstring& userName
             continue;
         }
 
-        std::vector<DeviceRule> assignmentRules = rulesFromJsonArray(assignment.find(L"allowedDevices"));
+        std::vector<DeviceRule> assignmentRules = rulesFromJsonArray(assignment.find(L"allowedDevices"),
+            boolValue(root.find(L"strictNickname"), false));
         rules.insert(rules.end(), assignmentRules.begin(), assignmentRules.end());
     }
 
@@ -1619,7 +1683,8 @@ void PolicyManager::load() {
             continue;
         }
 
-        std::vector<DeviceRule> rules = rulesFromJsonArray(assignment.find(L"allowedDevices"));
+        std::vector<DeviceRule> rules = rulesFromJsonArray(assignment.find(L"allowedDevices"),
+            boolValue(root.find(L"strictNickname"), false));
         effectiveRules_.insert(effectiveRules_.end(), rules.begin(), rules.end());
     }
 }

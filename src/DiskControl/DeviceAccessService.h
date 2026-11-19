@@ -30,10 +30,14 @@ struct DeviceViewModel {
     unsigned long long usageStartedFileTime = 0;
     // IPv4 address reported by dkclient for the USB server owning this token.
     std::wstring serverAddress;
+    std::wstring serial;
+    bool nicknameChanged = false;
+    bool deviceMismatch = false;
+    std::wstring previousNickname;
 };
 
-// True when the token's LIST line is identical to the one previously read
-// together with DEVICE INFO, so that DEVICE INFO does not need to be repeated.
+// Non-granted entries may reuse INFO when their LIST line is unchanged.
+// Granted and serial-bound identities must be checked even if LIST is identical.
 bool canReuseDeviceInfo(const ParsedDevice& fromList, const DeviceViewModel& previous);
 
 // True when two network profile ids lead to the same network: the same id, or
@@ -101,6 +105,8 @@ public:
     std::wstring updateAccessForUser(std::vector<DeviceViewModel>& devices, const std::wstring& userName) const;
     std::wstring currentUserSummary() const;
     std::wstring currentPolicyPath() const;
+    std::wstring updateNicknamesFromHub(const std::vector<DeviceViewModel>& devices,
+        const std::wstring& expectedRevision) const;
 
 private:
     std::vector<DeviceViewModel> listDevices(

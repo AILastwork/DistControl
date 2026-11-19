@@ -13,7 +13,14 @@ function Assert-True([bool]$Condition, [string]$Message) {
     }
 }
 
-foreach ($script in @('installer\Install-DiskControl.ps1', 'installer\Build-InstallerPackage.ps1')) {
+foreach ($script in @(
+    'installer\Install-DiskControl.ps1',
+    'installer\Uninstall-DiskControl.ps1',
+    'installer\Launch-Uninstall-DiskControl.ps1',
+    'installer\Build-InstallerPackage.ps1'
+    'installer\ClientLifecycle.ps1'
+    'tools\Repair-Uninstall-DistControl.ps1'
+)) {
     $tokens = $null
     $errors = $null
     [void][Management.Automation.Language.Parser]::ParseFile((Join-Path $root $script), [ref]$tokens, [ref]$errors)
@@ -46,4 +53,19 @@ foreach ($case in $cases) {
 Assert-True ([CredentialCheck]::MaximumWrongPasswordAttempts -eq 3) 'at most three wrong passwords are allowed'
 Assert-True ([CredentialCheck]::Message('WrongPassword', 'OSNOVA\user', 1326) -eq 'Неверный пароль для OSNOVA\user.') 'wrong password message'
 
-Write-Output 'Installer checks passed: script syntax and password check handling.'
+$wix = Get-Content -LiteralPath (Join-Path $root 'installer\msi\DistControl.Client.wxs') -Raw
+Assert-True ($wix.Contains('Id="RunDistControlUninstall"')) 'MSI must run the DistControl client uninstaller'
+Assert-True ($wix.Contains('ExeCommand="--msi-uninstall"')) 'MSI uninstall custom action argument'
+Assert-True ($wix.Contains('NOT DISTCONTROLCLIENTREMOVED')) 'MSI uninstall must skip the recursive EXE cleanup path'
+Assert-True ($wix.Contains('NOT UPGRADINGPRODUCTCODE')) 'major upgrades must not remove the installed client payload'
+
+$installScript = Get-Content -LiteralPath (Join-Path $root 'installer\Install-DiskControl.ps1') -Raw
+$uninstallScript = Get-Content -LiteralPath (Join-Path $root 'installer\Uninstall-DiskControl.ps1') -Raw
+$uninstallBootstrapper = Get-Content -LiteralPath (Join-Path $root 'installer\UninstallBootstrapper.cs') -Raw
+Assert-True ($installScript.Contains('Register-MachineInstallContext')) 'installer must persist the user profile context for MSI uninstall'
+Assert-True ($uninstallScript.Contains('{8E2503E8-7098-4FF1-9278-7AC5C473E0CF}')) 'EXE uninstall must query MSI products by UpgradeCode'
+Assert-True ($uninstallScript.Contains('DISTCONTROLCLIENTREMOVED=1')) 'EXE uninstall must protect the MSI callback from recursion'
+Assert-True ($uninstallBootstrapper.Contains('--skip-msi-unregister')) 'MSI uninstall must pass the recursion guard to the client uninstaller'
+Assert-True ($uninstallBootstrapper.Contains('--silent')) 'MSI uninstall must not display a service-session message box'
+
+Write-Output 'Installer checks passed: syntax, credentials, and complete MSI/EXE uninstall wiring.'

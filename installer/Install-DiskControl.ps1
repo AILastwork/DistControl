@@ -31,6 +31,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot 'ClientLifecycle.ps1')
 try {
     $script:Utf8NoBomEncoding = New-Object System.Text.UTF8Encoding($false)
     [Console]::OutputEncoding = $script:Utf8NoBomEncoding
@@ -39,7 +40,7 @@ try {
 catch {
 }
 $ProductName = "DistControl"
-$ProductVersion = "0.8.17"
+$ProductVersion = "0.8.21"
 $Publisher = "DistControl"
 $SourceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $ReleaseDir = Join-Path $SourceRoot "build\x64\Release"
@@ -54,10 +55,13 @@ $InteractiveDkClientTaskName = "DistControl Interactive dkclient"
 $AgentConfigPath = Join-Path $InstallDir "agent.json"
 $ManagedHubRoutesPath = Join-Path $ProgramDataDir "managed-hub-routes.json"
 $EffectiveTargetUserSid = if ([string]::IsNullOrWhiteSpace($TargetUserSid)) { [Security.Principal.WindowsIdentity]::GetCurrent().User.Value } else { $TargetUserSid.Trim() }
+$AgentServiceName = Get-ClientAgentServiceName $EffectiveTargetUserSid
 $TargetUserAcl = "*$EffectiveTargetUserSid"
 $UserProgramsRoot = Split-Path -Parent $UserStartMenuDir
 $ClientStartupShortcut = Join-Path $UserProgramsRoot "Startup\DistControl dkclient.lnk"
 $UninstallRegistryPath = "Registry::HKEY_USERS\$EffectiveTargetUserSid\Software\Microsoft\Windows\CurrentVersion\Uninstall\DistControl"
+$MachineInstallContextRegistryPath = "$ClientContextsRegistryPath\$EffectiveTargetUserSid"
+$ManagedHubRoutesPath = Join-Path $SharedRuntimeStateDirectory 'managed-hub-routes.json'
 $LegacyInstallDir = Join-Path $env:ProgramFiles "DiskControl"
 $LegacyDistControlInstallDir = Join-Path $env:ProgramFiles "DistControl"
 $LegacyProgramDataDir = Join-Path $env:ProgramData "DiskControl"
@@ -67,11 +71,12 @@ $LegacyDistControlUninstallRegistryPath = "HKLM:\Software\Microsoft\Windows\Curr
 $script:InstallLogPath = $null
 $script:InstallWarnings = New-Object System.Collections.Generic.List[string]
 $VpnProfileId = if ([string]::IsNullOrWhiteSpace($VpnProfileIdInput)) { "" } else { $VpnProfileIdInput.Trim() }
-$DkClientMode = if ([string]::IsNullOrWhiteSpace($DkClientMode)) { "Service" } else { $DkClientMode.Trim() }
+$DkClientMode = if ([string]::IsNullOrWhiteSpace($DkClientMode)) { "SystemService" } else { $DkClientMode.Trim() }
 if ($DkClientMode -notin @("Service", "SystemService", "SystemServiceLocal")) {
     throw "Unknown dkclient mode: $DkClientMode"
 }
-$SystemDkClientMode = $DkClientMode -in @("SystemService", "SystemServiceLocal")
+if ($DkClientMode -eq 'Service') { $DkClientMode = 'SystemService' }
+$SystemDkClientMode = $true
 $LocalOnlyMode = $DkClientMode -eq "SystemServiceLocal"
 
 function Write-InstallLogLine([string]$Message) {
@@ -258,6 +263,7 @@ function Assert-TargetUserContext {
 }
 
 trap {
+    Exit-ClientLifecycleLock
     Write-InstallErrorDetails $_
     Stop-InstallLog
     exit 1
@@ -384,6 +390,7 @@ function Wait-ServiceDeleted([string]$Name) {
 function Stop-ExistingService([string]$Name) {
     $existing = Get-Service -Name $Name -ErrorAction SilentlyContinue
     if (-not $existing -or $existing.Status -eq "Stopped") {
+        if ($existing) { $existing.Dispose() }
         return
     }
 
@@ -394,11 +401,13 @@ function Stop-ExistingService([string]$Name) {
             Start-Sleep -Milliseconds 500
             $existing.Refresh()
             if ($existing.Status -eq "Stopped") {
+                $existing.Dispose()
                 return
             }
         }
         throw "Service $Name did not stop in time."
     }
+    $existing.Dispose()
 }
 
 function Remove-ExistingService([string]$Name) {
@@ -408,6 +417,7 @@ function Remove-ExistingService([string]$Name) {
     }
 
     Write-Step "Remove existing service $Name"
+    $existing.Dispose()
     Stop-ExistingService $Name
 
     if ($DryRun) {
@@ -927,7 +937,7 @@ function Migrate-LegacyData {
 }
 
 function Initialize-DkClientUserProfile {
-    $sourceConfig = Join-Path $InstallDir "dkcl.ini"
+    $sourceConfig = Join-Path $SharedRuntimeDirectory "dkcl.ini"
     $profileConfig = Join-Path $TargetRoamingAppDataDir "dkcl.ini"
     $profileMarker = Join-Path $TargetRoamingAppDataDir "dkcl64.ini"
     Write-Step "Prepare DistKontrolUSB settings for the selected Windows user"
@@ -1428,8 +1438,8 @@ function Set-DirectoryAcl {
 }
 
 function Set-DkClientFilesAcl {
-    $exePath = Join-Path $InstallDir "dkcl64.exe"
-    $iniPath = Join-Path $InstallDir "dkcl.ini"
+    $exePath = Join-Path $SharedRuntimeDirectory "dkcl64.exe"
+    $iniPath = Join-Path $SharedRuntimeDirectory "dkcl.ini"
     $identity = Resolve-PrivilegeIdentity "NT SERVICE\$ServiceName"
     Write-Step "Restrict dkcl64.exe and dkcl.ini to the dkclient service SID"
     Set-ProtectedAcl $exePath @(
@@ -1468,6 +1478,9 @@ function Initialize-CentralAgentConfig {
         LogsDirectory = $LogsDir
         NetworkStatePath = (Join-Path $StateDir "network-state.json")
         InstallDirectory = $InstallDir
+        ServiceName = $AgentServiceName
+        DkClientDirectory = $SharedRuntimeDirectory
+        RuntimeStateDirectory = $SharedRuntimeStateDirectory
         PollSeconds = 30
         AutoUpdate = $true
         AppliedHubRevision = $appliedHubRevision
@@ -1489,21 +1502,13 @@ function Install-CentralAgentService {
     if (-not (Test-Path -LiteralPath $agentExe)) {
         throw "Central agent executable is missing: $agentExe"
     }
-    $existing = Get-Service -Name $AgentServiceName -ErrorAction SilentlyContinue
-    if ($existing) {
-        Write-Step "Replace service $AgentServiceName"
-        if (-not $DryRun) {
-            Stop-Service -Name $AgentServiceName -Force -ErrorAction SilentlyContinue
-            sc.exe delete $AgentServiceName | Out-Null
-            Start-Sleep -Milliseconds 600
-        }
-    }
-    $binary = '"{0}" --service --config "{1}"' -f $agentExe, $AgentConfigPath
+    Remove-ExistingService $AgentServiceName
+    $binary = '"{0}" --service --service-name "{1}" --config "{2}"' -f $agentExe, $AgentServiceName, $AgentConfigPath
     if ($DryRun) {
         Write-Step "DRY-RUN: New-Service $AgentServiceName $binary"
         return
     }
-    New-Service -Name $AgentServiceName -BinaryPathName $binary -DisplayName "DistControl Central Agent" -StartupType Automatic | Out-Null
+    New-Service -Name $AgentServiceName -BinaryPathName $binary -DisplayName "DistControl Agent ($ServiceAccount)" -StartupType Automatic | Out-Null
     Start-Service -Name $AgentServiceName
     Write-Step "Central agent service started"
 }
@@ -1682,6 +1687,106 @@ function Register-UninstallEntry {
     Set-RegistryValue $UninstallRegistryPath "NoModify" 1 "DWord"
     Set-RegistryValue $UninstallRegistryPath "NoRepair" 1 "DWord"
     Set-RegistryValue $UninstallRegistryPath "EstimatedSize" (Get-DirectorySizeKb $InstallDir) "DWord"
+}
+
+function Register-MachineInstallContext {
+    Write-Step "Register machine uninstall context"
+    if (-not $DryRun) {
+        New-Item -Path $MachineInstallContextRegistryPath -Force | Out-Null
+    }
+
+    Set-RegistryValue $MachineInstallContextRegistryPath "TargetUserSid" $EffectiveTargetUserSid
+    Set-RegistryValue $MachineInstallContextRegistryPath "InstallDir" $InstallDir
+    Set-RegistryValue $MachineInstallContextRegistryPath "ProgramDataDir" $ProgramDataDir
+    Set-RegistryValue $MachineInstallContextRegistryPath "UserStartMenuDir" $UserStartMenuDir
+    Set-RegistryValue $MachineInstallContextRegistryPath "UserDesktopDir" $UserDesktopDir
+    Set-RegistryValue $MachineInstallContextRegistryPath "AgentServiceName" $AgentServiceName
+    Set-RegistryValue $MachineInstallContextRegistryPath "SharedRuntime" 1 "DWord"
+}
+
+function Install-SharedDkClientRuntime {
+    $service = Get-CimInstance Win32_Service -Filter "Name = '$ServiceName'" -ErrorAction SilentlyContinue
+    $sharedExe = Join-Path $SharedRuntimeDirectory 'dkcl64.exe'
+    $sharedIni = Join-Path $SharedRuntimeDirectory 'dkcl.ini'
+    $reuse = $service -and $service.PathName -and
+        $service.PathName.StartsWith('"' + $sharedExe + '"', [StringComparison]::OrdinalIgnoreCase) -and
+        (Test-Path -LiteralPath $sharedExe) -and (Test-Path -LiteralPath $sharedIni)
+    if ($reuse) {
+        Write-Step 'Reuse the shared dkclient service; other user installations are unchanged'
+        if (-not $NoStartService) { Try-StartService $ServiceName }
+        return
+    }
+    # Move the old per-profile backend out of its owner's removable directory.
+    $sourceIni = Join-Path $SourceRoot 'dkcl.ini'
+    foreach ($context in @(Get-RegisteredClientContexts)) {
+        $candidate = Join-Path $context.InstallDir 'dkcl.ini'
+        if (Test-Path -LiteralPath $candidate) { $sourceIni = $candidate; break }
+    }
+    Stop-ExistingService $ServiceName
+    Stop-InstalledDkClientProcess
+    if (-not $DryRun) {
+        New-Item -ItemType Directory -Path $SharedRuntimeDirectory, $SharedRuntimeStateDirectory -Force | Out-Null
+    }
+    Set-ProtectedAcl $SharedRuntimeDirectory @('*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F')
+    Set-ProtectedAcl $SharedRuntimeStateDirectory @('*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F')
+    Copy-RequiredFile (Join-Path $SourceRoot 'dkcl64.exe') $sharedExe
+    if (-not (Test-Path -LiteralPath $sharedIni)) { Copy-RequiredFile $sourceIni $sharedIni }
+    if (-not (Test-Path -LiteralPath $ManagedHubRoutesPath)) {
+        foreach ($context in @(Get-RegisteredClientContexts)) {
+            $oldManifest = Join-Path $context.ProgramDataDir 'managed-hub-routes.json'
+            if (Test-Path -LiteralPath $oldManifest) { Copy-RequiredFile $oldManifest $ManagedHubRoutesPath; break }
+        }
+    }
+    Set-DistKontrolHubRoutes $sharedIni
+    Register-DkClientSystemService
+}
+
+function Migrate-LegacyClientAgent {
+    if (-not (Test-Path -LiteralPath $LegacyClientContextRegistryPath)) { return }
+    $legacy = Get-ItemProperty -LiteralPath $LegacyClientContextRegistryPath
+    if (-not $legacy.TargetUserSid -or -not $legacy.InstallDir) { return }
+    $legacyKey = "$ClientContextsRegistryPath\$($legacy.TargetUserSid)"
+    $legacyAgent = Get-CimInstance Win32_Service -Filter "Name = 'DistControlAgent'" -ErrorAction SilentlyContinue
+    $legacyAgentName = Get-ClientAgentServiceName $legacy.TargetUserSid
+    # The previous owner must receive the safe removal path too. Otherwise its
+    # old uninstaller could delete the backend now shared with the new user.
+    $legacyInstallerDirectory = Join-Path $legacy.InstallDir 'installer'
+    if (-not $DryRun) { New-Item -ItemType Directory -Path $legacyInstallerDirectory -Force | Out-Null }
+    foreach ($scriptName in @('ClientLifecycle.ps1', 'Uninstall-DiskControl.ps1', 'Launch-Uninstall-DiskControl.ps1')) {
+        Copy-RequiredFile (Join-Path $SourceRoot "installer\$scriptName") (Join-Path $legacyInstallerDirectory $scriptName)
+    }
+    $currentUninstaller = @((Join-Path $SourceRoot 'Uninstall-DistControl.exe'),
+        (Join-Path $SourceRoot 'dist\Uninstall-DistControl.exe')) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    if (-not $currentUninstaller) { throw 'The current uninstaller is missing from the installation package.' }
+    Copy-RequiredFile $currentUninstaller (Join-Path $legacy.InstallDir 'Uninstall-DistControl.exe')
+    if ($legacyAgent -and $legacyAgent.PathName -like ('*' + $legacy.InstallDir + '\DistControl.Agent.exe*')) {
+        $configPath = Join-Path $legacy.InstallDir 'agent.json'
+        if (-not (Test-Path -LiteralPath $configPath)) { throw "Cannot migrate the existing agent: $configPath is missing." }
+        $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+        Stop-ExistingService 'DistControlAgent'
+        Remove-ExistingService 'DistControlAgent'
+        if (Test-Path -LiteralPath $configPath) {
+            $config | Add-Member NoteProperty ServiceName $legacyAgentName -Force
+            $config | Add-Member NoteProperty DkClientDirectory $SharedRuntimeDirectory -Force
+            $config | Add-Member NoteProperty RuntimeStateDirectory $SharedRuntimeStateDirectory -Force
+            if (-not $DryRun) {
+                Copy-Item -LiteralPath (Join-Path $SourceRoot 'build\central\DistControl.Agent.exe') -Destination (Join-Path $legacy.InstallDir 'DistControl.Agent.exe') -Force
+                [IO.File]::WriteAllText($configPath, ($config | ConvertTo-Json -Depth 10), $script:Utf8NoBomEncoding)
+                $binary = '"{0}" --service --service-name "{1}" --config "{2}"' -f (Join-Path $legacy.InstallDir 'DistControl.Agent.exe'), $legacyAgentName, $configPath
+                New-Service -Name $legacyAgentName -BinaryPathName $binary -StartupType Automatic | Out-Null
+                Start-Service $legacyAgentName
+            }
+        }
+    }
+    if (-not $DryRun) {
+        New-Item -Path $legacyKey -Force | Out-Null
+        foreach ($name in @('TargetUserSid', 'InstallDir', 'ProgramDataDir', 'UserStartMenuDir', 'UserDesktopDir')) {
+            New-ItemProperty -Path $legacyKey -Name $name -Value ([string]$legacy.$name) -Force | Out-Null
+        }
+        New-ItemProperty -Path $legacyKey -Name AgentServiceName -Value $legacyAgentName -Force | Out-Null
+        New-ItemProperty -Path $legacyKey -Name SharedRuntime -Value 1 -PropertyType DWord -Force | Out-Null
+        Remove-Item -LiteralPath $LegacyClientContextRegistryPath -Force
+    }
 }
 
 $VirtualHereHardwareId = "ROOT\VHUSB3HC"
@@ -1889,12 +1994,12 @@ function Remove-DkClientInteractiveTask {
 }
 
 function Register-DkClientSystemService {
-    $exePath = Join-Path $InstallDir "dkcl64.exe"
+    $exePath = Join-Path $SharedRuntimeDirectory "dkcl64.exe"
     Remove-DkClientStartup
     Remove-ExistingService $ServiceName
     Stop-InstalledDkClientProcess
     Remove-DkClientInteractiveTask
-    $binPath = "`"$exePath`" -n --config=`"$(Join-Path $InstallDir 'dkcl.ini')`""
+    $binPath = "`"$exePath`" -n --config=`"$(Join-Path $SharedRuntimeDirectory 'dkcl.ini')`""
     Write-Step "Create service $ServiceName as LocalSystem (no user password)"
     if ($DryRun) {
         Write-Step "DRY-RUN: New-Service -Name $ServiceName -BinaryPathName $binPath -StartupType Automatic"
@@ -1921,6 +2026,7 @@ if (-not $DryRun) {
     Assert-UsageStateDirectory
     Start-InstallLog
     Write-InstallEnvironmentSummary
+    Enter-ClientLifecycleLock
 }
 else {
     Assert-AbsoluteDirectoryParameter "InstallDir" $InstallDir
@@ -1968,9 +2074,10 @@ if (-not $DryRun) {
 }
 
 Assert-DistControlApplicationsClosed
+Install-VirtualHereDriver
+Install-SharedDkClientRuntime
+Migrate-LegacyClientAgent
 Stop-ExistingService $AgentServiceName
-Stop-ExistingService $ServiceName
-Stop-InstalledDkClientProcess
 
 Copy-RequiredFile (Join-Path $ReleaseDir "DistControl.exe") (Join-Path $InstallDir "DistControl.exe")
 Copy-RequiredFile (Join-Path $ReleaseDir "DistControl.Admin.exe") (Join-Path $InstallDir "DistControl.Admin.exe")
@@ -1989,9 +2096,6 @@ else {
     Copy-RequiredFile (Join-Path $SourceRoot "build\central\DistControl.Agent.exe") (Join-Path $InstallDir "DistControl.Agent.exe")
     Copy-RequiredFile (Join-Path $SourceRoot "build\central\DistControl.Updater.exe") (Join-Path $InstallDir "DistControl.Updater.exe")
 }
-Copy-RequiredFile (Join-Path $SourceRoot "dkcl64.exe") (Join-Path $InstallDir "dkcl64.exe")
-Copy-RequiredFile (Join-Path $SourceRoot "dkcl.ini") (Join-Path $InstallDir "dkcl.ini")
-Set-DistKontrolHubRoutes (Join-Path $SourceRoot "dkcl.ini")
 
 foreach ($uninstallCandidate in @(
     (Join-Path $SourceRoot "Uninstall-DistControl.exe"),
@@ -2014,6 +2118,7 @@ foreach ($optional in @("README.md", "DistControl-guide.html", "allowlist.exampl
 # Uninstall-DistControl.exe. The folder is hidden from the user.
 foreach ($installerFile in @(
     "Uninstall-DiskControl.ps1",
+    "ClientLifecycle.ps1",
     "Launch-Uninstall-DiskControl.ps1"
 )) {
     $source = Join-Path $SourceRoot "installer\$installerFile"
@@ -2043,16 +2148,8 @@ Initialize-UsageState
 Set-DirectoryAcl
 Initialize-DkClientUserProfile
 Test-UsageStateAccess
-Install-VirtualHereDriver
 if (-not $LocalOnlyMode) {
     Initialize-CentralAgentConfig
-}
-if ($SystemDkClientMode) {
-    Register-DkClientSystemService
-}
-else {
-    Remove-DkClientInteractiveTask
-    Register-DkClientService
 }
 if ($LocalOnlyMode) {
     Remove-ExistingService $AgentServiceName
@@ -2064,6 +2161,7 @@ Remove-LegacyInstallDirectory
 Remove-LegacyBranding
 Install-Shortcuts
 Register-UninstallEntry
+Register-MachineInstallContext
 
 Write-Step "Installation completed"
 Write-Host "InstallDir: $InstallDir"
@@ -2077,4 +2175,5 @@ if ($script:InstallWarnings.Count -gt 0) {
     }
 }
 Stop-InstallLog
+Exit-ClientLifecycleLock
 exit 0

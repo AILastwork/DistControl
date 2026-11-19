@@ -13,8 +13,12 @@ if ([string]::IsNullOrWhiteSpace($OutputPath)) {
 if ([string]::IsNullOrWhiteSpace($SetupOutputPath)) {
     $SetupOutputPath = Join-Path $root "dist\DistControl-Server-Setup.exe"
 }
+& (Join-Path $root "build-vs.cmd") Release
+if ($LASTEXITCODE -ne 0) { throw "Native Release build failed." }
 & (Join-Path $root "tools\Build-CentralComponents.ps1")
 if ($LASTEXITCODE -ne 0) { throw "Central components build failed." }
+& (Join-Path $root "tools\Build-AdminConsolePackage.ps1") -SkipBuild
+if ($LASTEXITCODE -ne 0) { throw "Admin console package build failed." }
 
 $stage = Join-Path $env:TEMP ("DistControl-server-" + [Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path (Join-Path $stage "bin") -Force | Out-Null
@@ -44,7 +48,8 @@ try {
         /reference:System.Security.dll `
         /reference:System.IO.Compression.dll `
         /reference:System.IO.Compression.FileSystem.dll `
-        $setupSource
+        $setupSource `
+        (Join-Path $root "src\Shared\VersionFooter.cs")
     if ($LASTEXITCODE -ne 0) { throw "Server setup executable build failed." }
 
     New-Item -ItemType Directory -Path (Split-Path -Parent $SetupOutputPath) -Force | Out-Null

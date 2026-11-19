@@ -11,6 +11,15 @@ struct DeviceRule {
     std::wstring nickname;
     std::wstring product;
     std::wstring vpnProfileId;
+    std::wstring serial;
+    bool strictNickname = false;
+};
+
+struct DeviceAccessEvaluation {
+    bool allowed = false;
+    bool nicknameChanged = false;
+    bool deviceMismatch = false;
+    std::wstring previousNickname;
 };
 
 enum class VpnProfileMode {
@@ -82,6 +91,9 @@ public:
         const std::wstring& profileId,
         const std::wstring& expectedRevision) const;
     static bool isAllowedByRules(const ParsedDevice& device, const std::vector<DeviceRule>& rules);
+    static DeviceAccessEvaluation evaluateByRules(const ParsedDevice& device, const std::vector<DeviceRule>& rules);
+    std::wstring updateNicknamesFromHub(const std::vector<ParsedDevice>& devices,
+        const std::wstring& expectedRevision) const;
     static void setConfigPathOverride(std::wstring configPath);
     static bool ensureEditableConfig(std::wstring configPath);
     static std::wstring currentUserName();

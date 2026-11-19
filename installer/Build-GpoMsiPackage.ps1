@@ -2,7 +2,7 @@
 [CmdletBinding()]
 param(
     [switch]$SkipBuild,
-    [string]$Version = "0.8.17",
+    [string]$Version = "0.8.21",
     [string]$DefaultServerUrl = "http://10.14.32.179:8765",
     [string]$DefaultUsageStateDirectory = "\\dfs\fs\IT\soft\DistKontrol\time",
     [string]$GpoMsiUncDirectory = "\\dfs\fs\IT\GPO\distcontrol"

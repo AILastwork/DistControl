@@ -18,8 +18,8 @@ using System.Windows.Forms;
 
 [assembly: AssemblyTitle("DistControl Central Admin")]
 [assembly: AssemblyProduct("DistControl")]
-[assembly: AssemblyVersion("0.8.17.0")]
-[assembly: AssemblyFileVersion("0.8.17.0")]
+[assembly: AssemblyVersion("0.8.21.0")]
+[assembly: AssemblyFileVersion("0.8.21.0")]
 
 namespace DistControl.CentralAdmin
 {
@@ -364,7 +364,11 @@ namespace DistControl.CentralAdmin
             tabs.TabPages.Add(BuildAuditPage());
             root.Controls.Add(tabs, 0, 2);
 
+            statusLabel.Spring = true;
+            statusLabel.TextAlign = ContentAlignment.MiddleLeft;
+            statusLabel.AutoToolTip = true;
             statusStrip.Items.Add(statusLabel);
+            statusStrip.Items.Add(new ToolStripStatusLabel(DistControl.VersionFooter.Text));
             statusStrip.Dock = DockStyle.Fill;
             statusLabel.Text = "Сервер не подключён";
             root.Controls.Add(statusStrip, 0, 3);
@@ -930,16 +934,23 @@ namespace DistControl.CentralAdmin
             SetBusy(true, "Открываем профили пользователей компьютера " + client.MachineName + "…");
             try
             {
-                string adminExe = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "DistControl.Admin.exe");
-                if (!File.Exists(adminExe)) throw new FileNotFoundException("Рядом с центральной консолью нет DistControl.Admin.exe.", adminExe);
+                string adminExe = EditorLocator.FindInstalledEditor();
 
                 ProcessStartInfo start = new ProcessStartInfo(adminExe,
                     BuildComputerEditorArguments(client.MachineName, client.UserName));
                 start.UseShellExecute = true;
-                Process process = Process.Start(start);
+                start.WorkingDirectory = Path.GetDirectoryName(adminExe);
+                Process process;
+                try { process = Process.Start(start); }
+                catch (System.ComponentModel.Win32Exception error)
+                {
+                    throw new InvalidOperationException("Не удалось запустить редактор:\r\n" + adminExe +
+                        "\r\n\r\n" + error.Message, error);
+                }
+                if (process == null) throw new InvalidOperationException("Редактор не запущен: " + adminExe);
                 SetBusy(true, "Открыт компьютер " + client.MachineName +
                     ". Изменения сохраняются непосредственно в профиле выбранного пользователя…");
-                await Task.Run(delegate { process.WaitForExit(); });
+                using (process) { await Task.Run(delegate { process.WaitForExit(); }); }
                 await RefreshClientsAsync();
                 SetOperationResult("Редактирование " + client.MachineName +
                     " завершено. Файл allow.json сохранялся непосредственно в профиле выбранного пользователя.");

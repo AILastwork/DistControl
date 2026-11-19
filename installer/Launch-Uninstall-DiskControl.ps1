@@ -7,7 +7,8 @@ param(
     [string]$TargetUserSid,
     [string]$UserStartMenuDir,
     [string]$UserDesktopDir,
-    [switch]$RemoveData
+    [switch]$RemoveData,
+    [switch]$SkipMsiUnregister
 )
 
 $ErrorActionPreference = "Stop"
@@ -45,6 +46,10 @@ foreach ($entry in @(
 if ($RemoveData) {
     $uninstallParams.RemoveData = $true
     $uninstallArgs += "-RemoveData"
+}
+if ($SkipMsiUnregister) {
+    $uninstallParams.SkipMsiUnregister = $true
+    $uninstallArgs += "-SkipMsiUnregister"
 }
 
 if (Test-Admin) {

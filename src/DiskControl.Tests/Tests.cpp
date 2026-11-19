@@ -15,8 +15,10 @@
 #include <chrono>
 #include <cstdio>
 #include <fstream>
+#include <filesystem>
 #include <iostream>
 #include <iterator>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -857,7 +859,35 @@ void testPolicyMatching() {
 
     ParsedDevice wrongName = allowed;
     wrongName.nickname = L"OTHER-KEY";
-    require(!PolicyManager::isAllowedByRules(wrongName, rules), "Nickname mismatch must deny access.");
+    require(PolicyManager::isAllowedByRules(wrongName, rules), "Nickname changes must preserve access.");
+    const auto renamed = PolicyManager::evaluateByRules(wrongName, rules);
+    require(renamed.nicknameChanged && renamed.previousNickname == allowed.nickname,
+        "A matching identity must report the old nickname for audit and display.");
+
+    ParsedDevice replacement = allowed;
+    replacement.product = L"Another model";
+    require(!PolicyManager::isAllowedByRules(replacement, rules) &&
+        PolicyManager::evaluateByRules(replacement, rules).deviceMismatch,
+        "A replacement product on an assigned port must be denied and reported.");
+
+    DeviceRule serialRule = rules[0];
+    serialRule.serial = L"SERIAL-1";
+    ParsedDevice moved = wrongName;
+    moved.serial = L"SERIAL-1";
+    moved.endpoint = L"OFFICE-HUB-Gr-8.8";
+    require(PolicyManager::isAllowedByRules(moved, { serialRule }), "Serial must allow moving a token to another port.");
+    moved.endpoint = allowed.endpoint;
+    moved.nickname = allowed.nickname;
+    moved.serial = L"SERIAL-2";
+    require(!PolicyManager::isAllowedByRules(moved, { serialRule }), "Wrong serial must deny despite all other fields matching.");
+    moved.serial.clear();
+    require(!PolicyManager::isAllowedByRules(moved, { serialRule }), "A missing serial must never fall back to the endpoint.");
+    DeviceRule strictRule = rules[0];
+    strictRule.strictNickname = true;
+    require(!PolicyManager::isAllowedByRules(wrongName, { strictRule }), "Strict nickname mode must keep the old behavior.");
+    require(PolicyManager::isAllowedByRules(allowed, { strictRule }), "Strict mode must allow the original nickname.");
+    require(PolicyManager::isAllowedByRules(allowed, { serialRule, rules[0] }),
+        "A separate matching grant must not be vetoed by an unrelated serial rule.");
 
     ParsedDevice optionalProduct{ L"OFFICE-HUB-Gr-2.4", L"REPORT-KEY-01", L"Any Product", L"NO ONE" };
     require(PolicyManager::isAllowedByRules(optionalProduct, rules), "Empty product rule should not restrict product.");
@@ -866,6 +896,278 @@ void testPolicyMatching() {
     require(!PolicyManager::isAllowedByRules(unknown, rules), "Unknown endpoint must deny access.");
 
     require(!PolicyManager::isAllowedByRules(allowed, {}), "Empty rules must deny access.");
+}
+
+std::string identityTestUtf8(const std::wstring& value) {
+    const int size = WideCharToMultiByte(CP_UTF8, 0, value.data(), static_cast<int>(value.size()),
+        nullptr, 0, nullptr, nullptr);
+    std::string result(size, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, value.data(), static_cast<int>(value.size()), result.data(), size, nullptr, nullptr);
+    return result;
+}
+
+void testSerialParsing() {
+    ParsedDevice device;
+    // Fields observed on the working hub on 2026-11-19. Neither USB ID is unique.
+    DeviceParser::applyDeviceInfo(device,
+        L"ADDRESS: distkontrolusb32-1-Gr-01.1114\nVENDOR: Aktiv\nVENDOR ID: 0x0a89\n"
+        L"PRODUCT: Rutoken lite\nPRODUCT ID: 0x0025\nNICKNAME: БЛЕСК-СЕРВИС ООО\nIN USE BY: NO ONE\n");
+    require(device.serial.empty(), "Model IDs must not be mistaken for a physical serial.");
+    for (const auto* field : { L"SERIAL", L"serial number", L"SERIALNUMBER", L"SERIAL_NUMBER" }) {
+        DeviceParser::applyDeviceInfo(device, std::wstring(field) + L":  UNIQUE-123  \r\n");
+        require(device.serial == L"UNIQUE-123", "Explicit serial fields must be parsed and trimmed.");
+    }
+    DeviceParser::applyDeviceInfo(device, L"PRODUCT: Rutoken lite\n");
+    require(device.serial.empty(), "A fresh response without serial must erase an old cached serial.");
+}
+
+void testIdentityPolicyStorage() {
+    const char* path = "policy-identity-storage-test.json";
+    {
+        std::ofstream out(path, std::ios::binary);
+        out << "{\"strictNickname\":true,\"custom\":\"keep\",\"userAssignments\":["
+            "{\"users\":[\"" << narrowAscii(PolicyManager::currentUserSid()) << "\"],\"groups\":[],\"allowedDevices\":["
+            "{\"endpoint\":\"HUB-Gr-1.1\",\"product\":\"Rutoken\",\"nickname\":\"OLD\",\"serial\":\"S1\","
+            "\"strictNickname\":false,\"vpnProfile\":\"direct\",\"customRule\":\"keep\"},"
+            "{\"endpoint\":\"HUB-Gr-1.2\",\"product\":\"Rutoken\",\"nickname\":\"STRICT\"}]},"
+            "{\"users\":[],\"groups\":[\"unused-test-group\"],\"allowedDevices\":["
+            "{\"endpoint\":\"HUB-Gr-1.1\",\"product\":\"Rutoken\",\"nickname\":\"OLD\",\"serial\":\"S1\"}]}]}";
+    }
+    PolicyManager policy(L"policy-identity-storage-test.json");
+    ParsedDevice device{ L"HUB-Gr-9.9", L"NEW", L"Rutoken", L"NO ONE" };
+    device.serial = L"S1";
+    require(policy.isAllowed(device), "Per-rule false must override file-level strict nickname true.");
+    ParsedDevice strict{ L"HUB-Gr-1.2", L"RENAMED", L"Rutoken", L"NO ONE" };
+    require(!policy.isAllowed(strict), "File-level strict mode must apply to rules without an override.");
+    const auto rules = policy.rulesForUser(PolicyManager::currentUserSid());
+    require(rules.size() == 2 && rules[0].serial == L"S1" && !rules[0].strictNickname && rules[1].strictNickname,
+        "Admin and user loaders must parse serial and strict mode consistently.");
+
+    const std::wstring revision = policy.updateNicknamesFromHub({ device }, policy.revision());
+    PolicyManager updated(L"policy-identity-storage-test.json");
+    const auto afterRename = updated.rulesForUser(PolicyManager::currentUserSid());
+    require(afterRename.size() == 2 && afterRename[0].nickname == L"NEW" && afterRename[0].serial == L"S1" &&
+        afterRename[0].vpnProfileId == L"direct" && !afterRename[0].strictNickname,
+        "Name refresh must preserve identity, access, strict overrides, and VPN mappings.");
+    require(revision == updated.revision(), "Name refresh must return the saved revision.");
+    bool staleDenied = false;
+    try { updated.updateNicknamesFromHub({ device }, policy.revision()); }
+    catch (const std::exception&) { staleDenied = true; }
+    require(staleDenied, "Name refresh must reject concurrent policy changes.");
+
+    // Re-assigning a renamed and moved serial-bound token must not create a duplicate.
+    updated.assignDeviceToUser(device, PolicyManager::currentUserSid());
+    PolicyManager saved(L"policy-identity-storage-test.json");
+    require(saved.rulesForUser(PolicyManager::currentUserSid()).size() == 2,
+        "Admin save after rename/move must not duplicate the rule.");
+    saved.setDevicesForUser({ device }, PolicyManager::currentUserSid());
+    PolicyManager setSaved(L"policy-identity-storage-test.json");
+    require(setSaved.rulesForUser(PolicyManager::currentUserSid()).size() == 1 &&
+        !setSaved.rulesForUser(PolicyManager::currentUserSid())[0].strictNickname,
+        "Full admin save must preserve per-rule strict overrides.");
+    std::ifstream input(path, std::ios::binary);
+    const std::string contents((std::istreambuf_iterator<char>(input)), {});
+    require(contents.find("customRule") != std::string::npos && contents.find("unused-test-group") != std::string::npos,
+        "Name and access updates must preserve unrelated administrator data.");
+    input.close();
+    std::remove(path);
+    std::remove("policy-identity-storage-test.json.lock");
+}
+
+class IdentityTestHub {
+public:
+    std::wstring pipeName = testPipeName(L"identity");
+    const std::wstring endpoint = L"distkontrolusb32-1-Gr-01.1114";
+    std::atomic_int useCommands{ 0 };
+
+    IdentityTestHub() {
+        pipe_ = createTestPipe(pipeName);
+        require(pipe_ != INVALID_HANDLE_VALUE, "Identity test pipe must be created.");
+        server_ = std::thread([this] {
+            for (;;) {
+                char request[512]{};
+                DWORD count = 0;
+                if (!connectTestPipe(pipe_) || !ReadFile(pipe_, request, sizeof(request), &count, nullptr)) break;
+                const std::string command(request, count);
+                const bool stop = command == "__TEST_STOP__";
+                std::wstring response;
+                {
+                    const std::lock_guard<std::mutex> guard(mutex_);
+                    if (command == "LIST") response = nickname_ + L" (" + endpoint + L")\n";
+                    else if (command.rfind("SERVER INFO,", 0) == 0) response = L"STATE: Logged in\n";
+                    else if (command == "DEVICE INFO," + narrowAscii(endpoint)) {
+                        if (replaceOnSecondInfo_ && ++infoReads_ == 2) product_ = L"Different physical model";
+                        response = L"PRODUCT: " + product_ + L"\nNICKNAME: " + nickname_ + L"\nIN USE BY: " +
+                            (used_ ? L"YOU" : L"NO ONE") + L"\n";
+                        if (!serial_.empty()) response += L"SERIAL: " + serial_ + L"\n";
+                    }
+                    else if (command == "USE," + narrowAscii(endpoint)) {
+                        ++useCommands;
+                        used_ = true;
+                        response = L"OK";
+                    }
+                    else response = stop ? L"OK" : L"ERROR";
+                }
+                const std::string bytes = identityTestUtf8(response);
+                DWORD written = 0;
+                WriteFile(pipe_, bytes.data(), static_cast<DWORD>(bytes.size()), &written, nullptr);
+                FlushFileBuffers(pipe_);
+                DisconnectNamedPipe(pipe_);
+                if (stop) break;
+            }
+            CloseHandle(pipe_);
+        });
+    }
+
+    void configure(const std::wstring& product, const std::wstring& serial = {}) {
+        const std::lock_guard<std::mutex> guard(mutex_);
+        product_ = product;
+        serial_ = serial;
+        used_ = false;
+        replaceOnSecondInfo_ = false;
+        infoReads_ = 0;
+    }
+
+    void replaceDuringNetworkPreparation() {
+        const std::lock_guard<std::mutex> guard(mutex_);
+        product_ = L"Rutoken lite";
+        used_ = false;
+        infoReads_ = 0;
+        replaceOnSecondInfo_ = true;
+    }
+
+    ~IdentityTestHub() {
+        try { IpcClient(pipeName).issueCommand(L"__TEST_STOP__", 2000); } catch (...) {}
+        server_.join();
+        PolicyManager::setConfigPathOverride(L"");
+    }
+
+private:
+    HANDLE pipe_ = INVALID_HANDLE_VALUE;
+    std::thread server_;
+    std::mutex mutex_;
+    std::wstring nickname_ = L"БЛЕСК-СЕРВИС ООО";
+    std::wstring product_ = L"Rutoken lite";
+    std::wstring serial_;
+    bool used_ = false;
+    bool replaceOnSecondInfo_ = false;
+    int infoReads_ = 0;
+};
+
+std::vector<AuditRecord> identityTestAuditRecords() {
+    std::vector<AuditRecord> records;
+    for (const auto& entry : std::filesystem::directory_iterator("audit-test-logs")) {
+        if (entry.path().extension() != L".csv") continue;
+        std::ifstream input(entry.path(), std::ios::binary);
+        const std::string text((std::istreambuf_iterator<char>(input)), {});
+        const auto parsed = parseAuditCsv(text);
+        records.insert(records.end(), parsed.begin(), parsed.end());
+    }
+    return records;
+}
+
+void testIncidentRenameAndReplacement() {
+    IdentityTestHub hub;
+    StubbedNetworkOperationsGuard networkGuard;
+    const char* path = "policy-incident-identity-test.json";
+    const auto writePolicy = [&](const char* extra = "") {
+        std::ofstream output(path, std::ios::binary);
+        output << "{\"pipeName\":\"" << narrowAscii(hub.pipeName) << "\","
+            "\"usageStatePath\":\"usage-incident-identity-test.json\","
+            "\"vpnProfiles\":[{\"id\":\"direct\",\"mode\":\"direct\",\"enabled\":true}],"
+            "\"userAssignments\":[{\"users\":[\"" << narrowAscii(PolicyManager::currentUserSid()) << "\"],"
+            "\"groups\":[],\"allowedDevices\":[{\"endpoint\":\"" << narrowAscii(hub.endpoint) << "\","
+            u8"\"nickname\":\"БЛЕСК-СЕРВИС ООО (СМЕНА ГД)\",\"product\":\"Rutoken lite\",\"vpnProfile\":\"direct\""
+            << extra << "}]}]}";
+    };
+    writePolicy();
+    PolicyManager::setConfigPathOverride(L"policy-incident-identity-test.json");
+    std::remove("audit-test-logs/identity-observations.txt");
+    const auto countAction = [&](const wchar_t* action) {
+        size_t count = 0;
+        for (const auto& record : identityTestAuditRecords()) {
+            if (record.action == action && record.endpoint == hub.endpoint) ++count;
+        }
+        return count;
+    };
+    std::filesystem::create_directories("audit-test-logs");
+    const size_t beforeRename = countAction(L"NICKNAME CHANGED");
+    DeviceAccessService service;
+    const std::string original = [&] { std::ifstream in(path, std::ios::binary);
+        return std::string((std::istreambuf_iterator<char>(in)), {}); }();
+    auto devices = service.listVisibleDevices();
+    require(devices.size() == 1 && devices[0].allowed && devices[0].nicknameChanged &&
+        devices[0].previousNickname == L"БЛЕСК-СЕРВИС ООО (СМЕНА ГД)",
+        "Incident token must remain visible and accessible, with a rename warning.");
+    service.listVisibleDevicesQuick(devices);
+    service.listVisibleDevices();
+    require(countAction(L"NICKNAME CHANGED") == beforeRename + 1,
+        "Repeated and quick refreshes must audit a rename only once.");
+    require(service.useDevice(devices[0]).find(L"Токен подключён") != std::wstring::npos && hub.useCommands == 1,
+        "Incident token must pass USE through the complete access service.");
+    { std::ifstream in(path, std::ios::binary);
+        require(std::string((std::istreambuf_iterator<char>(in)), {}) == original,
+            "User LIST and USE must never rewrite allow.json."); }
+
+    const size_t beforeMismatch = countAction(L"DEVICE MISMATCH");
+    hub.configure(L"Different physical model");
+    devices = service.listVisibleDevicesQuick(devices);
+    require(devices.size() == 1 && !devices[0].allowed && devices[0].deviceMismatch &&
+        devices[0].statusText.find(L"теперь другой токен, обратитесь к администратору") != std::wstring::npos,
+        "Replacement must be inaccessible and show a clear port warning.");
+    bool useDenied = false;
+    try { service.useDevice(devices[0]); } catch (const std::exception&) { useDenied = true; }
+    require(useDenied && hub.useCommands == 1 && countAction(L"DEVICE MISMATCH") == beforeMismatch + 1,
+        "Replacement must produce DEVICE MISMATCH without sending USE.");
+    hub.replaceDuringNetworkPreparation();
+    bool lateReplacementDenied = false;
+    try { service.useDevice(devices[0]); }
+    catch (const std::exception& error) {
+        lateReplacementDenied = std::string(error.what()).find("DEVICE MISMATCH:") != std::string::npos;
+    }
+    require(lateReplacementDenied && hub.useCommands == 1,
+        "Replacement after the first access check must abort USE with a clear mismatch error.");
+
+    hub.configure(L"Rutoken lite", L"WRONG-SERIAL");
+    writePolicy(",\"serial\":\"EXPECTED-SERIAL\"");
+    devices = service.listVisibleDevices();
+    require(devices.size() == 1 && !devices[0].allowed && devices[0].deviceMismatch,
+        "Same-model serial replacement must also be denied in the service.");
+    hub.configure(L"Rutoken lite", L"EXPECTED-SERIAL");
+    devices = service.listVisibleDevices();
+    require(devices.size() == 1 && devices[0].allowed && devices[0].serial == L"EXPECTED-SERIAL",
+        "Matching serial must survive parser/view conversions and policy checks.");
+
+    // Audit details must name the affected user and both incident names.
+    bool detailedRename = false;
+    for (const auto& record : identityTestAuditRecords()) {
+        if (record.action == L"NICKNAME CHANGED" && record.endpoint == hub.endpoint &&
+            record.details.find(L"oldNickname=БЛЕСК-СЕРВИС ООО (СМЕНА ГД)") != std::wstring::npos &&
+            record.details.find(L"newNickname=БЛЕСК-СЕРВИС ООО") != std::wstring::npos &&
+            record.details.find(L"user=" + PolicyManager::currentUserName()) != std::wstring::npos) detailedRename = true;
+    }
+    require(detailedRename, "Rename audit must include endpoint, old/new names, and affected user.");
+    writePolicy(",\"strictNickname\":true");
+    hub.configure(L"Rutoken lite");
+    require(service.listVisibleDevices().empty(), "Strict nickname must still hide a renamed token from a user.");
+    auto adminDevices = service.listAllDevicesForUser(PolicyManager::currentUserSid());
+    require(adminDevices.size() == 1 && adminDevices[0].nicknameChanged && !adminDevices[0].allowed,
+        "Admin must see renamed tokens even under strict mode.");
+    PolicyManager admin;
+    ParsedDevice renamed{ hub.endpoint, L"БЛЕСК-СЕРВИС ООО", L"Rutoken lite", L"NO ONE" };
+    admin.assignDeviceToUser(renamed, PolicyManager::currentUserSid());
+    require(PolicyManager().rulesForUser(PolicyManager::currentUserSid()).size() == 1,
+        "Saving a renamed legacy token must not create a second grant.");
+    service.updateNicknamesFromHub(adminDevices, PolicyManager().revision());
+    const auto updatedRules = PolicyManager().rulesForUser(PolicyManager::currentUserSid());
+    require(updatedRules.size() == 1 && updatedRules[0].nickname == renamed.nickname && updatedRules[0].strictNickname &&
+        updatedRules[0].vpnProfileId == L"direct",
+        "Admin name refresh must update the legacy rule without changing strict mode or VPN.");
+    require(service.listVisibleDevices().size() == 1,
+        "Strict mode token must become visible after the explicit admin name refresh.");
+    std::remove(path);
+    std::remove("usage-incident-identity-test.json");
+    std::remove("usage-incident-identity-test.json.lock");
 }
 
 void testUsageParsing() {
@@ -1201,6 +1503,12 @@ void testQuickRefreshReusesUnchangedDeviceInfo() {
     previous.endpoint = L"OFFICE-HUB-Gr-1.3";
     previous.listLine = L"Key One (OFFICE-HUB-Gr-1.3)";
     require(canReuseDeviceInfo(devices[0], previous), "An unchanged LIST line must reuse DEVICE INFO.");
+    previous.allowed = true;
+    require(!canReuseDeviceInfo(devices[0], previous), "Granted identities must be rechecked even when LIST is unchanged.");
+    previous.allowed = false;
+    previous.serial = L"SERIAL-1";
+    require(!canReuseDeviceInfo(devices[0], previous), "Serial-bound entries must never reuse stale identity data.");
+    previous.serial.clear();
 
     previous.listLine = L"--> Key One (OFFICE-HUB-Gr-1.3)";
     require(!canReuseDeviceInfo(devices[0], previous), "A changed usage marker must trigger DEVICE INFO.");
@@ -2132,6 +2440,9 @@ int wmain(int argc, wchar_t** argv) {
         testParseList();
         testApplyDeviceInfo();
         testPolicyMatching();
+        testSerialParsing();
+        testIdentityPolicyStorage();
+        testIncidentRenameAndReplacement();
         testUsageParsing();
         testUsageStateStore();
         testUsageSyncOfflinePersistenceAndMetadata();

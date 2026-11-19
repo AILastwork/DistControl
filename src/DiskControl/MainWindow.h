@@ -138,6 +138,7 @@ private:
     HWND removeUserButton_ = nullptr;
     HWND openPolicyButton_ = nullptr;
     HWND savePolicyButton_ = nullptr;
+    HWND updateNicknamesButton_ = nullptr;
     HWND searchLabel_ = nullptr;
     HWND searchEdit_ = nullptr;
     HWND clearSearchButton_ = nullptr;
@@ -146,6 +147,7 @@ private:
     HWND vpnMappingsButton_ = nullptr;
     HWND usageReportButton_ = nullptr;
     HWND statusLabel_ = nullptr;
+    HWND versionLabel_ = nullptr;
     HWND refreshProgressBar_ = nullptr;
     HWND refreshProgressLabel_ = nullptr;
     DeviceAccessService service_;

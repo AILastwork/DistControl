@@ -20,7 +20,11 @@
     <MediaTemplate EmbedCab="yes" />
     <Property Id="ARPNOMODIFY" Value="1" />
     <Property Id="ARPNOREPAIR" Value="1" />
+    <!-- User-visible entries belong to each profile. This is the shared GPO bootstrap. -->
+    <Property Id="ARPSYSTEMCOMPONENT" Value="1" />
     <Property Id="DISTCONTROLTARGETUSERSID" Secure="yes" />
+    <Property Id="DISTCONTROLCLIENTREMOVED" Secure="yes" />
+    <Property Id="DISTCONTROLENSUREUSER" Secure="yes" />
 
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="ProgramFiles64Folder">
@@ -41,13 +45,22 @@
     <CustomAction
         Id="RunDistControlSetup"
         FileKey="DistControlSetupExe"
-        ExeCommand="--msi-silent --target-user-sid &quot;[DISTCONTROLTARGETUSERSID]&quot; --msi-user-sid &quot;[UserSID]&quot;"
+        ExeCommand="--msi-silent --target-user-sid &quot;[DISTCONTROLTARGETUSERSID]&quot; --msi-user-sid &quot;[UserSID]&quot; --ensure-user &quot;[DISTCONTROLENSUREUSER]&quot;"
+        Execute="deferred"
+        Impersonate="no"
+        Return="check" />
+
+    <CustomAction
+        Id="RunDistControlUninstall"
+        FileKey="DistControlSetupExe"
+        ExeCommand="--msi-uninstall"
         Execute="deferred"
         Impersonate="no"
         Return="check" />
 
     <InstallExecuteSequence>
-      <Custom Action="RunDistControlSetup" After="InstallFiles">NOT Installed AND NOT ACTION="ADMIN"</Custom>
+      <Custom Action="RunDistControlSetup" After="InstallFiles">NOT REMOVE AND NOT ACTION="ADMIN" AND NOT UPGRADINGPRODUCTCODE</Custom>
+      <Custom Action="RunDistControlUninstall" Before="RemoveFiles">REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE AND NOT DISTCONTROLCLIENTREMOVED</Custom>
     </InstallExecuteSequence>
   </Product>
 </Wix>

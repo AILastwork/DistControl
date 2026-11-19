@@ -274,6 +274,57 @@ std::string AuditLogger::csvEscapeForTest(const std::wstring& value) {
     return csvEscape(value);
 }
 
+bool AuditLogger::logOnce(const AuditEvent& event) {
+    try {
+        const std::lock_guard<std::mutex> lock(gLogMutex);
+        const std::wstring mutexName = L"Local\\DistControl.PolicyObservations." + PolicyManager::currentUserSid();
+        HANDLE mutex = CreateMutexW(nullptr, FALSE, mutexName.c_str());
+        if (!mutex) return false;
+        const DWORD wait = WaitForSingleObject(mutex, 1000);
+        if (wait != WAIT_OBJECT_0 && wait != WAIT_ABANDONED) {
+            CloseHandle(mutex);
+            return false;
+        }
+        bool written = false;
+        try {
+            // Hex makes a receipt exactly one line even when names contain
+            // commas, quotes, or newlines. Include the subject user in details.
+            const std::string raw = csvEscape(event.action) + "," + csvEscape(event.endpoint) + "," +
+                csvEscape(event.nickname) + "," + csvEscape(event.product) + "," + csvEscape(event.details);
+            std::string key;
+            for (unsigned char ch : raw) {
+                key += "0123456789abcdef"[ch >> 4];
+                key += "0123456789abcdef"[ch & 15];
+            }
+            for (const std::wstring& directory : { defaultLogDirectory(), fallbackLogDirectory() }) {
+                std::error_code error;
+                fs::create_directories(directory, error);
+                if (error) continue;
+                const fs::path receipts = fs::path(directory) / L"identity-observations.txt";
+                std::ifstream input(receipts, std::ios::binary);
+                bool seen = false;
+                for (std::string line; std::getline(input, line);) {
+                    if (line == key) { seen = true; break; }
+                }
+                input.close();
+                if (seen) break;
+                std::ofstream output(receipts, std::ios::binary | std::ios::app);
+                if (!output) continue;
+                if (tryWrite(directory, event)) {
+                    output << key << '\n';
+                    written = true;
+                    break;
+                }
+            }
+        }
+        catch (...) {}
+        ReleaseMutex(mutex);
+        CloseHandle(mutex);
+        return written;
+    }
+    catch (...) { return false; }
+}
+
 std::wstring AuditLogger::defaultLogDirectory() {
 #ifdef DISKCONTROL_TESTING
     // Tests must never add fake tokens to the real journal and usage report.

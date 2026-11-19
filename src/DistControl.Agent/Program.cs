@@ -14,8 +14,8 @@ using System.Web.Script.Serialization;
 
 [assembly: AssemblyTitle("DistControl Central Agent")]
 [assembly: AssemblyProduct("DistControl")]
-[assembly: AssemblyVersion("0.8.17.0")]
-[assembly: AssemblyFileVersion("0.8.17.0")]
+[assembly: AssemblyVersion("0.8.21.0")]
+[assembly: AssemblyFileVersion("0.8.21.0")]
 
 namespace DistControl.Agent
 {
@@ -30,6 +30,9 @@ namespace DistControl.Agent
         public string LogsDirectory = "";
         public string NetworkStatePath = "";
         public string InstallDirectory = "";
+        public string ServiceName = "DistControlAgent";
+        public string DkClientDirectory = "";
+        public string RuntimeStateDirectory = "";
         public int PollSeconds = 30;
         public bool AutoUpdate = true;
         public string AppliedHubRevision = "";
@@ -391,9 +394,23 @@ namespace DistControl.Agent
             try
             {
                 List<string> addresses = ValidateHubEndpoints(hubs.ManualHubs);
-                UpdateManualHubs(Path.Combine(config.InstallDirectory, "dkcl.ini"), hubs.ManualHubs ?? "");
-                ApplyHubRoutes(addresses);
-                RestartDkClient();
+                using (Mutex runtimeLock = new Mutex(false, @"Global\DistControl.ClientLifecycle"))
+                {
+                    bool acquired;
+                    try { acquired = runtimeLock.WaitOne(120000); }
+                    catch (AbandonedMutexException) { acquired = true; }
+                    if (!acquired) throw new System.TimeoutException("Другой установщик или агент занят настройкой USB-службы.");
+                    try
+                    {
+                        // A second user's first poll must not restart an identical
+                        // backend or remove routes owned by the shared runtime.
+                        bool changed = !String.Equals(ReadCurrentManualHubs(), hubs.ManualHubs ?? "", StringComparison.Ordinal);
+                        if (changed) UpdateManualHubs(Path.Combine(DkClientDirectory, "dkcl.ini"), hubs.ManualHubs ?? "");
+                        ApplyHubRoutes(addresses);
+                        if (changed) RestartDkClient();
+                    }
+                    finally { runtimeLock.ReleaseMutex(); }
+                }
                 config.AppliedHubRevision = hubs.Revision;
                 config.HubStatus = "USB-серверы применены: " + addresses.Count + ".";
                 SaveConfig();
@@ -475,7 +492,7 @@ namespace DistControl.Agent
 
         private string ReadCurrentManualHubs()
         {
-            string iniPath = Path.Combine(config.InstallDirectory, "dkcl.ini");
+            string iniPath = Path.Combine(DkClientDirectory, "dkcl.ini");
             if (!File.Exists(iniPath)) return "";
             bool inSettings = false;
             foreach (string line in File.ReadAllLines(iniPath, Encoding.Default))
@@ -497,7 +514,8 @@ namespace DistControl.Agent
 
         private void ApplyHubRoutes(List<string> addresses)
         {
-            string dataDirectory = Path.GetDirectoryName(config.PolicyPath);
+            string dataDirectory = String.IsNullOrWhiteSpace(config.RuntimeStateDirectory)
+                ? Path.GetDirectoryName(config.PolicyPath) : config.RuntimeStateDirectory;
             string manifestPath = Path.Combine(dataDirectory, "managed-hub-routes.json");
             Directory.CreateDirectory(dataDirectory);
             string desired = String.Join(",", addresses.Select(delegate(string value)
@@ -532,6 +550,28 @@ namespace DistControl.Agent
                 if (process.ExitCode != 0)
                     throw new InvalidOperationException(String.IsNullOrWhiteSpace(error) ? output : error);
             }
+        }
+
+        private string DkClientDirectory
+        {
+            get { return String.IsNullOrWhiteSpace(config.DkClientDirectory) ? config.InstallDirectory : config.DkClientDirectory; }
+        }
+
+        private bool HasRunningClientApplications()
+        {
+            string root = Path.GetFullPath(config.InstallDirectory).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            foreach (string name in new[] { "DistControl", "DistControl.Admin" })
+                foreach (Process process in Process.GetProcessesByName(name))
+                    using (process)
+                    {
+                        try
+                        {
+                            if (process.MainModule.FileName.StartsWith(root, StringComparison.OrdinalIgnoreCase)) return true;
+                        }
+                        catch (System.ComponentModel.Win32Exception) { }
+                        catch (InvalidOperationException) { }
+                    }
+            return false;
         }
 
         private static void RestartDkClient()
@@ -582,8 +622,7 @@ namespace DistControl.Agent
             if (!config.AutoUpdate) return;
             UpdateManifestResponse manifest = SendJson<UpdateManifestResponse>("GET", "/api/v1/client/update", null, true);
             if (manifest == null || !manifest.Available || String.IsNullOrWhiteSpace(manifest.Version)) return;
-            if (Process.GetProcessesByName("DistControl").Length > 0 ||
-                Process.GetProcessesByName("DistControl.Admin").Length > 0)
+            if (HasRunningClientApplications())
             {
                 ReportUpdateStatus("Обновление " + manifest.Version + " ожидает закрытия DistControl и локальной админки");
                 return;
@@ -617,7 +656,7 @@ namespace DistControl.Agent
             ProcessStartInfo start = new ProcessStartInfo(temporaryUpdater,
                 "--wait-pid " + Process.GetCurrentProcess().Id +
                 " --staging \"" + stage + "\" --install \"" + config.InstallDirectory +
-                "\" --service DistControlAgent --result \"" + Path.Combine(Path.GetDirectoryName(configPath), "update-result.json") + "\"");
+                "\" --service \"" + config.ServiceName + "\" --result \"" + Path.Combine(Path.GetDirectoryName(configPath), "update-result.json") + "\"");
             start.UseShellExecute = false;
             start.CreateNoWindow = true;
             Process.Start(start);
@@ -887,9 +926,9 @@ namespace DistControl.Agent
         private Thread workerThread;
         private ManualResetEvent stopEvent;
 
-        public AgentService(string configPath)
+        public AgentService(string configPath, string serviceName)
         {
-            ServiceName = "DistControlAgent";
+            ServiceName = serviceName;
             CanStop = true;
             AutoLog = true;
             this.configPath = configPath;
@@ -939,6 +978,7 @@ namespace DistControl.Agent
         private static int Main(string[] args)
         {
             string config = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "agent.json");
+            string serviceName = "DistControlAgent";
             bool console = Environment.UserInteractive;
             bool once = false;
             for (int i = 0; i < args.Length; ++i)
@@ -947,10 +987,11 @@ namespace DistControl.Agent
                 else if (args[i] == "--console") console = true;
                 else if (args[i] == "--once") { console = true; once = true; }
                 else if (args[i] == "--config" && i + 1 < args.Length) config = args[++i];
+                else if (args[i] == "--service-name" && i + 1 < args.Length) serviceName = args[++i];
             }
             try
             {
-                AgentService service = new AgentService(config);
+                AgentService service = new AgentService(config, serviceName);
                 if (console) service.RunConsole(once);
                 else ServiceBase.Run(service);
                 return 0;

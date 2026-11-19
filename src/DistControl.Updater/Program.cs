@@ -11,8 +11,8 @@ using System.Web.Script.Serialization;
 
 [assembly: AssemblyTitle("DistControl Updater")]
 [assembly: AssemblyProduct("DistControl")]
-[assembly: AssemblyVersion("0.8.17.0")]
-[assembly: AssemblyFileVersion("0.8.17.0")]
+[assembly: AssemblyVersion("0.8.21.0")]
+[assembly: AssemblyFileVersion("0.8.21.0")]
 
 namespace DistControl.Updater
 {
@@ -39,6 +39,8 @@ namespace DistControl.Updater
             string resultPath = Value(options, "--result");
             int waitPid;
             Int32.TryParse(Value(options, "--wait-pid"), out waitPid);
+            Mutex lifecycleLock = null;
+            bool ownsLock = false;
 
             try
             {
@@ -46,6 +48,12 @@ namespace DistControl.Updater
                 {
                     try { Process.GetProcessById(waitPid).WaitForExit(60000); } catch (ArgumentException) { }
                 }
+                lifecycleLock = new Mutex(false, @"Global\DistControl.ClientLifecycle");
+                try { ownsLock = lifecycleLock.WaitOne(120000); }
+                catch (AbandonedMutexException) { ownsLock = true; }
+                if (!ownsLock) throw new System.TimeoutException("Другой установщик или удалятор DistControl ещё работает.");
+                if (!Directory.Exists(install) || !File.Exists(Path.Combine(install, "agent.json")))
+                    throw new DirectoryNotFoundException("Пользовательский клиент уже удалён; обновление отменено.");
                 StopService(serviceName);
                 Apply(staging, install);
                 WriteResult(resultPath, true, "Обновление установлено успешно");
@@ -54,9 +62,14 @@ namespace DistControl.Updater
             }
             catch (Exception error)
             {
-                WriteResult(resultPath, false, "Обновление не установлено: " + error.Message);
+                if (Directory.Exists(install)) WriteResult(resultPath, false, "Обновление не установлено: " + error.Message);
                 try { StartService(serviceName); } catch { }
                 return 1;
+            }
+            finally
+            {
+                if (ownsLock) lifecycleLock.ReleaseMutex();
+                if (lifecycleLock != null) lifecycleLock.Dispose();
             }
         }
 

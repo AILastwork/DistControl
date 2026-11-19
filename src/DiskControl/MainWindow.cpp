@@ -27,7 +27,27 @@
 #include <sstream>
 #include <string>
 
+#pragma comment(lib, "version.lib")
+
 namespace {
+std::wstring programVersionText() {
+    wchar_t path[32768]{};
+    if (!GetModuleFileNameW(nullptr, path, static_cast<DWORD>(std::size(path)))) return L"";
+    DWORD ignored = 0;
+    const DWORD size = GetFileVersionInfoSizeW(path, &ignored);
+    if (!size) return L"";
+    std::vector<BYTE> data(size);
+    if (!GetFileVersionInfoW(path, 0, size, data.data())) return L"";
+    VS_FIXEDFILEINFO* info = nullptr;
+    UINT infoSize = 0;
+    if (!VerQueryValueW(data.data(), L"\\", reinterpret_cast<void**>(&info), &infoSize) ||
+        infoSize < sizeof(VS_FIXEDFILEINFO)) return L"";
+    return L"Версия " + std::to_wstring(HIWORD(info->dwFileVersionMS)) + L"." +
+        std::to_wstring(LOWORD(info->dwFileVersionMS)) + L"." +
+        std::to_wstring(HIWORD(info->dwFileVersionLS)) + L"." +
+        std::to_wstring(LOWORD(info->dwFileVersionLS));
+}
+
 constexpr int IDC_DEVICE_LIST = 1001;
 constexpr int IDC_REFRESH = 1002;
 constexpr int IDC_USE = 1003;
@@ -42,6 +62,7 @@ constexpr int IDC_SEARCH = 1012;
 constexpr int IDC_CLEAR_SEARCH = 1013;
 constexpr int IDC_OPEN_POLICY = 1014;
 constexpr int IDC_SAVE_POLICY = 1015;
+constexpr int IDC_UPDATE_NICKNAMES = 1099;
 constexpr int IDC_COMPUTER = 1018;
 constexpr int IDC_LOAD_COMPUTER = 1019;
 constexpr int IDC_AVAILABLE_LIST = 1020;
@@ -147,6 +168,13 @@ std::wstring userFriendlyErrorMessage(const char* error) {
     }
     if (containsAscii(error, "VPN connection") || containsAscii(error, "VPN credential")) {
         return L"Не удалось подключить VPN. Проверьте профиль Windows, логин, пароль и доступность VPN-сервера.";
+    }
+    if (containsAscii(error, "DEVICE MISMATCH: ")) {
+        const std::string technical(error);
+        const size_t begin = technical.find("DEVICE MISMATCH: ") + std::string("DEVICE MISMATCH: ").size();
+        const size_t end = technical.find(". Device", begin);
+        return L"На порту " + widenAscii(technical.substr(begin, end - begin).c_str()) +
+            L" теперь другой токен, обратитесь к администратору";
     }
     if (containsAscii(error, "Device is not allowed by policy")) {
         return L"Этот токен не разрешён текущему пользователю. Обратитесь к администратору DistControl.";
@@ -1196,7 +1224,7 @@ void insertDeviceRow(HWND listView, int row, const DeviceViewModel& device, bool
     item.iItem = row;
     item.pszText = const_cast<wchar_t*>(device.endpoint.c_str());
     ListView_InsertItem(listView, &item);
-    setItemText(listView, row, 1, device.nickname);
+    setItemText(listView, row, 1, device.nickname + (device.nicknameChanged ? L" (имя изменилось на хабе)" : L""));
     setItemText(listView, row, 2, networkProfileText(device));
     setItemText(listView, row, 3, device.statusText);
     setItemText(listView, row, 4, device.usedBy);
@@ -1240,7 +1268,7 @@ void populateGroupedDeviceList(HWND listView, const std::vector<DeviceViewModel>
         item.iGroupId = groupIds[groupName];
         item.pszText = const_cast<wchar_t*>(device.endpoint.c_str());
         ListView_InsertItem(listView, &item);
-        setItemText(listView, static_cast<int>(i), 1, device.nickname);
+        setItemText(listView, static_cast<int>(i), 1, device.nickname + (device.nicknameChanged ? L" (имя изменилось на хабе)" : L""));
         setItemText(listView, static_cast<int>(i), 2, networkProfileText(device));
         setItemText(listView, static_cast<int>(i), 3, device.statusText);
         setItemText(listView, static_cast<int>(i), 4, device.usedBy);
@@ -1699,15 +1727,17 @@ std::wstring timestampForFileName() {
 }
 
 bool sameDeviceIdentity(const DeviceViewModel& left, const DeviceViewModel& right) {
-    return left.endpoint == right.endpoint &&
-        left.nickname == right.nickname &&
-        left.product == right.product;
+    const auto equal = [](const std::wstring& a, const std::wstring& b) {
+        return CompareStringOrdinal(a.c_str(), -1, b.c_str(), -1, TRUE) == CSTR_EQUAL;
+    };
+    return (!left.serial.empty() ? equal(left.serial, right.serial) : equal(left.endpoint, right.endpoint)) &&
+        equal(left.product, right.product);
 }
 
 std::wstring columnValue(const DeviceViewModel& device, int column) {
     switch (column) {
     case 0: return device.endpoint;
-    case 1: return device.nickname;
+    case 1: return device.nickname + (device.nicknameChanged ? L" (имя изменилось на хабе)" : L"");
     case 2: return networkProfileText(device);
     case 3: return device.statusText;
     case 4: return device.usedBy;
@@ -1721,7 +1751,7 @@ std::wstring columnValue(const DeviceViewModel& device, int column) {
 
 std::wstring displayDeviceName(const DeviceViewModel& device) {
     if (!device.nickname.empty()) {
-        return device.nickname;
+        return device.nickname + (device.nicknameChanged ? L" (имя изменилось на хабе)" : L"");
     }
     if (!device.product.empty()) {
         return device.product;
@@ -1795,6 +1825,7 @@ std::wstring usageSuffix(const DeviceViewModel& device) {
 
 std::wstring treeDeviceText(const DeviceViewModel& device, bool withNetwork = true) {
     std::wstring text = displayDeviceName(device);
+    if (device.deviceMismatch) return text + L" — " + device.statusText;
     if (withNetwork) {
         if (!device.vpnProfileId.empty()) {
             text += L" [Сеть: " + networkProfileText(device) + L"]";
@@ -2214,6 +2245,22 @@ LRESULT MainWindow::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         case IDC_SAVE_POLICY:
             saveCheckedDevicesForUser();
             return 0;
+        case IDC_UPDATE_NICKNAMES:
+#ifdef DISKCONTROL_ADMIN
+            if (refreshing_ || computerLoading_ || !adminAccessLoaded_ || adminAccessDirty_) return 0;
+            try {
+                service_.updateNicknamesFromHub(allDevices_, loadedPolicyRevision_);
+                const std::wstring revision = service_.updateAccessForUser(allDevices_, loadedPolicyUser_);
+                captureAdminAccessState(loadedPolicyUser_, revision);
+                applyDeviceFilter();
+                updateStatus(L"Имена токенов в правилах обновлены по хабу.");
+            }
+            catch (const std::exception& error) {
+                const std::wstring status = L"Не удалось обновить имена. " + userFriendlyErrorMessage(error.what());
+                updateStatus(status.c_str());
+            }
+#endif
+            return 0;
         case IDC_CLEAR_SEARCH:
             SetWindowTextW(searchEdit_, L"");
             applyDeviceFilter();
@@ -2398,6 +2445,8 @@ void MainWindow::createControls() {
         hwnd_, controlId(IDC_OPEN_POLICY), instance_, nullptr);
     savePolicyButton_ = CreateWindowW(L"BUTTON", L"Сохранить доступ", adminActionStyle, 0, 0, 0, 0,
         hwnd_, controlId(IDC_SAVE_POLICY), instance_, nullptr);
+    updateNicknamesButton_ = CreateWindowW(L"BUTTON", L"Обновить имена по хабу", adminActionStyle,
+        0, 0, 0, 0, hwnd_, controlId(IDC_UPDATE_NICKNAMES), instance_, nullptr);
     searchLabel_ = CreateWindowW(L"STATIC", L"Поиск:", adminActionStyle | SS_LEFTNOWORDWRAP,
         0, 0, 0, 0, hwnd_, nullptr, instance_, nullptr);
     searchEdit_ = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
@@ -2414,6 +2463,8 @@ void MainWindow::createControls() {
         0, 0, 0, 0, hwnd_, controlId(IDC_USAGE_REPORT), instance_, nullptr);
     statusLabel_ = CreateWindowW(L"STATIC", L"Готово.", WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP,
         0, 0, 0, 0, hwnd_, controlId(IDC_STATUS), instance_, nullptr);
+    versionLabel_ = CreateWindowW(L"STATIC", programVersionText().c_str(),
+        WS_CHILD | WS_VISIBLE | SS_RIGHT | SS_CENTERIMAGE, 0, 0, 0, 0, hwnd_, nullptr, instance_, nullptr);
     refreshProgressLabel_ = CreateWindowW(L"STATIC", L"", WS_CHILD | SS_CENTER,
         0, 0, 0, 0, hwnd_, nullptr, instance_, nullptr);
     refreshProgressBar_ = CreateWindowExW(0, PROGRESS_CLASSW, nullptr,
@@ -2703,6 +2754,7 @@ void MainWindow::layoutControls() {
         MoveWindow(assignUserLabel_, rowX, userTop + 7, labelWidth, 20, TRUE);
         rowX += labelWidth + gap;
         MoveWindow(assignUserEdit_, rowX, userTop, userWidth, 180, TRUE);
+        MoveWindow(updateNicknamesButton_, rowX + userWidth + gap, userTop, 230, buttonHeight, TRUE);
 
         int x = margin;
         MoveWindow(refreshButton_, x, buttonTop, buttonWidth, buttonHeight, TRUE);
@@ -2735,13 +2787,16 @@ void MainWindow::layoutControls() {
 
     constexpr int refreshProgressWidth = 230;
     constexpr int refreshPercentWidth = 62;
+    constexpr int versionWidth = 150;
     const int statusTop = height - margin - statusHeight;
-    const int progressX = width - margin - refreshProgressWidth;
+    const int versionX = width - margin - versionWidth;
+    const int progressX = versionX - gap - refreshProgressWidth;
     const int percentX = progressX - refreshPercentWidth;
-    const int statusWidth = (IsWindowVisible(refreshProgressBar_) ? percentX - gap : width - margin) - margin;
+    const int statusWidth = (IsWindowVisible(refreshProgressBar_) ? percentX - gap : versionX - gap) - margin;
     MoveWindow(statusLabel_, margin, statusTop, (std::max)(statusWidth, 100), statusHeight, TRUE);
     MoveWindow(refreshProgressLabel_, percentX, statusTop + 3, refreshPercentWidth, statusHeight - 3, TRUE);
     MoveWindow(refreshProgressBar_, progressX, statusTop + 3, refreshProgressWidth, 18, TRUE);
+    MoveWindow(versionLabel_, versionX, statusTop, versionWidth, statusHeight, TRUE);
 }
 
 void MainWindow::setMainControlsEnabled(bool enabled) {
@@ -2774,6 +2829,9 @@ void MainWindow::setMainControlsEnabled(bool enabled) {
     }
     if (savePolicyButton_) {
         EnableWindow(savePolicyButton_, value && adminAccessLoaded_ && adminAccessDirty_);
+    }
+    if (updateNicknamesButton_) {
+        EnableWindow(updateNicknamesButton_, value && adminAccessLoaded_ && !adminAccessDirty_);
     }
     if (computerEdit_) {
         EnableWindow(computerEdit_, value && !externalPolicyEdit_);
@@ -4100,6 +4158,10 @@ void MainWindow::markAdminAccessDirty() {
 
 void MainWindow::updateAdminSaveState() {
 #ifdef DISKCONTROL_ADMIN
+    if (updateNicknamesButton_) {
+        EnableWindow(updateNicknamesButton_, adminAccessLoaded_ && !adminAccessDirty_ &&
+            !refreshing_ && !computerLoading_);
+    }
     if (savePolicyButton_) {
         EnableWindow(savePolicyButton_, adminAccessLoaded_ && adminAccessDirty_ &&
             !refreshing_ && !computerLoading_);
