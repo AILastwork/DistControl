@@ -173,6 +173,34 @@ namespace DistControl.Server
             }
         }
 
+        public int ClearPendingEnrollments(string actor)
+        {
+            lock (sync)
+            {
+                int waiting = data.PendingEnrollments.Count(delegate(PendingEnrollmentRecord item)
+                {
+                    return !item.Approved && !item.Rejected;
+                });
+                int approved = data.PendingEnrollments.Count(delegate(PendingEnrollmentRecord item)
+                {
+                    return item.Approved;
+                });
+                int rejected = data.PendingEnrollments.Count(delegate(PendingEnrollmentRecord item)
+                {
+                    return item.Rejected;
+                });
+                int removed = data.PendingEnrollments.Count;
+                if (removed == 0) return 0;
+
+                data.PendingEnrollments.Clear();
+                AddAudit(actor, "ENROLLMENTS_CLEARED", "ALL",
+                    "total=" + removed + "; waiting=" + waiting +
+                    "; approved=" + approved + "; rejected=" + rejected);
+                SaveLocked();
+                return removed;
+            }
+        }
+
         public ClientRecord AuthenticateClient(string clientId, string token)
         {
             lock (sync)
@@ -313,6 +341,29 @@ namespace DistControl.Server
                         Online = parsed && now.Subtract(seen.ToUniversalTime()).TotalSeconds <= 90
                     };
                 }).OrderBy(delegate(ClientSummary c) { return c.MachineName; }).ToList();
+            }
+        }
+
+        public void DeleteClient(string clientId, string actor)
+        {
+            lock (sync)
+            {
+                ClientRecord client = FindClientLocked(clientId);
+                if (client == null) throw new KeyNotFoundException("Компьютер не найден.");
+
+                int preservedLogs = data.Logs.Count(delegate(CentralLogRecord item)
+                {
+                    return String.Equals(item.ClientId, client.Id, StringComparison.OrdinalIgnoreCase);
+                });
+                int removedCommands = data.Commands.RemoveAll(delegate(ClientCommandRecord item)
+                {
+                    return String.Equals(item.ClientId, client.Id, StringComparison.OrdinalIgnoreCase);
+                });
+                data.Clients.Remove(client);
+                AddAudit(actor, "CLIENT_DELETED", client.Id,
+                    client.MachineName + " / " + client.UserName +
+                    "; preservedLogs=" + preservedLogs + "; removedCommands=" + removedCommands);
+                SaveLocked();
             }
         }
 

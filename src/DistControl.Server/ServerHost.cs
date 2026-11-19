@@ -210,9 +210,21 @@ namespace DistControl.Server
                 WriteJson(response, 200, store.ListClients());
                 return;
             }
+            if (parts.Length == 5 && parts[3] == "clients" && method == "DELETE")
+            {
+                store.DeleteClient(parts[4], request.AuthenticatedUser);
+                WriteJson(response, 200, new { deleted = true });
+                return;
+            }
             if (parts.Length == 4 && parts[3] == "enrollments" && method == "GET")
             {
                 WriteJson(response, 200, store.ListPendingEnrollments());
+                return;
+            }
+            if (parts.Length == 4 && parts[3] == "enrollments" && method == "DELETE")
+            {
+                int deleted = store.ClearPendingEnrollments(request.AuthenticatedUser);
+                WriteJson(response, 200, new { deleted = deleted });
                 return;
             }
             if (parts.Length == 4 && parts[3] == "hubs")

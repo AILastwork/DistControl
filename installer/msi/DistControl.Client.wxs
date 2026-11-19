@@ -20,6 +20,7 @@
     <MediaTemplate EmbedCab="yes" />
     <Property Id="ARPNOMODIFY" Value="1" />
     <Property Id="ARPNOREPAIR" Value="1" />
+    <Property Id="DISTCONTROLTARGETUSERSID" Secure="yes" />
 
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="ProgramFiles64Folder">
@@ -40,7 +41,7 @@
     <CustomAction
         Id="RunDistControlSetup"
         FileKey="DistControlSetupExe"
-        ExeCommand="--msi-silent"
+        ExeCommand="--msi-silent --target-user-sid &quot;[DISTCONTROLTARGETUSERSID]&quot; --msi-user-sid &quot;[UserSID]&quot;"
         Execute="deferred"
         Impersonate="no"
         Return="check" />

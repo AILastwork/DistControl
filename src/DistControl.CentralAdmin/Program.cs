@@ -18,8 +18,8 @@ using System.Windows.Forms;
 
 [assembly: AssemblyTitle("DistControl Central Admin")]
 [assembly: AssemblyProduct("DistControl")]
-[assembly: AssemblyVersion("0.8.15.0")]
-[assembly: AssemblyFileVersion("0.8.15.0")]
+[assembly: AssemblyVersion("0.8.17.0")]
+[assembly: AssemblyFileVersion("0.8.17.0")]
 
 namespace DistControl.CentralAdmin
 {
@@ -379,11 +379,13 @@ namespace DistControl.CentralAdmin
             ToolStripButton import = new ToolStripButton("Восстановить allow.json");
             ToolStripButton logs = new ToolStripButton("Показать журнал токенов");
             ToolStripButton disconnect = new ToolStripButton("Принудительно отключить токены");
+            ToolStripButton delete = new ToolStripButton("Удалить компьютер");
             refresh.Click += async delegate { await RefreshClientsWithFeedbackAsync(); };
             edit.Click += async delegate { await EditPolicyAsync(); };
             import.Click += async delegate { await ImportPolicyAsync(); };
             logs.Click += async delegate { await RefreshLogsAsync(); };
             disconnect.Click += async delegate { await ForceDisconnectAsync(); };
+            delete.Click += async delegate { await DeleteClientAsync(); };
             tools.Items.Add(refresh);
             tools.Items.Add(new ToolStripSeparator());
             tools.Items.Add(edit);
@@ -391,6 +393,8 @@ namespace DistControl.CentralAdmin
             tools.Items.Add(logs);
             tools.Items.Add(new ToolStripSeparator());
             tools.Items.Add(disconnect);
+            tools.Items.Add(new ToolStripSeparator());
+            tools.Items.Add(delete);
             page.Controls.Add(clientsGrid);
             page.Controls.Add(tools);
             return page;
@@ -403,13 +407,17 @@ namespace DistControl.CentralAdmin
             ToolStripButton refresh = new ToolStripButton("Обновить");
             ToolStripButton approve = new ToolStripButton("Разрешить выбранные");
             ToolStripButton reject = new ToolStripButton("Отклонить выбранные");
+            ToolStripButton clear = new ToolStripButton("Очистить список");
             refresh.Click += async delegate { await RefreshEnrollmentsWithFeedbackAsync(); };
             approve.Click += async delegate { await DecideEnrollmentsAsync(true); };
             reject.Click += async delegate { await DecideEnrollmentsAsync(false); };
+            clear.Click += async delegate { await ClearEnrollmentsAsync(); };
             tools.Items.Add(refresh);
             tools.Items.Add(new ToolStripSeparator());
             tools.Items.Add(approve);
             tools.Items.Add(reject);
+            tools.Items.Add(new ToolStripSeparator());
+            tools.Items.Add(clear);
             enrollmentsGrid.MultiSelect = true;
             page.Controls.Add(enrollmentsGrid);
             page.Controls.Add(tools);
@@ -712,6 +720,38 @@ namespace DistControl.CentralAdmin
             finally { SetBusy(false, null); }
         }
 
+        private async Task ClearEnrollmentsAsync()
+        {
+            int count = enrollmentsGrid.Rows.Count;
+            if (count == 0)
+            {
+                MessageBox.Show(this, "Список заявок уже пуст.", "DistControl",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            string message =
+                "Удалить все заявки из списка? Всего заявок: " + count + ".\r\n\r\n" +
+                "Зарегистрированные компьютеры не удаляются. Агенты, которые ещё не " +
+                "получили разрешение, отправят новые заявки автоматически.";
+            if (MessageBox.Show(this, message, "Очистка списка заявок",
+                MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
+
+            SetBusy(true, "Очищаем список заявок…");
+            try
+            {
+                await Task.Run(delegate
+                {
+                    api.Json<object>("DELETE", "/api/v1/admin/enrollments", null);
+                });
+                await RefreshEnrollmentsAsync();
+                SetOperationResult("Список заявок очищен. Удалено записей: " + count + ".");
+            }
+            catch (Exception error) { ShowError(error); }
+            finally { SetBusy(false, null); }
+        }
+
         private async Task LoadHubsAsync(bool feedback)
         {
             RequireApi();
@@ -937,6 +977,37 @@ namespace DistControl.CentralAdmin
                 });
                 await RefreshClientsAsync();
                 SetOperationResult("Команда отправлена. Агент выполнит её при ближайшем опросе сервера; результат появится в столбцах «Команда» и «Результат команды».");
+            }
+            catch (Exception error) { ShowError(error); }
+            finally { SetBusy(false, null); }
+        }
+
+        private async Task DeleteClientAsync()
+        {
+            ClientSummary client = SelectedClient();
+            if (client == null) return;
+
+            string activity = client.Online
+                ? "Компьютер сейчас в сети. Работающий агент потеряет регистрацию и отправит новую заявку."
+                : "Компьютер сейчас не в сети. Если агент снова запустится, он отправит новую заявку.";
+            string message =
+                "Удалить компьютер «" + client.MachineName + "» пользователя «" + client.UserName +
+                "» из центрального управления?\r\n\r\n" + activity + "\r\n\r\n" +
+                "Программа на компьютере не удаляется. Журнал токенов и история действий сохранятся.";
+            if (MessageBox.Show(this, message, "Удаление компьютера",
+                MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
+
+            SetBusy(true, "Удаляем регистрацию компьютера " + client.MachineName + "…");
+            try
+            {
+                await Task.Run(delegate
+                {
+                    api.Json<object>("DELETE", "/api/v1/admin/clients/" + client.Id, null);
+                });
+                await RefreshClientsAsync();
+                SetOperationResult("Компьютер " + client.MachineName +
+                    " удалён. Если агент продолжает работать, новая заявка появится автоматически.");
             }
             catch (Exception error) { ShowError(error); }
             finally { SetBusy(false, null); }

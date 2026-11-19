@@ -14,8 +14,8 @@ using System.Web.Script.Serialization;
 
 [assembly: AssemblyTitle("DistControl Central Agent")]
 [assembly: AssemblyProduct("DistControl")]
-[assembly: AssemblyVersion("0.8.15.0")]
-[assembly: AssemblyFileVersion("0.8.15.0")]
+[assembly: AssemblyVersion("0.8.17.0")]
+[assembly: AssemblyFileVersion("0.8.17.0")]
 
 namespace DistControl.Agent
 {
@@ -191,9 +191,34 @@ namespace DistControl.Agent
             }
             catch (Exception error)
             {
+                if (IsUnauthorized(error) && !String.IsNullOrWhiteSpace(config.ClientId))
+                {
+                    ResetEnrollment();
+                    lastError = "Регистрация компьютера отозвана на сервере. Агент отправит новую заявку.";
+                    Log(lastError);
+                    return;
+                }
                 lastError = HumanError(error);
                 Log(lastError);
             }
+        }
+
+        private static bool IsUnauthorized(Exception error)
+        {
+            WebException web = error as WebException;
+            HttpWebResponse response = web == null ? null : web.Response as HttpWebResponse;
+            return response != null && response.StatusCode == HttpStatusCode.Unauthorized;
+        }
+
+        private void ResetEnrollment()
+        {
+            config.ClientId = "";
+            config.ProtectedClientToken = "";
+            config.ProtectedEnrollmentRequestToken = "";
+            token = "";
+            enrollmentRequestToken = "";
+            lastEnrollmentStatus = "";
+            SaveConfig();
         }
 
         private bool EnsureEnrolled()

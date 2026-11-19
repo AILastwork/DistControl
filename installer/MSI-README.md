@@ -19,13 +19,13 @@ MSI запускает тот же установщик DistControl, котор�
 скрытую установку в активном сеансе пользователя, в том числе через политику:
 
 ```powershell
-msiexec.exe /i .\DistControl-Client-0.8.15.msi
+msiexec.exe /i .\DistControl-Client-0.8.17.msi
 ```
 
 Скрытая установка:
 
 ```powershell
-msiexec.exe /i .\DistControl-Client-0.8.15.msi /qn /norestart
+msiexec.exe /i .\DistControl-Client-0.8.17.msi /qn /norestart
 ```
 
 ## Сборка с другими адресами
@@ -40,11 +40,29 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\installer\Build-MsiPac
 
 Результат появится в `dist`:
 
-- `DistControl-Client-0.8.15.msi`;
-- `DistControl-Client-0.8.15.msi.sha256`.
+- `DistControl-Client-0.8.17.msi`;
+- `DistControl-Client-0.8.17.msi.sha256`.
 
 WiX Toolset загружается автоматически в `build\tools` и не устанавливается в
 Windows. Для сборки без повторной компиляции приложения добавьте `-SkipBuild`.
+
+## Комплект для доменной GPO
+
+Для развёртывания выбранным пользователям соберите отдельный комплект:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\installer\Build-GpoMsiPackage.ps1
+```
+
+Результат находится в `dist\GPO`. Для доменного развёртывания создайте в
+**Конфигурации пользователя** задачу планировщика, которая запускается от
+`SYSTEM` через 30 секунд после входа и выполняет MSI в тихом режиме. Такая схема
+не задерживает вход в Windows и позволяет установщику определить активного
+пользователя. Точные параметры задачи записываются в `dist\GPO\README-GPO.txt`.
+
+Не назначайте один и тот же MSI одновременно через раздел «Установка программ»
+и через планировщик. Синхронная политика «Всегда ждать сеть при запуске
+компьютера и входе в систему» для фоновой установки не требуется.
 
 Для MSI адреса зашиваются при сборке. В отдельном `DistControl-Setup.exe` их можно
 проверить или временно изменить в окне перед установкой.

@@ -3,710 +3,796 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>DistControl — инструкция</title>
+  <title>DistControl 0.8.17 - руководство администратора</title>
   <style>
     :root {
       color-scheme: light;
-      --bg: #f5f7fb;
-      --panel: #ffffff;
-      --ink: #18202d;
-      --muted: #5c6678;
-      --line: #d8deea;
-      --accent: #155ab6;
-      --accent-soft: #e8f0ff;
-      --ok: #17693b;
-      --warn: #a45b00;
-      --bad: #a32020;
-      --code: #111827;
+      --bg: #eef2f5;
+      --paper: #ffffff;
+      --ink: #17212b;
+      --muted: #5b6876;
+      --line: #d5dde4;
+      --nav: #172832;
+      --blue: #1769aa;
+      --blue-soft: #e7f2fa;
+      --green: #177245;
+      --green-soft: #e5f4ec;
+      --amber: #9a5b00;
+      --amber-soft: #fff3d6;
+      --red: #a12a2a;
+      --red-soft: #fdeaea;
+      --purple: #7047a8;
+      --code: #18242d;
+      --shadow: 0 8px 26px rgba(23, 33, 43, .08);
     }
 
-    * {
-      box-sizing: border-box;
-    }
-
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
     body {
       margin: 0;
       background: var(--bg);
       color: var(--ink);
-      font: 15px/1.55 "Segoe UI", Arial, sans-serif;
+      font: 15px/1.58 "Segoe UI", Arial, sans-serif;
     }
-
-    header {
-      background: #10233f;
-      color: #fff;
-      padding: 34px 28px 28px;
-      border-bottom: 4px solid #2c7be5;
-    }
-
-    header h1 {
-      margin: 0 0 8px;
-      font-size: 32px;
-      line-height: 1.15;
-      letter-spacing: 0;
-    }
-
-    header p {
-      margin: 0;
-      color: #d9e6fb;
-      max-width: 980px;
-    }
-
-    main {
-      max-width: 1180px;
-      margin: 0 auto;
-      padding: 24px;
-    }
-
-    nav {
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 18px 20px;
-      margin-bottom: 20px;
-    }
-
-    nav h2 {
-      margin-top: 0;
-    }
-
-    nav a {
-      display: inline-block;
-      margin: 4px 14px 4px 0;
-      color: var(--accent);
-      text-decoration: none;
-      font-weight: 600;
-    }
-
-    section {
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 22px;
-      margin: 18px 0;
-    }
-
-    h2 {
-      margin: 0 0 12px;
-      font-size: 22px;
-      line-height: 1.25;
-    }
-
-    h3 {
-      margin: 22px 0 8px;
-      font-size: 17px;
-    }
-
-    p {
-      margin: 8px 0 12px;
-    }
-
-    ul, ol {
-      margin: 8px 0 14px 22px;
-      padding: 0;
-    }
-
-    li {
-      margin: 5px 0;
-    }
-
+    a { color: var(--blue); }
+    code, pre { font-family: Consolas, "Courier New", monospace; }
     code {
-      background: #eef2f7;
-      color: var(--code);
       padding: 1px 5px;
+      background: #edf1f4;
+      border: 1px solid #dce3e8;
       border-radius: 4px;
-      font-family: Consolas, "Courier New", monospace;
-      font-size: 0.95em;
+      overflow-wrap: anywhere;
     }
-
     pre {
       margin: 12px 0;
       padding: 14px 16px;
       overflow: auto;
-      background: #101827;
-      color: #eff6ff;
-      border-radius: 8px;
-      font: 13px/1.45 Consolas, "Courier New", monospace;
+      background: var(--code);
+      color: #edf5f8;
+      border-left: 4px solid #45a0c9;
+      border-radius: 5px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    pre code { padding: 0; background: none; border: 0; color: inherit; }
+
+    .top {
+      background: var(--nav);
+      color: #fff;
+      border-bottom: 5px solid #2b8f70;
+    }
+    .top-inner {
+      max-width: 1380px;
+      margin: 0 auto;
+      padding: 30px 28px 26px;
+    }
+    .eyebrow {
+      margin: 0 0 8px;
+      color: #9bd9c5;
+      font-size: 13px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+    h1 {
+      margin: 0;
+      font-size: 34px;
+      line-height: 1.15;
+      letter-spacing: 0;
+    }
+    .lead {
+      max-width: 970px;
+      margin: 12px 0 0;
+      color: #d8e2e7;
+      font-size: 16px;
+    }
+    .version-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 18px;
+    }
+    .version-row span {
+      padding: 5px 9px;
+      background: #243b47;
+      border: 1px solid #3d5864;
+      border-radius: 4px;
+      color: #e8f0f3;
+      font-size: 13px;
     }
 
-    pre code {
-      background: transparent;
-      color: inherit;
-      padding: 0;
-      border-radius: 0;
+    .layout {
+      display: grid;
+      grid-template-columns: 270px minmax(0, 1fr);
+      gap: 22px;
+      max-width: 1380px;
+      margin: 0 auto;
+      padding: 22px 24px 46px;
+      align-items: start;
+    }
+    .toc {
+      position: sticky;
+      top: 16px;
+      max-height: calc(100vh - 32px);
+      overflow: auto;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      box-shadow: var(--shadow);
+      padding: 15px;
+    }
+    .toc strong { display: block; margin: 0 0 8px; font-size: 14px; }
+    .toc a {
+      display: block;
+      padding: 6px 8px;
+      color: #31404d;
+      text-decoration: none;
+      border-left: 3px solid transparent;
+      border-radius: 3px;
+      font-size: 13px;
+    }
+    .toc a:hover { background: var(--blue-soft); border-left-color: var(--blue); }
+    .toc .minor { padding-left: 20px; color: var(--muted); }
+
+    main { min-width: 0; }
+    section {
+      margin: 0 0 18px;
+      padding: 24px;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      box-shadow: var(--shadow);
+      scroll-margin-top: 18px;
+    }
+    h2 {
+      margin: 0 0 14px;
+      font-size: 23px;
+      line-height: 1.25;
+      letter-spacing: 0;
+    }
+    h3 {
+      margin: 24px 0 8px;
+      font-size: 17px;
+      line-height: 1.3;
+      letter-spacing: 0;
+    }
+    h4 { margin: 18px 0 6px; font-size: 15px; }
+    p { margin: 8px 0 12px; }
+    ul, ol { margin: 8px 0 14px; padding-left: 25px; }
+    li { margin: 5px 0; }
+    .muted { color: var(--muted); }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      margin: 14px 0;
+    }
+    .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .box {
+      padding: 14px 15px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fbfcfd;
+    }
+    .box h3, .box h4 { margin-top: 0; }
+    .box p:last-child { margin-bottom: 0; }
+    .box .label {
+      display: inline-block;
+      margin-bottom: 7px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .note {
+      margin: 14px 0;
+      padding: 13px 15px;
+      border-left: 4px solid var(--blue);
+      border-radius: 4px;
+      background: var(--blue-soft);
+    }
+    .note.ok { border-left-color: var(--green); background: var(--green-soft); }
+    .note.warn { border-left-color: var(--amber); background: var(--amber-soft); }
+    .note.bad { border-left-color: var(--red); background: var(--red-soft); }
+    .note strong { display: block; margin-bottom: 3px; }
+
+    .steps { counter-reset: step; padding: 0; list-style: none; }
+    .steps > li {
+      position: relative;
+      min-height: 44px;
+      margin: 0 0 13px;
+      padding: 1px 0 0 50px;
+    }
+    .steps > li::before {
+      counter-increment: step;
+      content: counter(step);
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 34px;
+      height: 34px;
+      display: grid;
+      place-items: center;
+      background: var(--nav);
+      color: #fff;
+      border-radius: 50%;
+      font-weight: 700;
     }
 
     table {
       width: 100%;
+      margin: 12px 0 16px;
       border-collapse: collapse;
-      margin: 12px 0;
-      background: #fff;
+      font-size: 14px;
     }
-
     th, td {
-      border: 1px solid var(--line);
       padding: 9px 10px;
+      border: 1px solid var(--line);
       text-align: left;
       vertical-align: top;
     }
-
-    th {
-      background: #edf3fb;
+    th { background: #edf2f5; font-weight: 700; }
+    tbody tr:nth-child(even) td { background: #fafcfd; }
+    .status {
+      display: inline-block;
+      min-width: 80px;
+      padding: 3px 7px;
+      border-radius: 4px;
+      text-align: center;
+      font-size: 12px;
       font-weight: 700;
     }
+    .status.ok { background: var(--green-soft); color: var(--green); }
+    .status.warn { background: var(--amber-soft); color: var(--amber); }
+    .status.info { background: var(--blue-soft); color: var(--blue); }
 
-    .note {
-      border-left: 4px solid var(--accent);
-      background: var(--accent-soft);
-      padding: 12px 14px;
+    .flow {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
       margin: 14px 0;
-      border-radius: 0 8px 8px 0;
     }
-
-    .warn {
-      border-left-color: var(--warn);
-      background: #fff6e7;
-    }
-
-    .ok {
-      border-left-color: var(--ok);
-      background: #eaf7ef;
-    }
-
-    .bad {
-      border-left-color: var(--bad);
-      background: #fff0f0;
-    }
-
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
-      gap: 12px;
-    }
-
-    .mini {
+    .flow span {
+      padding: 9px 11px;
       border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 12px;
-      background: #fbfcff;
+      border-radius: 5px;
+      background: #f8fafb;
+      font-weight: 600;
+    }
+    .flow b { color: var(--blue); font-size: 18px; }
+
+    .checklist { padding-left: 0; list-style: none; }
+    .checklist li { position: relative; padding-left: 27px; }
+    .checklist li::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 4px;
+      width: 15px;
+      height: 15px;
+      border: 2px solid #77909e;
+      border-radius: 3px;
+      background: #fff;
     }
 
-    .mini strong {
-      display: block;
-      margin-bottom: 4px;
+    .file-list code { white-space: nowrap; }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 16px;
     }
-
-    .muted {
+    button {
+      padding: 8px 12px;
+      border: 1px solid #78909c;
+      border-radius: 5px;
+      background: #fff;
+      color: var(--ink);
+      font: inherit;
+      cursor: pointer;
+    }
+    button:hover { background: #edf3f6; }
+    footer {
       color: var(--muted);
+      text-align: center;
+      padding: 0 20px 30px;
+      font-size: 13px;
+    }
+
+    @media (max-width: 980px) {
+      .layout { grid-template-columns: 1fr; padding: 14px; }
+      .toc { position: static; max-height: none; }
+      .grid, .grid.three { grid-template-columns: 1fr; }
+      h1 { font-size: 27px; }
+    }
+    @media print {
+      body { background: #fff; font-size: 11pt; }
+      .top { background: #fff; color: #000; border-bottom: 2px solid #000; }
+      .top-inner { padding: 16px 0; }
+      .eyebrow, .lead { color: #222; }
+      .version-row span { color: #000; background: #fff; border-color: #777; }
+      .layout { display: block; max-width: none; padding: 0; }
+      .toc, .actions { display: none; }
+      section { box-shadow: none; break-inside: avoid; margin: 12px 0; }
+      a { color: #000; text-decoration: none; }
+      pre { white-space: pre-wrap; color: #000; background: #f2f2f2; border-color: #555; }
     }
   </style>
 </head>
 <body>
-  <header>
-    <h1>DistControl</h1>
-    <p>Инструкция по текущей версии: пользовательская утилита, админская утилита, защита подключений через VPN, файл доступа <code>allow.json</code>, служба <code>dkclient</code> и корректное отображение пользователя в DistKontrolUSB.</p>
+  <header class="top">
+    <div class="top-inner">
+      <p class="eyebrow">Руководство администратора</p>
+      <h1>DistControl 0.8.17</h1>
+      <p class="lead">Установка сервера и клиентов, развёртывание через доменную GPO, управление USB-токенами и VPN, централизованные обновления, журналы, резервное копирование и перенос серверной части.</p>
+      <div class="version-row">
+        <span>Сервер: TCP 8765</span>
+        <span>Агент: опрос каждые 30 секунд</span>
+        <span>Клиент: Windows x64</span>
+        <span>Сборка: 18.11.2026</span>
+      </div>
+    </div>
   </header>
 
-  <main>
-    <nav>
-      <h2>Содержание</h2>
-      <a href="#purpose">Назначение</a>
-      <a href="#parts">Состав</a>
-      <a href="#install">Установка</a>
-      <a href="#service-account">Служба под пользователем</a>
-      <a href="#user-app">Пользовательская утилита</a>
-      <a href="#admin-app">Админка</a>
-      <a href="#vpn">VPN-защита токенов</a>
-      <a href="#policy">allow.json</a>
-      <a href="#files">Файлы</a>
-      <a href="#diagnostics">Диагностика</a>
-      <a href="#build">Сборка</a>
-      <a href="#limits">Ограничения</a>
+  <div class="layout">
+    <nav class="toc" aria-label="Содержание">
+      <strong>Содержание</strong>
+      <a href="#quick-start">Быстрый запуск</a>
+      <a href="#architecture">Как всё устроено</a>
+      <a href="#packages">Файлы дистрибутива</a>
+      <a href="#server-install">Установка сервера</a>
+      <a href="#central-admin">Центральная админка</a>
+      <a href="#client-install">Установка клиента</a>
+      <a href="#gpo">Развёртывание через GPO</a>
+      <a class="minor" href="#gpo-task">Параметры задания</a>
+      <a class="minor" href="#gpo-check">Проверка применения</a>
+      <a href="#daily-work">Ежедневная работа</a>
+      <a href="#access-vpn">Доступы и VPN</a>
+      <a href="#updates">Обновление клиентов</a>
+      <a href="#files">Где хранятся данные</a>
+      <a href="#logs">Журналы</a>
+      <a href="#backup">Резервное копирование</a>
+      <a href="#migration">Перенос сервера</a>
+      <a href="#security">Безопасность</a>
+      <a href="#troubleshooting">Диагностика</a>
+      <a href="#checklists">Контрольные списки</a>
     </nav>
 
-    <section id="purpose">
-      <h2>1. Назначение</h2>
-      <p><strong>DistControl</strong> — это C++/Win32-утилита поверх штатного клиента DistKontrolUSB. Она показывает пользователю только разрешенные USB-токены, подключает и отключает их через локальный канал <code>\\.\pipe\dkclient</code>, а администратору дает удобный интерфейс для формирования файла доступа.</p>
+    <main>
+      <section id="quick-start">
+        <h2>Быстрый запуск</h2>
+        <ol class="steps">
+          <li><strong>Установите сервер.</strong> Запустите <code>DistControl-Server-Setup-0.8.17.exe</code> от имени администратора на постоянно включённом компьютере Windows.</li>
+          <li><strong>Проверьте сервер.</strong> Откройте <code>http://имя-сервера:8765/health</code>. Ответ должен подтверждать, что сервер работает.</li>
+          <li><strong>Откройте центральную админку.</strong> Используйте ярлык или <code>DistControl.CentralAdmin.exe</code> под доменной учётной записью из группы <code>Domain Admins</code>.</li>
+          <li><strong>Укажите USB-серверы.</strong> На вкладке «USB-серверы» сохраните адреса по одному в строке, например <code>10.14.0.71:6565</code>.</li>
+          <li><strong>Разверните клиент.</strong> Для домена используйте <code>DistControl-Client-GPO-0.8.17.msi</code> через фоновое задание GPO. Для одного компьютера можно запустить обычный установщик.</li>
+          <li><strong>Разрешите заявку.</strong> Новый компьютер появится на вкладке «Заявки». После подтверждения агент получит регистрацию.</li>
+          <li><strong>Назначьте токены и VPN.</strong> На вкладке «Компьютеры» выберите нужный хост и нажмите «Изменить доступы и VPN».</li>
+        </ol>
+        <div class="note ok"><strong>Готовый комплект</strong>Все файлы, описанные в этой инструкции, находятся в одной папке <code>dist\CURRENT-0.8.17</code>.</div>
+      </section>
 
-      <div class="note ok">
-        <strong>Ключевой проверенный вывод:</strong> чтобы в родном окне DistKontrolUSB занятый токен отображался не как <code>СИСТЕМА</code>, процесс <code>dkcl64.exe</code> должен быть запущен службой под пользовательской учетной записью. Мы это проверили вручную: после запуска службы под доменным пользователем DistKontrolUSB начал показывать логин пользователя.
-      </div>
-
-      <p>PowerShell-скрипты в проекте сейчас остаются как установочные, диагностические и прототипные инструменты. Основной рабочий путь — C++ приложения:</p>
-      <ul>
-        <li><code>DistControl.exe</code> — обычная пользовательская утилита.</li>
-        <li><code>DistControl.Admin.exe</code> — админская утилита для настройки доступа.</li>
-        <li><code>dkcl64.exe</code> — штатный клиент DistKontrolUSB, установленный как служба <code>dkclient</code>.</li>
-      </ul>
-    </section>
-
-    <section id="parts">
-      <h2>2. Как это устроено</h2>
-      <div class="grid">
-        <div class="mini">
-          <strong>DistControl.exe</strong>
-          Пользователь видит текущего пользователя сверху, список разрешенных токенов, кнопки <code>Обновить</code>, <code>Подключить</code>, <code>Отключить</code>. Политика читается из <code>allow.json</code>.
+      <section id="architecture">
+        <h2>Как всё устроено</h2>
+        <div class="flow" aria-label="Схема взаимодействия">
+          <span>Central Admin</span><b>→</b><span>DistControl Server</span><b>↔</b><span>DistControlAgent</span><b>↔</b><span>DistControl.exe</span><b>↔</b><span>dkclient</span><b>↔</b><span>USB-серверы</span>
         </div>
-        <div class="mini">
-          <strong>DistControl.Admin.exe</strong>
-          Администратор видит все токены, ищет по endpoint/имени/продукту, отмечает галочками доступ для выбранного пользователя и сохраняет конфигурацию.
+        <div class="grid three">
+          <div class="box"><span class="label">Сервер</span><h3>DistControl.Server.exe</h3><p>Windows-служба <code>DistControlServer</code>. Хранит регистрации компьютеров, политики, заявки, команды, историю, журналы и пакеты обновлений.</p></div>
+          <div class="box"><span class="label">Администрирование</span><h3>Central Admin</h3><p>Настольная консоль. Использует встроенную Windows-аутентификацию. Отдельный ключ администратора не требуется.</p></div>
+          <div class="box"><span class="label">Рабочее место</span><h3>DistControlAgent</h3><p>Служба <code>DistControlAgent</code> под <code>LocalSystem</code>. Раз в 30 секунд отправляет состояние и получает политику, команды и обновления.</p></div>
+          <div class="box"><span class="label">Пользователь</span><h3>DistControl.exe</h3><p>Показывает только разрешённые токены, подключает выбранный Windows VPN и управляет таймером использования.</p></div>
+          <div class="box"><span class="label">USB</span><h3>dkclient</h3><p>Служба штатного клиента DistKontrolUSB. DistControl обращается к ней через локальный канал <code>\\.\pipe\dkclient</code>.</p></div>
+          <div class="box"><span class="label">Обновление</span><h3>DistControl.Updater</h3><p>Проверяет SHA-256, ждёт закрытия пользовательского приложения, создаёт резервные копии и заменяет файлы.</p></div>
         </div>
-        <div class="mini">
-          <strong>dkcl64.exe</strong>
-          Штатный клиент DistKontrolUSB. В нашей схеме запускается как Windows-служба <code>dkclient</code> под учеткой пользователя установки.
-        </div>
-        <div class="mini">
-          <strong>allow.json</strong>
-          Основной файл политики доступа. По умолчанию лежит в <code>%LOCALAPPDATA%\DistControl\allow.json</code>. Пользователи читают, администраторы изменяют.
-        </div>
-      </div>
+        <div class="note"><strong>Работа без сервера</strong>Если сервер временно недоступен, клиент продолжает работать по последней успешно применённой копии <code>allow.json</code>. Новые настройки и команды применятся после восстановления связи.</div>
+      </section>
 
-      <h3>Поток работы</h3>
-      <ol>
-        <li>Служба <code>dkclient</code> запускает <code>dkcl64.exe -n --config="%LOCALAPPDATA%\Programs\DistControl\dkcl.ini"</code> из профиля выбранного при установке пользователя.</li>
-        <li><code>dkcl64.exe</code> поднимает локальный канал <code>\\.\pipe\dkclient</code>.</li>
-        <li><code>DistControl.exe</code> читает <code>allow.json</code> и показывает только разрешенные текущему Windows-пользователю токены.</li>
-        <li>При подключении сначала выполняются проверка владельца, VPN и локальных маршрутов; только затем отправляется <code>USE,&lt;endpoint&gt;</code>.</li>
-        <li>При отключении проверяется текущий владелец, отправляется <code>STOP USING,&lt;endpoint&gt;</code>, удаляется таймер и при отсутствии других токенов на том же профиле отключается VPN.</li>
-        <li>Родной DistKontrolUSB видит, что токен занят учеткой, под которой работает служба <code>dkclient</code>.</li>
-      </ol>
-    </section>
+      <section id="packages">
+        <h2>Файлы дистрибутива 0.8.17</h2>
+        <table>
+          <thead><tr><th>Файл</th><th>Назначение</th></tr></thead>
+          <tbody>
+            <tr><td><code>DistControl-Server-Setup-0.8.17.exe</code></td><td>Основной графический установщик серверной части. PowerShell вручную запускать не нужно.</td></tr>
+            <tr><td><code>DistControl-Server-0.8.17.zip</code></td><td>Резервный серверный пакет с ручными сценариями установки и удаления.</td></tr>
+            <tr><td><code>DistControl.CentralAdmin-0.8.17.exe</code></td><td>Переносимая центральная консоль. Её можно запускать на другом административном ПК.</td></tr>
+            <tr><td><code>DistControl-Setup-0.8.17.exe</code></td><td>Обычная интерактивная установка клиента на один компьютер.</td></tr>
+            <tr><td><code>DistControl-Client-GPO-0.8.17.msi</code></td><td>Пакет для фоновой установки через задание планировщика GPO.</td></tr>
+            <tr><td><code>DistControl-Client-0.8.17.msi</code></td><td>MSI для ручной тихой установки и тестов.</td></tr>
+            <tr><td><code>DistControl-Update-0.8.17.zip</code></td><td>Пакет централизованного обновления уже установленных клиентов.</td></tr>
+            <tr><td><code>README-GPO.txt</code></td><td>Короткая текстовая памятка по GPO.</td></tr>
+            <tr><td><code>SHA256SUMS.txt</code></td><td>Контрольные суммы дистрибутивов.</td></tr>
+          </tbody>
+        </table>
+      </section>
 
-    <section id="install">
-      <h2>3. Установка</h2>
-      <p>Обычный вариант для рабочего места — запустить установщик:</p>
-      <pre><code>dist\DistControl-Setup.exe</code></pre>
+      <section id="server-install">
+        <h2>Установка серверной части</h2>
+        <h3>Требования</h3>
+        <ul>
+          <li>Постоянно включённый доменный компьютер Windows x64 со статическим адресом или стабильным DNS-именем.</li>
+          <li>Права локального администратора для установки.</li>
+          <li>Доступ клиентов к TCP-порту <code>8765</code>.</li>
+          <li>Для центральной админки — доменная учётная запись в группе <code>Domain Admins</code>.</li>
+        </ul>
+        <h3>Установка</h3>
+        <ol>
+          <li>Запустите <code>DistControl-Server-Setup-0.8.17.exe</code>.</li>
+          <li>Подтвердите UAC.</li>
+          <li>Установщик остановит предыдущую версию, обновит файлы, защитит каталог данных, создаст службу и правило брандмауэра.</li>
+          <li>После сообщения об успехе проверьте службу и адрес здоровья.</li>
+        </ol>
+        <pre><code>Get-Service DistControlServer
+Invoke-RestMethod http://localhost:8765/health</code></pre>
+        <table>
+          <tbody>
+            <tr><th>Служба</th><td><code>DistControlServer</code>, отображаемое имя «DistControl Server», автозапуск.</td></tr>
+            <tr><th>Программа</th><td><code>C:\Program Files\DistControl Server\DistControl.Server.exe</code></td></tr>
+            <tr><th>Данные</th><td><code>C:\ProgramData\DistControlServer</code></td></tr>
+            <tr><th>Прослушивание</th><td><code>http://+:8765/</code></td></tr>
+            <tr><th>Брандмауэр</th><td>Входящее правило «DistControl Server», TCP 8765.</td></tr>
+          </tbody>
+        </table>
+        <div class="note warn"><strong>Сетевой периметр</strong>Текущая версия использует HTTP и предназначена для доверенной локальной сети. Не публикуйте порт <code>8765</code> напрямую в интернет. Для удалённых площадок используйте корпоративный VPN/маршрутизацию и фильтрацию брандмауэром.</div>
+      </section>
 
-      <p>При запуске установщик запрашивает права администратора через UAC, затем показывает выбранную учетную запись, пароль и папку общего состояния таймеров. По умолчанию подставляется учетная запись активного сеанса Windows. Ее можно оставить или заменить на нужный формат, например:</p>
-      <pre><code>OSNOVA\a.nikitin
-a.s.nikitin@osnova.local</code></pre>
+      <section id="central-admin">
+        <h2>Центральная админка</h2>
+        <p>Центральную консоль можно запускать на сервере или на другом административном компьютере. Установка полноценного клиента для этого не нужна: достаточно <code>DistControl.CentralAdmin-0.8.17.exe</code>, сетевой доступ к серверу и членство текущей Windows-учётной записи в <code>Domain Admins</code>.</p>
+        <ol>
+          <li>Запустите консоль под доменным администратором.</li>
+          <li>В поле «Сервер» укажите <code>http://10.14.32.179:8765</code> или актуальный адрес.</li>
+          <li>Нажмите «Подключиться».</li>
+        </ol>
+        <table>
+          <thead><tr><th>Вкладка</th><th>Что делает</th></tr></thead>
+          <tbody>
+            <tr><td>Компьютеры</td><td>Показывает состояние клиентов, версии, последнюю связь, применение политики, обновление, USB-серверы и результаты команд.</td></tr>
+            <tr><td>Заявки</td><td>Подтверждение или отклонение новых агентов. «Очистить список» удаляет записи заявок, но не зарегистрированные компьютеры.</td></tr>
+            <tr><td>USB-серверы</td><td>Единый список адресов хабов для всех клиентов. Адрес вводится по одному в строке в формате <code>IPv4:порт</code>.</td></tr>
+            <tr><td>Журнал токенов</td><td>Понятные сеансы: сотрудник, компьютер, токен, время подключения и отключения, длительность, VPN и внешний IP.</td></tr>
+            <tr><td>Обновления</td><td>Публикация ZIP-пакета, назначение выбранным компьютерам и контроль этапа установки.</td></tr>
+            <tr><td>История изменений</td><td>Кто и когда изменял политики, заявки, список хабов, команды и обновления.</td></tr>
+          </tbody>
+        </table>
+        <h3>Удаление компьютера из центрального списка</h3>
+        <p>Выберите строку и нажмите «Удалить компьютер». Сервер удалит регистрацию, назначенную политику и незавершённые команды. Программа на самом компьютере не удаляется, а журнал токенов и аудит сохраняются.</p>
+        <div class="note"><strong>Что произойдёт дальше</strong>Если агент на удалённом компьютере продолжает работать, при ближайшем опросе он получит отказ старой регистрации, сбросит её и создаст новую заявку. Это ожидаемое поведение; заявку можно снова разрешить или оставить без подтверждения.</div>
+        <h3>Очистка заявок</h3>
+        <p>Кнопка «Очистить список» удаляет ожидающие, разрешённые и отклонённые записи на вкладке «Заявки». Зарегистрированные компьютеры остаются в работе. Агент без регистрации создаст заявку повторно при следующем опросе.</p>
+      </section>
 
-      <div class="note warn">
-        Пароль нужен не DistControl как приложению, а Windows Service Control Manager: без пароля Windows не создаст службу под обычной пользовательской учеткой. Установщик передает пароль в Windows при создании службы. В командную строку пароль не записывается.
-      </div>
+      <section id="client-install">
+        <h2>Установка клиента на один компьютер</h2>
+        <p>Запустите <code>DistControl-Setup-0.8.17.exe</code> в сеансе сотрудника. UAC может подтвердить администратор, но файлы приложения и политика создаются в профиле целевого пользователя.</p>
+        <ol class="steps">
+          <li>Установщик определяет вошедшего пользователя и каталоги его профиля.</li>
+          <li>Копирует приложение в <code>%LOCALAPPDATA%\Programs\DistControl</code> и данные в <code>%LOCALAPPDATA%\DistControl</code>.</li>
+          <li>Устанавливает штатный клиент <code>dkcl64.exe</code> как службу <code>dkclient</code> под <code>LocalSystem</code>.</li>
+          <li>Создаёт службу <code>DistControlAgent</code>, настраивает адрес сервера и каталог таймеров.</li>
+          <li>Проверяет локальный канал <code>dkclient</code> и запускает DistControl.</li>
+          <li>Агент отправляет заявку на сервер; до подтверждения центральная политика не применяется.</li>
+        </ol>
+        <div class="note ok"><strong>Пароль сотрудника не нужен</strong>Обе системные службы работают под <code>LocalSystem</code>. Реальный пользователь подключения записывается самим DistControl из активного сеанса.</div>
+        <h3>Проверка после установки</h3>
+        <pre><code>Get-Service dkclient, DistControlAgent
+Test-NetConnection 10.14.32.179 -Port 8765
+Get-Content "$env:LOCALAPPDATA\Programs\DistControl\agent.json"</code></pre>
+        <p>Обе службы должны иметь состояние <code>Running</code>. Новый компьютер должен появиться на вкладке «Заявки» центральной консоли.</p>
+      </section>
 
-      <div class="note">
-        Установка выполняется только для выбранной учетной записи. Даже если UAC подтверждает другой администратор, установщик использует заранее определенные SID и путь профиля выбранного пользователя. Служба <code>dkclient</code> при этом остается одной системной службой на весь компьютер.
-      </div>
+      <section id="gpo">
+        <h2>Развёртывание клиента через GPO</h2>
+        <p>Рекомендуемый вариант — фоновое задание планировщика. Оно начинает установку через 30 секунд после входа, не блокирует появление рабочего стола и не требует пароля пользователя.</p>
+        <div class="note bad"><strong>Не используйте одновременно два способа</strong>Не назначайте этот MSI и через «Установку программ», и через планировщик. Старое назначение Software Installation может удалить программу сразу после успешной установки новой задачей.</div>
 
-      <p>В поле папки таймеров рекомендуется указать один UNC-путь для всех рабочих мест, например <code>\\SERVER\DistControlState</code>. У пользователей должны быть права чтения, создания и изменения файлов в этой папке. Если поле оставить пустым, используется локальный <code>%LOCALAPPDATA%\DistControl\state\usage.json</code>, и общий таймер между компьютерами работать не будет.</p>
+        <h3>Подготовка</h3>
+        <ol>
+          <li>Положите <code>DistControl-Client-GPO-0.8.17.msi</code> в сетевую папку, доступную компьютерам домена на чтение. Текущий пример: <code>\\dfs\fs\IT\GPO\distcontrol\</code>.</li>
+          <li>Если ранее MSI был назначен через «Конфигурация пользователя → Политики → Конфигурация программ → Установка программ», удалите назначение и выберите вариант, который <strong>не удаляет</strong> уже установленную программу.</li>
+          <li>Не включайте <code>SyncForegroundPolicy=1</code> и политику «Всегда ждать сеть при запуске компьютера и входе в систему» — для фоновой схемы они не нужны.</li>
+        </ol>
 
-      <h3>VPN-профили Windows</h3>
-      <p>Установщик не создаёт и не изменяет VPN-подключения. На новой установке список <code>vpnProfiles</code> пуст. Сначала создайте нужные VPN штатными средствами Windows, затем назначьте существующие подключения токенам в <code>DistControl.Admin.exe</code>.</p>
-      <p>Можно также назначить режим <code>Без VPN</code>. Общие ключи L2TP остаются в Windows и не записываются в <code>allow.json</code> или журналы DistControl.</p>
+        <h3 id="gpo-task">Создание задания</h3>
+        <ol>
+          <li>Откройте нужную GPO.</li>
+          <li>Перейдите: <strong>Конфигурация пользователя → Настройка → Панель управления → Назначенные задания</strong>.</li>
+          <li>Создайте «Назначенное задание (Windows 7 и выше)».</li>
+        </ol>
+        <table>
+          <thead><tr><th>Раздел</th><th>Значение</th></tr></thead>
+          <tbody>
+            <tr><td>Общие</td><td>Имя: <code>DistControl Background Install</code>; действие: «Обновить»; запуск от <code>СИСТЕМА</code> / <code>NT AUTHORITY\SYSTEM</code>; включить наивысшие права.</td></tr>
+            <tr><td>Триггер</td><td>«При входе в систему» любого пользователя; задержка 30 секунд.</td></tr>
+            <tr><td>Действие</td><td>Программа <code>cmd.exe</code>; аргументы приведены ниже.</td></tr>
+            <tr><td>Параметры</td><td>Запускать при первой возможности после пропущенного запуска; если задача уже выполняется — не запускать новый экземпляр.</td></tr>
+          </tbody>
+        </table>
+        <pre><code>/c "sc query DistControlAgent &gt;nul 2&gt;&amp;1 || msiexec.exe /i ""\\dfs\fs\IT\GPO\distcontrol\DistControl-Client-GPO-0.8.17.msi"" /qn /norestart /l*v C:\Windows\Temp\DistControl-GPO-bootstrap.log"</code></pre>
+        <p>Условие <code>sc query DistControlAgent</code> делает задание первичным установщиком: если агент уже есть, MSI повторно не запускается. Дальнейшие версии доставляются через центральное обновление.</p>
 
-      <h3>Что делает установщик</h3>
-      <ul>
-        <li>Копирует <code>DistControl.exe</code>, <code>DistControl.Admin.exe</code>, <code>dkcl64.exe</code>, <code>dkcl.ini</code> и документацию в <code>%LOCALAPPDATA%\Programs\DistControl</code> выбранного пользователя.</li>
-        <li>Создает в его профиле <code>%LOCALAPPDATA%\DistControl</code>, пустой безопасный <code>allow.json</code> и папку <code>logs</code>. Демонстрационный <code>allowlist.example.json</code> никогда не назначается как рабочая политика.</li>
-        <li>Подготавливает <code>%APPDATA%\dkcl.ini</code> и <code>%APPDATA%\dkcl64.ini</code> для выбранной учетной записи, поэтому предварительно запускать <code>dkcl64.exe</code> вручную не требуется.</li>
-        <li>Создает или проверяет <code>usage.json</code> в выбранной локальной либо общей сетевой папке и записывает его путь в <code>allow.json</code>.</li>
-        <li>Не создаёт и не изменяет VPN-профили Windows; их назначение выполняется после установки в админской утилите.</li>
-        <li>Для каждого IPv4-адреса из <code>ManualHubs</code> в <code>dkcl.ini</code> создаёт постоянный маршрут <code>/32</code> через текущий физический LAN/Wi-Fi-шлюз. Благодаря этому полный VPN-туннель не забирает соединения службы <code>dkclient</code> с USB-хабами. Список созданных маршрутов хранится в <code>%LOCALAPPDATA%\DistControl\managed-hub-routes.json</code> и удаляется деинсталлятором.</li>
-        <li>Настраивает ACL: выбранная учетная запись запускает клиентскую часть и читает <code>allow.json</code>, но не изменяет политику; администраторы могут ее редактировать.</li>
-        <li>Отдельно ограничивает запуск <code>dkcl64.exe</code>: SYSTEM и администраторы получают полный доступ, выбранная учетная запись службы получает чтение/запуск, группа Users не получает общий запуск этого EXE.</li>
-        <li>Выдает выбранной учетной записи право <code>Log on as a service</code>.</li>
-        <li>Создает службу <code>dkclient</code> под выбранной учетной записью.</li>
-        <li>Запускает службу и проверяет реальный ответ на запрос списка токенов, если не указан режим <code>-NoStartService</code>.</li>
-        <li>Создает ярлыки в меню Пуск и на рабочем столе только выбранного пользователя.</li>
-        <li>Регистрирует удаление через Windows “Программы и компоненты” только для выбранного пользователя.</li>
-      </ul>
+        <h3>Фильтрация безопасности</h3>
+        <p>Свяжите GPO с нужным доменом/OU и оставьте в фильтрах безопасности группу сотрудников, которым требуется DistControl. Группа должна иметь права «Чтение» и «Применение групповой политики». Пакет в сетевой папке должен быть читаем компьютерами, так как задача выполняется от <code>SYSTEM</code>.</p>
 
-      <h3>Ручная установка из консоли</h3>
-      <p>Если нужен запасной путь без графического EXE, можно открыть PowerShell/Command Prompt от администратора и выполнить:</p>
-      <pre><code>install.cmd</code></pre>
-      <p>Скрипт спросит пароль для учетной записи службы. Дополнительные варианты:</p>
-      <pre><code>install.cmd -NoStartService
-install.cmd -NoDesktopShortcut
-install.cmd -SkipBuild</code></pre>
-    </section>
+        <h3 id="gpo-check">Проверка применения</h3>
+        <pre><code>gpupdate /force
+gpresult /r /scope:user
+Get-ScheduledTask -TaskName "DistControl Background Install"
+Get-ScheduledTaskInfo -TaskName "DistControl Background Install"
+Get-Service dkclient, DistControlAgent</code></pre>
+        <ol>
+          <li>После <code>gpupdate /force</code> выйдите из Windows и войдите снова.</li>
+          <li>Через 30–90 секунд проверьте службы и файл <code>C:\Windows\Temp\DistControl-GPO-bootstrap.log</code>.</li>
+          <li>Разрешите появившуюся заявку в центральной админке.</li>
+        </ol>
+        <div class="note warn"><strong>Код задания 0 — ещё не вся проверка</strong>Он означает, что команда завершилась без ошибки. Окончательный результат подтверждают наличие двух служб, файлов клиента и заявки на сервере.</div>
+      </section>
 
-    <section id="service-account">
-      <h2>4. Почему служба должна работать под пользователем</h2>
-      <p>Мы проверили поведение DistKontrolUSB: кто запускает <code>dkcl64.exe</code>, тот и отображается как владелец занятого токена. Если <code>dkcl64.exe</code> работает как <code>LocalSystem</code>, родной клиент на других компьютерах показывает <code>СИСТЕМА</code>. Если служба работает под <code>OSNOVA\a.nikitin</code> или UPN-учеткой, отображается логин пользователя.</p>
+      <section id="daily-work">
+        <h2>Ежедневная работа администратора</h2>
+        <h3>Подключение нового компьютера</h3>
+        <ol>
+          <li>Установите клиент или дождитесь выполнения GPO.</li>
+          <li>Откройте «Заявки», проверьте компьютер, пользователя и IP.</li>
+          <li>Разрешите заявку.</li>
+          <li>Выберите компьютер на вкладке «Компьютеры» и назначьте доступные токены и VPN.</li>
+          <li>Убедитесь, что в столбце «Политика» появилось «Применена».</li>
+        </ol>
+        <h3>Состояния компьютера</h3>
+        <table>
+          <thead><tr><th>Состояние</th><th>Значение</th><th>Действие</th></tr></thead>
+          <tbody>
+            <tr><td><span class="status ok">В сети</span></td><td>Сервер получал heartbeat не более 90 секунд назад.</td><td>Дополнительных действий нет.</td></tr>
+            <tr><td><span class="status warn">Не в сети</span></td><td>Связи нет более 90 секунд.</td><td>Проверить службу агента, порт 8765, адрес сервера и сеть.</td></tr>
+            <tr><td><span class="status info">Ожидает</span></td><td>Новая политика сохранена на сервере, но агент ещё не подтвердил применение.</td><td>Подождать один-два опроса, обычно до 60 секунд.</td></tr>
+          </tbody>
+        </table>
+        <h3>Принудительное отключение токенов</h3>
+        <p>Выберите компьютер и нажмите «Принудительно отключить токены». Сервер поставит команду в очередь. Агент заберёт её при ближайшем опросе, выполнит локальное отключение и вернёт фактический результат. Надпись «Команда отправлена» ещё не означает, что токен уже отключён — смотрите столбец результата команды.</p>
+      </section>
 
-      <table>
-        <thead>
-          <tr>
-            <th>Как запущен dkcl64.exe</th>
-            <th>Что увидит DistKontrolUSB</th>
-            <th>Вывод</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td><code>LocalSystem</code></td>
-            <td><code>СИСТЕМА</code></td>
-            <td>Не подходит для понятного учета занятости.</td>
-          </tr>
-          <tr>
-            <td>Пользовательская учетная запись</td>
-            <td>Логин пользователя</td>
-            <td>Нужный режим для рабочих мест.</td>
-          </tr>
-        </tbody>
-      </table>
+      <section id="access-vpn">
+        <h2>Доступы к токенам и VPN</h2>
+        <p>Политика ведётся отдельно для выбранного компьютера и пользователя. Изменение WRK-380 не меняет доступы WRK-406. При открытии окна центральная админка получает текущую политику именно выбранной строки.</p>
+        <h3>Назначение токенов</h3>
+        <ol>
+          <li>На вкладке «Компьютеры» выделите нужный компьютер.</li>
+          <li>Нажмите «Изменить доступы и VPN».</li>
+          <li>Проверьте поля «Компьютер» и «Пользователь».</li>
+          <li>Перенесите токены из правой части в разрешённые.</li>
+          <li>Для каждого токена выберите режим в столбце VPN.</li>
+          <li>Сохраните доступ. Перед массовым расширением будет дополнительное подтверждение.</li>
+        </ol>
+        <table>
+          <thead><tr><th>Значение VPN</th><th>Поведение</th></tr></thead>
+          <tbody>
+            <tr><td>Не назначен</td><td>Токен виден как ненастроенный, подключение запрещено с понятным сообщением.</td></tr>
+            <tr><td>БЕЗ VPN</td><td>Windows VPN отключаются, затем токен используется через текущее соединение компьютера. Amnezia не изменяется.</td></tr>
+            <tr><td>Название профиля</td><td>Текущие Windows VPN отключаются, подключается выбранный профиль, проверяется внешний IP, затем подключается токен.</td></tr>
+          </tbody>
+        </table>
+        <div class="note"><strong>Резервная копия политики</strong>Агент заменяет <code>allow.json</code> атомарно и сохраняет предыдущую версию как <code>allow.json.central-backup</code>. Кнопка «Восстановить allow.json» возвращает эту копию через сервер.</div>
+      </section>
 
-      <h3>Проверка</h3>
-      <pre><code>sc.exe qc dkclient
-sc.exe query dkclient</code></pre>
-      <p>В <code>sc.exe qc dkclient</code> важны поля:</p>
-      <ul>
-        <li><code>SERVICE_START_NAME</code> — должна быть пользовательская учетная запись, не <code>LocalSystem</code>.</li>
-        <li><code>BINARY_PATH_NAME</code> — должен указывать на <code>%LOCALAPPDATA%\Programs\DistControl\dkcl64.exe</code> выбранного пользователя с параметром <code>--config</code>.</li>
-      </ul>
+      <section id="updates">
+        <h2>Централизованное обновление клиентов</h2>
+        <ol class="steps">
+          <li>На вкладке «Обновления» укажите версию <code>0.8.17</code> и выберите <code>DistControl-Update-0.8.17.zip</code>.</li>
+          <li>Нажмите «Опубликовать пакет». Сервер проверит и сохранит архив в каталоге <code>packages</code>.</li>
+          <li>Выберите один или несколько компьютеров в списке обновлений.</li>
+          <li>Нажмите «Назначить выбранным компьютерам».</li>
+          <li>Следите за этапом: назначено, скачивается, ожидает закрытия, устанавливается, успешно или ошибка.</li>
+        </ol>
+        <p>Пользовательский запрос UAC при центральном обновлении не требуется: обновление выполняет системный агент. Для замены <code>DistControl.exe</code> пользователь должен закрыть его; агент подождёт и продолжит автоматически.</p>
+        <div class="note warn"><strong>Граница ZIP-обновления</strong>ZIP обновляет файлы программы и агента. Изменения драйвера VirtualHere, структуры MSI или службы <code>dkclient</code> следует распространять новым полным MSI/EXE.</div>
+      </section>
 
-      <div class="note warn">
-        Если на одном компьютере работают разные люди по очереди, служба все равно стартует под одной выбранной учеткой. Для динамической смены пользователя нужен отдельный следующий этап: брокер/служба DistControl, которая умеет запускать клиент в пользовательской сессии или официально менять clientId, если это поддерживается API производителя.
-      </div>
-      <div class="note">
-        Для <code>dkcl64.exe</code> используется SID службы <code>NT SERVICE\dkclient</code>. Поэтому процесс службы получает чтение и запуск, а обычный интерактивный сеанс той же пользовательской учетной записи этого права не получает.
-      </div>
-    </section>
+      <section id="files">
+        <h2>Где хранятся программы и настройки</h2>
+        <h3>Сервер</h3>
+        <table class="file-list">
+          <thead><tr><th>Путь</th><th>Содержимое</th></tr></thead>
+          <tbody>
+            <tr><td><code>C:\Program Files\DistControl Server</code></td><td>Сервер, центральная консоль и исполняемые файлы.</td></tr>
+            <tr><td><code>C:\ProgramData\DistControlServer\server-data.json</code></td><td>Главная база: клиенты, заявки, политики, журналы, история, команды, список USB-серверов и сведения об обновлениях.</td></tr>
+            <tr><td><code>C:\ProgramData\DistControlServer\packages</code></td><td>Опубликованные ZIP-пакеты обновлений.</td></tr>
+            <tr><td><code>C:\ProgramData\DistControlServer\bootstrap.txt</code></td><td>Информационный файл о режиме регистрации и административном доступе.</td></tr>
+            <tr><td><code>C:\ProgramData\DistControlServer\server-error.log</code></td><td>Создаётся при критической ошибке запуска сервера.</td></tr>
+          </tbody>
+        </table>
+        <h3>Клиент выбранного пользователя</h3>
+        <table class="file-list">
+          <thead><tr><th>Путь</th><th>Содержимое</th></tr></thead>
+          <tbody>
+            <tr><td><code>%LOCALAPPDATA%\Programs\DistControl</code></td><td>DistControl.exe, агент, updater, dkcl64.exe, dkcl.ini и <code>agent.json</code>.</td></tr>
+            <tr><td><code>%LOCALAPPDATA%\DistControl\allow.json</code></td><td>Действующая локальная политика токенов и VPN.</td></tr>
+            <tr><td><code>%LOCALAPPDATA%\DistControl\allow.json.central-backup</code></td><td>Предыдущая политика перед последней центральной заменой.</td></tr>
+            <tr><td><code>%LOCALAPPDATA%\DistControl\logs</code></td><td>Локальные журналы приложения, аудита, запуска и установки.</td></tr>
+            <tr><td><code>%LOCALAPPDATA%\DistControl\state</code></td><td>Состояние сети, использования и локальной синхронизации.</td></tr>
+            <tr><td><code>%LOCALAPPDATA%\DistControl\managed-hub-routes.json</code></td><td>Маршруты /32, созданные для USB-серверов через физический шлюз.</td></tr>
+            <tr><td><code>\\dfs\fs\IT\soft\DistKontrol\time\usage.json</code></td><td>Текущий общий файл таймеров. Путь встроен в готовые установщики 0.8.17 и записывается в политику клиента.</td></tr>
+            <tr><td><code>C:\Program Files\DistControl Installer</code></td><td>Кэш вложенного установщика MSI, используемый для обслуживания и удаления.</td></tr>
+          </tbody>
+        </table>
+        <h3>Как работает общий таймер</h3>
+        <p>Окно клиента не ждёт медленную сетевую папку. Подключение, отключение и продление сначала записываются локально в <code>%LOCALAPPDATA%\DistControl\state\usage-sync-*.json</code>, после чего скрытый помощник переносит изменения в общий <code>usage.json</code>. Неотправленные изменения повторяются каждые 5 секунд, а данные других компьютеров перечитываются примерно раз в 30 секунд.</p>
+        <p>При одновременной работе нескольких хостов запись защищается файловой блокировкой, а изменения объединяются по идентификатору подключения и времени события. Запоздавшее отключение старой сессии не должно удалить таймер более нового подключения. Если общая папка недоступна, пользовательская операция завершается по локальному состоянию, а синхронизация продолжится в фоне.</p>
+        <div class="note warn"><strong>Не редактируйте служебные JSON во время работы служб</strong><code>agent.json</code> защищён ACL и содержит токены регистрации, зашифрованные DPAPI компьютера. <code>server-data.json</code> изменяется сервером и должен переноситься только при остановленной службе.</div>
+      </section>
 
-    <section id="user-app">
-      <h2>5. Пользовательская утилита</h2>
-      <p><code>DistControl.exe</code> запускается обычным пользователем. Вверху показывается текущий Windows-пользователь. Ниже отображается дерево токенов в стиле DistKontrolUSB: сначала группа <code>...-Gr-XX</code>, внутри разрешенные пользователю токены из <code>allow.json</code>.</p>
+      <section id="logs">
+        <h2>Журналы и что в них хранится</h2>
+        <table>
+          <thead><tr><th>Журнал</th><th>Где находится</th><th>Назначение</th></tr></thead>
+          <tbody>
+            <tr><td><code>audit-*.csv</code></td><td><code>%LOCALAPPDATA%\DistControl\logs</code> и центральный сервер</td><td>Подключение/отключение токена, пользователь, компьютер, время, VPN, внешний IP. Только эти файлы отправляются в центральный журнал.</td></tr>
+            <tr><td><code>trace-*.log</code></td><td>Локально</td><td>Подробные шаги подключения и отключения: VPN, IP, команды dkclient и ожидания.</td></tr>
+            <tr><td><code>startup-*.log</code></td><td>Локально</td><td>Запуск интерфейса, загрузка политики и ошибки инициализации.</td></tr>
+            <tr><td><code>install-*.log</code>, <code>msi-setup.log</code></td><td>Локально</td><td>Действия интерактивного установщика.</td></tr>
+            <tr><td><code>DistControl-GPO-bootstrap.log</code></td><td><code>C:\Windows\Temp</code></td><td>Подробный журнал установки MSI через фоновую задачу GPO.</td></tr>
+            <tr><td>Журнал событий Windows</td><td><code>eventvwr.msc</code></td><td>Запуск/остановка служб <code>dkclient</code>, <code>DistControlAgent</code> и <code>DistControlServer</code>.</td></tr>
+            <tr><td><code>server-error.log</code></td><td><code>C:\ProgramData\DistControlServer</code></td><td>Критические ошибки запуска серверной службы.</td></tr>
+          </tbody>
+        </table>
+        <p>Центральная вкладка «Журнал токенов» не показывает гору технических файлов. Она собирает из <code>audit-*.csv</code> понятные сеансы: ФИО из Active Directory, учётная запись, компьютер, токен, время подключения/отключения, длительность, VPN и IP.</p>
+        <h3>Сбор диагностики клиента</h3>
+        <p>Для обращения по ошибке сохраняйте локальный <code>trace</code> за нужную дату, <code>startup</code>, MSI-журнал и время возникновения проблемы. Токены регистрации из <code>agent.json</code> публиковать не следует.</p>
+      </section>
 
-      <table>
-        <thead>
-          <tr>
-            <th>Действие</th>
-            <th>Назначение</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td><code>Обновить</code></td>
-            <td>Перечитать список токенов из <code>dkclient</code> и заново применить политику. Во время загрузки показываются полоса прогресса, процент и количество обработанных устройств.</td>
-          </tr>
-          <tr>
-            <td>Двойной клик по свободному токену</td>
-            <td>Проверяет политику, подключает назначенный VPN, проверяет локальную сеть и только после успешной проверки отправляет <code>USE,&lt;endpoint&gt;</code>.</td>
-          </tr>
-          <tr>
-            <td>Двойной клик по токену, подключенному вами</td>
-            <td>Проверяет владельца, отправляет <code>STOP USING,&lt;endpoint&gt;</code>, удаляет запись таймера и перечитывает список. Если этот VPN больше не нужен другим токенам пользователя, профиль отключается.</td>
-          </tr>
-          <tr>
-            <td>Двойной клик по токену, занятому другим пользователем</td>
-            <td>Не отключает чужой токен, а показывает в строке статуса, кем он занят.</td>
-          </tr>
-        </tbody>
-      </table>
+      <section id="backup">
+        <h2>Резервное копирование сервера</h2>
+        <p>Для полного восстановления достаточно сохранить весь каталог <code>C:\ProgramData\DistControlServer</code>. В него входят база, политики, регистрации клиентов, аудит и пакеты обновлений.</p>
+        <h3>Рекомендуемый порядок</h3>
+        <ol>
+          <li>Выберите короткое окно обслуживания.</li>
+          <li>Остановите службу, чтобы получить согласованную копию.</li>
+          <li>Скопируйте весь каталог с ACL.</li>
+          <li>Снова запустите службу и проверьте <code>/health</code>.</li>
+        </ol>
+        <pre><code>Stop-Service DistControlServer
+robocopy "C:\ProgramData\DistControlServer" "\\backup\DistControlServer" /MIR /COPYALL /R:2 /W:2
+Start-Service DistControlServer
+Invoke-RestMethod http://localhost:8765/health</code></pre>
+        <div class="note ok"><strong>Что обязательно хранить</strong>Самое важное — <code>server-data.json</code>. Для полного восстановления дополнительно сохраняйте каталог <code>packages</code> и установщик той версии сервера, которая работала на момент копии.</div>
+      </section>
 
-      <p>При сворачивании окно остаётся на панели задач: режим трея отключён. При закрытии программы все токены, подключённые текущим пользователем через клиент, автоматически освобождаются.</p>
-      <p>Для каждого подключённого токена отображается обратный таймер 20 минут. После его окончания появляется вопрос о продолжении. Ответ «Да» запускает следующие 20 минут, ответ «Нет» освобождает токен. Если ответа нет одну минуту, токен освобождается автоматически.</p>
-      <p>Подтверждённое подключение и таймер сначала записываются на компьютере в <code>%LOCALAPPDATA%\DistControl\state\usage-sync-&lt;идентификатор&gt;.json</code>. Общая папка обновляется скрытым процессом в фоне: её временная недоступность больше не задерживает завершение подключения. При следующем запуске оставшаяся очередь возобновляется.</p>
-      <p>Надпись <code>Общий таймер: ожидает синхронизации</code> в заголовке означает, что локальные изменения ещё не переданы в общую папку. Передаются исходное время подключения, проверенный IP и VPN-профиль, а не время поздней отправки. Старое отключение не удаляет таймер нового подключения или другого пользователя. Сведения о других пользователях из общей папки могут временно отставать; владелец перед командами проверяется через службу.</p>
-      <p>Для токена с назначенным VPN клиент каждые 30 секунд в фоне проверяет, что нужное подключение активно и локальная сеть доступна. При разрыве VPN или ошибке проверки токен автоматически освобождается.</p>
-    </section>
+      <section id="migration">
+        <h2>Перенос серверной части на другой сервер</h2>
+        <h3>Лучший вариант: сохранить адрес подключения</h3>
+        <p>Заранее используйте DNS-имя, например <code>http://distcontrol.osnova.local:8765</code>. При переносе меняется DNS-запись, а клиенты продолжают использовать тот же URL. Если текущие клиенты настроены на IP <code>10.14.32.179</code>, самый бесшовный вариант — передать этот IP новому серверу или временно обеспечить маршрутизацию/переадресацию.</p>
+        <ol class="steps">
+          <li>На старом сервере остановите <code>DistControlServer</code> и скопируйте весь <code>C:\ProgramData\DistControlServer</code>.</li>
+          <li>Установите <code>DistControl-Server-Setup-0.8.17.exe</code> на новом сервере.</li>
+          <li>Остановите новую службу <code>DistControlServer</code>.</li>
+          <li>Замените новый каталог данных сохранённой копией, сохранив права доступа.</li>
+          <li>Запустите службу и проверьте <code>http://новый-сервер:8765/health</code>.</li>
+          <li>Переключите старый IP/DNS на новый сервер и убедитесь, что клиенты снова становятся «В сети».</li>
+        </ol>
+        <pre><code>Stop-Service DistControlServer
+robocopy "\\backup\DistControlServer" "C:\ProgramData\DistControlServer" /MIR /COPYALL /R:2 /W:2
+Start-Service DistControlServer</code></pre>
+        <h3>Почему нужно переносить <code>server-data.json</code></h3>
+        <p>В нём находятся идентификаторы клиентов и хэши их регистрационных токенов. Если файл перенесён, а URL сервера для клиентов не изменился, переустановка и повторное подтверждение не требуются.</p>
+        <h3>Если адрес сервера всё-таки изменился</h3>
+        <p>Копирование <code>server-data.json</code> сохраняет регистрацию, но не меняет адрес в клиентском <code>agent.json</code>. На каждом клиенте нужно под административными правами изменить только поле <code>ServerUrl</code>, не трогая защищённые токены, и перезапустить агент.</p>
+        <pre><code>$path = "C:\Users\&lt;пользователь&gt;\AppData\Local\Programs\DistControl\agent.json"
+$config = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+$config.ServerUrl = "http://distcontrol.osnova.local:8765"
+$text = $config | ConvertTo-Json -Compress
+[IO.File]::WriteAllText($path, $text, (New-Object Text.UTF8Encoding($false)))
+Restart-Service DistControlAgent</code></pre>
+        <div class="note warn"><strong>Если база сервера потеряна</strong>Старые клиентские токены больше не будут приняты. Агент 0.8.17 сбросит недействительную регистрацию и создаст новую заявку. После подтверждения компьютер снова начнёт управляться, но прежние центральные политики и история без резервной копии не восстановятся.</div>
+      </section>
 
-    <section id="admin-app">
-      <h2>6. Админская утилита</h2>
-      <p><code>DistControl.Admin.exe</code> запускается с правами администратора. Она нужна для формирования и редактирования <code>allow.json</code>.</p>
+      <section id="security">
+        <h2>Безопасность</h2>
+        <ul>
+          <li>Административные API используют встроенную Windows-аутентификацию; вход разрешён участникам <code>Domain Admins</code>.</li>
+          <li>Новый агент не получает управление автоматически: требуется административное подтверждение заявки.</li>
+          <li>Клиентский токен хранится в <code>agent.json</code> в виде, защищённом DPAPI уровня компьютера.</li>
+          <li>Каталог серверных данных разрешён только <code>SYSTEM</code> и локальным администраторам.</li>
+          <li>Обычный пользователь не должен иметь право изменять <code>allow.json</code>, <code>agent.json</code> и файлы приложения.</li>
+          <li>Порт 8765 должен быть доступен только из нужных внутренних сетей.</li>
+          <li>Перед публикацией обновления сверяйте SHA-256 с <code>SHA256SUMS.txt</code>.</li>
+        </ul>
+      </section>
 
-      <h3>Основной сценарий</h3>
-      <ol>
-        <li>Запустить <code>DistControl Admin</code>.</li>
-        <li>В поле <code>Пользователь</code> указать логин, например <code>OSNOVA\a.nikitin</code>.</li>
-        <li>Нажать <code>Обновить</code>, чтобы увидеть слева разрешённые токены, а справа токены, которые можно добавить.</li>
-        <li>Двойным кликом перенести нужные токены из правой части в левую. Двойной клик по токену слева убирает его из доступа.</li>
-        <li>Нажать <code>Сохранить доступ</code>.</li>
-      </ol>
+      <section id="troubleshooting">
+        <h2>Диагностика типовых проблем</h2>
+        <h3>Компьютер «Не в сети»</h3>
+        <ol>
+          <li>Подождите до 90 секунд: агент опрашивает сервер раз в 30 секунд, а статус «Не в сети» выставляется после трёх пропущенных интервалов.</li>
+          <li>Проверьте <code>DistControlAgent</code> и доступ к порту 8765.</li>
+          <li>Проверьте <code>ServerUrl</code> в <code>agent.json</code>.</li>
+          <li>Посмотрите столбец «Ошибка» и журнал событий Windows.</li>
+        </ol>
+        <pre><code>Get-Service DistControlAgent
+Test-NetConnection 10.14.32.179 -Port 8765
+Restart-Service DistControlAgent</code></pre>
 
-      <p>Левая часть окна становится списком <code>allowedDevices</code> выбранного пользователя. Перемещение между частями меняет только подготовленный список; запись в файл выполняется кнопкой <code>Сохранить доступ</code>. В файл записываются только явные добавления и удаления, поэтому временно отсутствующие в выдаче службы токены не теряют доступ.</p>
-      <p>До успешной загрузки выбранного пользователя сохранение заблокировано. Несохранённые изменения отмечаются в заголовке. При смене пользователя, компьютера, конфигурации или закрытии окна админка спрашивает, можно ли отменить подготовленные изменения. Перед записью также проверяется, не изменил ли <code>allow.json</code> другой администратор.</p>
+        <h3>Политика «Ожидает применения»</h3>
+        <p>Сервер уже сохранил новую политику, но агент ещё не прислал номер применённой ревизии. Обычно это занимает до 30–60 секунд. Если состояние не меняется, смотрите ошибку клиента, права на <code>allow.json</code> и доступность сервера.</p>
 
-      <h3>Поиск</h3>
-      <p>Поле <code>Поиск</code> фильтрует список по:</p>
-      <ul>
-        <li><code>Endpoint</code>, например <code>distkontrolusb64-1-Gr-01.1124</code>;</li>
-        <li>имени токена, например <code>ИНТЕГРАЛ</code>;</li>
-        <li>продукту, например <code>Rutoken lite</code>;</li>
-        <li>VPN-профилю, состоянию, владельцу или адресу подключения.</li>
-      </ul>
+        <h3>GPO-задача есть, но программа не установилась</h3>
+        <ol>
+          <li>Проверьте доступ к UNC-пути именно от имени компьютера/SYSTEM.</li>
+          <li>Откройте <code>C:\Windows\Temp\DistControl-GPO-bootstrap.log</code>.</li>
+          <li>Убедитесь, что старое MSI-назначение Software Installation не удаляет новую установку.</li>
+          <li>Проверьте, что нет незавершённой установки Windows Installer и старой сломанной регистрации MSI.</li>
+        </ol>
 
-      <h3>Открытие другого конфига</h3>
-      <p>Кнопка <code>Открыть конфиг</code> позволяет выбрать другой JSON-файл. Если внутри некорректный JSON, админка показывает понятную ошибку и не изменяет файл автоматически.</p>
-
-      <h3>Сортировка</h3>
-      <p>Клик по заголовку столбца сортирует таблицу по этому столбцу. Повторный клик меняет направление сортировки. Столбцы можно перетаскивать мышью и менять по ширине; выбранное расположение сохраняется отдельно от <code>allow.json</code> в <code>%LOCALAPPDATA%\DistControl\admin-ui.ini</code>.</p>
-
-      <h3>Удалённый компьютер</h3>
-      <p>В поле <code>Компьютер</code> можно указать имя рабочего места и загрузить его профили пользователей. Админка определяет учётную запись и реальный каталог профиля по SID Windows, поэтому выбор, например, <code>OSNOVA\a.s.nikitin</code> ведёт именно к её файлу <code>AppData\Local\DistControl\allow.json</code>. Нужны административные права и доступ к шару <code>C$</code>.</p>
-
-      <h3>Токены → VPN</h3>
-      <p>Кнопка <code>Токены → VPN</code> открывает общую таблицу для выбранного пользователя. Напротив каждого токена в столбце <code>VPN</code> выбирается вариант <code>Не назначен</code>, <code>БЕЗ VPN</code> или существующий профиль Windows. Для большого списка предусмотрены поиск по токену, endpoint и назначению, ввод названия VPN с клавиатуры и автоматическое сопоставление одинаковых названий. Автосопоставление заполняет только токены без настройки.</p>
-      <p>Пропавшее подключение отображается как <code>Профиль недоступен</code>; прежнее назначение сохраняется до ручной замены. Все подготовленные связи записываются в <code>allow.json</code> одной операцией кнопкой <code>Сохранить</code>.</p>
-      <p>Для локального компьютера админка читает подключения текущего пользователя и общесистемную телефонную книгу RAS. Для удалённого компьютера она читает те же данные через <code>C$</code>. Системные VPN-подключения при этом не создаются и не изменяются.</p>
-      <p>Клиент раз в 30 секунд записывает внешний IP и активные VPN Windows в <code>%LOCALAPPDATA%\DistControl\state\network-state.json</code>. Внешний IP используется для журнала и удалённой диагностики, но не ограничивает подключение токена.</p>
-
-      <h3>Экспорт Excel</h3>
-      <p>Экспорт создаёт HTML-таблицу, открываемую Excel, и включает столбец VPN. Это выгрузка для сверки, а не конфигурация доступа; рабочим источником остаётся <code>allow.json</code>.</p>
-    </section>
-
-    <section id="vpn">
-      <h2>VPN-защита токенов</h2>
-      <ol>
-        <li>Администратор создаёт нужные VPN-профили штатными средствами Windows.</li>
-        <li>В админке существующий VPN или режим «Без VPN» назначается конкретному разрешённому токену и пользователю.</li>
-        <li>Используются логин и пароль, уже сохранённые в Windows RAS. Клиент не предлагает их вводить; если данные не настроены или отклонены VPN, он просит обратиться к администратору. В админку новый редактор паролей не добавляется.</li>
-        <li>Перед переключением канала DistControl подтверждённо освобождает предыдущие токены пользователя на другом сетевом режиме, затем отключает активные VPN Windows.</li>
-        <li>DistControl подключает нужный профиль. Фактический внешний IP по возможности записывается в журнал и не блокирует работу.</li>
-        <li>До и после подключения проверяются локальные маршруты физических LAN/Wi-Fi интерфейсов.</li>
-        <li>После изменения сети клиент до 60 секунд дожидается, пока <code>dkclient</code> снова подтвердит подключение нужного хаба через <code>SERVER INFO</code>, а адрес токена через <code>LIST</code> и <code>DEVICE INFO</code>. Переходные ответы <code>FAILED</code> и <code>Invalid address</code> повторяются ограниченное число раз.</li>
-        <li>Во время работы watchdog проверяет выбранный VPN и локальные маршруты и освобождает токен при нарушении.</li>
-        <li>После успешного <code>STOP USING</code> VPN отключается, если у пользователя не осталось другого активного токена с тем же профилем.</li>
-      </ol>
-      <div class="note warn">Токен без поля <code>vpnProfile</code> отображается в списке, но подключить его нельзя. Сначала назначьте ему VPN Windows или режим «Без VPN».</div>
-      <div class="note ok">Если служба временно возвращает пустой каталог после подключения VPN, DistControl оставляет на экране последний рабочий список и повторяет обновление автоматически.</div>
-      <div class="note warn">Админка удалённо меняет только политику и назначение профилей. Системные VPN и общие ключи настраиваются средствами Windows; секреты по <code>C$</code> не передаются и в JSON не хранятся.</div>
-      <div class="note ok">DistControl не изменяет конфигурацию и маршруты сторонних VPN-клиентов, включая Amnezia. Маршруты установщика ограничены адресами USB-хабов из <code>dkcl.ini</code>.</div>
-    </section>
-
-    <section id="policy">
-      <h2>7. Файл allow.json</h2>
-      <p>Основной файл политики лежит здесь:</p>
-      <pre><code>%LOCALAPPDATA%\DistControl\allow.json</code></pre>
-
-      <p>Пример структуры:</p>
-      <pre><code>{
-  "pipeName": "dkclient",
-  "refreshSeconds": 5,
-  "usageStatePath": "C:\\Users\\user\\AppData\\Local\\DistControl\\state\\usage.json",
-  "vpnProfiles": [
-    {
-      "id": "office-a",
-      "name": "Рабочий VPN A",
-      "serverAddress": "203.0.113.10",
-      "tunnelType": "L2TP",
-      "mode": "windowsVpn",
-      "phonebookScope": "currentUser",
-      "enabled": true
-    }
-  ],
-  "userAssignments": [
-    {
-      "users": [
-        "OSNOVA\\a.nikitin"
-      ],
-      "groups": [],
-      "allowedDevices": [
-        {
-          "endpoint": "distkontrolusb64-1-Gr-01.1124",
-          "nickname": "ИНТЕГРАЛ УК ООО",
-          "product": "Rutoken lite",
-          "vpnProfile": "office-a"
-        }
-      ]
-    }
-  ]
-}</code></pre>
-
-      <table>
-        <thead>
-          <tr>
-            <th>Поле</th>
-            <th>Что означает</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td><code>pipeName</code></td>
-            <td>Имя локального канала DistKontrolUSB. Сейчас используется <code>dkclient</code>.</td>
-          </tr>
-          <tr>
-            <td><code>refreshSeconds</code></td>
-            <td>Период автообновления, если используется в интерфейсе.</td>
-          </tr>
-          <tr>
-            <td><code>usageStatePath</code></td>
-            <td>Единственный источник начала 20-минутного интервала и владельца токена для всех экземпляров DistControl. Для общей работы на разных компьютерах здесь должен быть один и тот же UNC-путь.</td>
-          </tr>
-          <tr>
-            <td><code>vpnProfiles</code></td>
-            <td>Список сетевых режимов. <code>mode: windowsVpn</code> ссылается на существующее подключение Windows, <code>mode: direct</code> означает работу без VPN. Для VPN также хранится <code>phonebookScope</code>: <code>currentUser</code> или <code>allUsers</code>.</td>
-          </tr>
-          <tr>
-            <td><code>userAssignments</code></td>
-            <td>Список назначений: пользователи/группы и разрешенные им токены.</td>
-          </tr>
-          <tr>
-            <td><code>users</code></td>
-            <td>Логины Windows: <code>DOMAIN\user</code>, короткое имя или SID.</td>
-          </tr>
-          <tr>
-            <td><code>groups</code></td>
-            <td>Группы Windows. Можно оставить пустым массивом.</td>
-          </tr>
-          <tr>
-            <td><code>allowedDevices</code></td>
-            <td>Токены, которые пользователь увидит и сможет подключать через DistControl.</td>
-          </tr>
-          <tr>
-            <td><code>endpoint</code></td>
-            <td>Главный идентификатор токена из DistKontrolUSB.</td>
-          </tr>
-          <tr>
-            <td><code>nickname</code></td>
-            <td>Имя токена. Если заполнено, используется как дополнительная проверка.</td>
-          </tr>
-          <tr>
-            <td><code>product</code></td>
-            <td>Продукт, например <code>Rutoken lite</code>. Если заполнено, тоже проверяется.</td>
-          </tr>
-          <tr>
-            <td><code>vpnProfile</code></td>
-            <td>Внутренняя ссылка на выбранный сетевой режим. Админка заполняет её автоматически; без назначения токен виден, но подключение запрещено.</td>
-          </tr>
-        </tbody>
-      </table>
-
-      <div class="note">
-        Поля <code>clientExecutable</code> больше нет в плане и в новой политике. Путь к <code>dkcl64.exe</code> находится в настройке службы Windows, а не в <code>allow.json</code>.
-      </div>
-    </section>
-
-    <section id="files">
-      <h2>8. Где лежат файлы</h2>
-      <table>
-        <thead>
-          <tr>
-            <th>Путь</th>
-            <th>Назначение</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td><code>%LOCALAPPDATA%\Programs\DistControl\DistControl.exe</code></td>
-            <td>Пользовательская утилита.</td>
-          </tr>
-          <tr>
-            <td><code>%LOCALAPPDATA%\Programs\DistControl\DistControl.Admin.exe</code></td>
-            <td>Админская утилита.</td>
-          </tr>
-          <tr>
-            <td><code>%LOCALAPPDATA%\Programs\DistControl\dkcl64.exe</code></td>
-            <td>Штатный клиент DistKontrolUSB, запускается службой <code>dkclient</code>. Запуск ограничен ACL: не для всей группы Users, а для администраторов, SYSTEM и учетной записи службы.</td>
-          </tr>
-          <tr>
-            <td><code>%LOCALAPPDATA%\Programs\DistControl\dkcl.ini</code></td>
-            <td>Конфиг штатного клиента <code>dkcl64.exe</code>. Наша политика доступа хранится отдельно.</td>
-          </tr>
-          <tr>
-            <td><code>%LOCALAPPDATA%\DistControl\allow.json</code></td>
-            <td>Основной файл доступа.</td>
-          </tr>
-          <tr>
-            <td><code>usage.json</code> по пути из <code>usageStatePath</code></td>
-            <td>Общее состояние владельцев и таймеров. Может находиться в <code>%LOCALAPPDATA%\DistControl</code> или в общей сетевой папке.</td>
-          </tr>
-          <tr>
-            <td><code>%LOCALAPPDATA%\DistControl\logs</code></td>
-            <td>Логи запуска, действий, установки и диагностики.</td>
-          </tr>
-          <tr>
-            <td><code>%APPDATA%\dkcl.ini</code> и <code>%APPDATA%\dkcl64.ini</code></td>
-            <td>Пользовательские файлы инициализации штатного клиента, которые установщик подготавливает вместо обязательного первого ручного запуска.</td>
-          </tr>
-        </tbody>
-      </table>
-    </section>
-
-    <section id="diagnostics">
-      <h2>9. Диагностика</h2>
-      <p>Отдельная диагностическая утилита больше не добавляется при установке. Для проверки состояния используем логи DistControl и стандартные команды Windows.</p>
-
-      <p>Быстрая ручная проверка:</p>
-      <pre><code>sc.exe query dkclient
+        <h3>Служба dkclient не запускается</h3>
+        <pre><code>sc.exe query dkclient
 sc.exe qc dkclient
-dir %LOCALAPPDATA%\DistControl\logs</code></pre>
+Get-WinEvent -LogName System -MaxEvents 100 | Where-Object Message -match "dkclient"</code></pre>
+        <p>Проверьте наличие <code>dkcl64.exe</code>, <code>dkcl.ini</code>, доступность USB-серверов и отсутствие второго вручную запущенного <code>dkcl64.exe</code>.</p>
 
-      <h3>Если DistKontrolUSB снова показывает “СИСТЕМА”</h3>
-      <ol>
-        <li>Проверить <code>sc.exe qc dkclient</code>.</li>
-        <li>Убедиться, что <code>SERVICE_START_NAME</code> не <code>LocalSystem</code>, а нужный пользователь.</li>
-        <li>Остановить старые процессы <code>dkcl64.exe</code>, если они запущены не от службы.</li>
-        <li>Перезапустить службу <code>dkclient</code>.</li>
-      </ol>
+        <h3>Команда отключения отмечена выполненной, но токен виден</h3>
+        <p>Смотрите полный текст «Результат команды». Агент может корректно сообщить, что активных токенов для указанного пользователя не найдено. После фактического отключения обновите список клиента; при сетевой задержке отображение может измениться не мгновенно.</p>
 
-      <h3>Если служба не запускается</h3>
-      <ul>
-        <li>Проверить пароль учетной записи службы.</li>
-        <li>Проверить, не заблокирована ли учетная запись и не истек ли пароль.</li>
-        <li>Проверить право <code>Log on as a service</code>.</li>
-        <li>Проверить, что путь к <code>dkcl64.exe</code> и <code>dkcl.ini</code> существует.</li>
-      </ul>
+        <h3>После удаления компьютера снова появилась заявка</h3>
+        <p>Это нормально: агент работает и пытается зарегистрироваться заново. Чтобы компьютер больше не возвращался, удалите клиент или остановите/удалите службу <code>DistControlAgent</code> на нём.</p>
+      </section>
 
-      <h3>Если админка или пользовательская утилита сразу закрывается</h3>
-      <ul>
-        <li>Открыть <code>%LOCALAPPDATA%\DistControl\logs</code>.</li>
-        <li>Найти свежий <code>startup-YYYYMMDD.log</code>.</li>
-        <li>Проверить, не запускается ли старый EXE из старой папки.</li>
-        <li>Проверить, не блокирует ли запуск антивирус/AppLocker/SmartScreen.</li>
-      </ul>
+      <section id="checklists">
+        <h2>Контрольные списки</h2>
+        <div class="grid">
+          <div class="box">
+            <h3>После установки сервера</h3>
+            <ul class="checklist">
+              <li>Служба DistControlServer запущена</li>
+              <li>Порт 8765 доступен клиентам</li>
+              <li><code>/health</code> отвечает</li>
+              <li>Central Admin подключается</li>
+              <li>Список USB-серверов сохранён</li>
+              <li>Создана резервная копия данных</li>
+            </ul>
+          </div>
+          <div class="box">
+            <h3>После установки клиента</h3>
+            <ul class="checklist">
+              <li>Служба dkclient запущена</li>
+              <li>Служба DistControlAgent запущена</li>
+              <li>В Central Admin появилась заявка</li>
+              <li>Заявка подтверждена</li>
+              <li>Политика применена</li>
+              <li>Пользователь видит только разрешённые токены</li>
+            </ul>
+          </div>
+          <div class="box">
+            <h3>Перед переносом сервера</h3>
+            <ul class="checklist">
+              <li>Определён постоянный IP или DNS</li>
+              <li>Служба остановлена перед копией</li>
+              <li>Скопирован весь ProgramData\DistControlServer</li>
+              <li>Сохранены ACL и packages</li>
+              <li>Проверен план возврата</li>
+            </ul>
+          </div>
+          <div class="box">
+            <h3>После переноса</h3>
+            <ul class="checklist">
+              <li>Новая служба запущена</li>
+              <li><code>/health</code> отвечает</li>
+              <li>Central Admin видит прежние компьютеры</li>
+              <li>Клиенты снова «В сети»</li>
+              <li>Политики и журналы доступны</li>
+              <li>Обновлена резервная копия</li>
+            </ul>
+          </div>
+        </div>
+        <div class="actions">
+          <button type="button" onclick="window.print()">Печать / сохранить в PDF</button>
+          <button type="button" onclick="window.scrollTo({top:0,behavior:'smooth'})">В начало</button>
+        </div>
+      </section>
+    </main>
+  </div>
 
-      <h3>Если токен долго подключается или подключается не с первого раза</h3>
-      <ol>
-        <li>Воспроизвести проблему один раз и запомнить примерное время попытки.</li>
-        <li>Открыть <code>%LOCALAPPDATA%\DistControl\logs</code>.</li>
-        <li>Передать администратору свежие <code>trace-YYYYMMDD.log</code>, <code>audit-YYYYMMDD.csv</code> и <code>startup-YYYYMMDD.log</code>.</li>
-      </ol>
-      <p><code>trace-YYYYMMDD.log</code> написан на русском языке. У каждой попытки есть единый номер
-      вида <code>CONNECT-1234-000007</code>, а у каждого этапа указано прошедшее время. Журнал показывает
-      проверку политики, VPN и локальной сети, восстановление каталога DistKontrolUSB, команды
-      <code>DEVICE INFO</code>, <code>USE</code>, <code>STOP USING</code> и обновление окна. Пароли и общие
-      ключи VPN в него не записываются.</p>
-    </section>
-
-    <section id="build">
-      <h2>10. Сборка и пакет</h2>
-      <p>Сборка приложений:</p>
-      <pre><code>build-vs.cmd Debug
-build-vs.cmd Release</code></pre>
-
-      <p>Тесты:</p>
-      <pre><code>test-vs.cmd</code></pre>
-
-      <p>Сборка установщика и переносимого архива:</p>
-      <pre><code>build-installer.cmd</code></pre>
-
-      <p>Результаты:</p>
-      <pre><code>dist\DistControl-Setup.exe
-dist\DistControl-Installer.zip</code></pre>
-
-      <h3>SmartScreen</h3>
-      <p>Если Windows показывает “Система Windows защитила ваш компьютер”, это не ошибка кода. SmartScreen не доверяет неподписанному или новому EXE. Для нормального распространения нужен сертификат подписи кода и накопление репутации у Microsoft.</p>
-      <pre><code>build-installer.cmd -CertificateThumbprint "THUMBPRINT"</code></pre>
-      <pre><code>build-installer.cmd -CertificatePath "C:\Certs\company-code-signing.pfx" -CertificatePassword "PASSWORD"</code></pre>
-    </section>
-
-    <section id="uninstall">
-      <h2>11. Удаление</h2>
-      <p>Удалить DistControl можно через Windows “Приложения”, через ярлык <code>Uninstall DistControl</code> в меню Пуск или командой:</p>
-      <pre><code>uninstall.cmd</code></pre>
-
-      <p>По умолчанию папка <code>%LOCALAPPDATA%\DistControl</code> сохраняется, чтобы не потерять <code>allow.json</code> и логи. Если нужно удалить и данные:</p>
-      <pre><code>uninstall.cmd -RemoveData</code></pre>
-    </section>
-
-    <section id="limits">
-      <h2>12. Текущие ограничения и следующий этап</h2>
-      <ul>
-        <li>Установщик включает SID <code>NT SERVICE\dkclient</code>. Файлы <code>dkcl64.exe</code> и <code>dkcl.ini</code> доступны службе, но не запускаются вручную обычным пользователем.</li>
-        <li>Служба <code>dkclient</code> работает под одной учетной записью. Это хорошо для рабочего места, закрепленного за пользователем. Для терминального сценария с несколькими пользователями нужна отдельная архитектура.</li>
-        <li><code>usage.json</code> помогает нашей утилите показывать владельца, но родной DistKontrolUSB ориентируется на учетку процесса <code>dkcl64.exe</code>.</li>
-        <li>Установщик без подписи может предупреждаться SmartScreen.</li>
-      </ul>
-
-      <h3>Что делать дальше</h3>
-      <ol>
-        <li>Проверить новый установщик на тестовом компьютере.</li>
-        <li>Убедиться, что служба создалась под нужным пользователем и DistKontrolUSB показывает логин.</li>
-        <li>Проверить сценарий админки: поиск, галочки, сохранение доступа, повторное открытие <code>allow.json</code>.</li>
-        <li>После стабилизации решить вопрос строгой защиты от обхода и подписи установщика.</li>
-      </ol>
-    </section>
-  </main>
+  <footer>DistControl 0.8.17 · автономное руководство · внешние ресурсы для открытия не требуются</footer>
 </body>
 </html>

@@ -23,8 +23,8 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("DistControl")]
 [assembly: AssemblyProduct("DistControl")]
 [assembly: AssemblyCopyright("Copyright 2026")]
-[assembly: AssemblyVersion("0.8.15.0")]
-[assembly: AssemblyFileVersion("0.8.15.0")]
+[assembly: AssemblyVersion("0.8.17.0")]
+[assembly: AssemblyFileVersion("0.8.17.0")]
 [assembly: ComVisible(false)]
 
 internal static class SetupBootstrapper
@@ -41,6 +41,36 @@ internal static class SetupBootstrapper
         UserName = 5,
         DomainName = 7
     }
+
+    private enum WtsConnectState
+    {
+        Active = 0,
+        Connected = 1,
+        ConnectQuery = 2,
+        Shadow = 3,
+        Disconnected = 4,
+        Idle = 5,
+        Listen = 6,
+        Reset = 7,
+        Down = 8,
+        Init = 9
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WtsSessionInfo
+    {
+        public int SessionId;
+        public IntPtr WinStationName;
+        public WtsConnectState State;
+    }
+
+    [DllImport("Wtsapi32.dll", SetLastError = true)]
+    private static extern bool WTSEnumerateSessions(
+        IntPtr server,
+        int reserved,
+        int version,
+        out IntPtr sessionInfo,
+        out int count);
 
     [DllImport("Wtsapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern bool WTSQuerySessionInformation(
@@ -333,9 +363,52 @@ internal static class SetupBootstrapper
         return false;
     }
 
+    private static string CommandLineValue(string name)
+    {
+        string[] arguments = Environment.GetCommandLineArgs();
+        for (int index = 0; index < arguments.Length; index++)
+        {
+            string argument = arguments[index] ?? string.Empty;
+            if (string.Equals(argument, name, StringComparison.OrdinalIgnoreCase))
+            {
+                return index + 1 < arguments.Length ? arguments[index + 1] ?? string.Empty : string.Empty;
+            }
+
+            string prefix = name + "=";
+            if (argument.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                return argument.Substring(prefix.Length);
+            }
+        }
+        return string.Empty;
+    }
+
     private static ServiceCredentials CreateManagedSystemServiceDefaults()
     {
-        string account = InteractiveSessionAccount();
+        string targetSid = CommandLineValue("--target-user-sid").Trim();
+        string msiUserSid = CommandLineValue("--msi-user-sid").Trim();
+        if (string.IsNullOrWhiteSpace(targetSid) &&
+            !string.Equals(msiUserSid, "S-1-5-18", StringComparison.OrdinalIgnoreCase))
+        {
+            targetSid = msiUserSid;
+        }
+
+        string account = string.Empty;
+        if (!string.IsNullOrWhiteSpace(targetSid))
+        {
+            try
+            {
+                account = ((NTAccount)new SecurityIdentifier(targetSid).Translate(typeof(NTAccount))).Value;
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException("Windows не смогла определить пользователя по SID " + targetSid + ".", ex);
+            }
+        }
+        if (string.IsNullOrWhiteSpace(account))
+        {
+            account = InteractiveSessionAccount();
+        }
         if (string.IsNullOrWhiteSpace(account))
         {
             throw new InvalidOperationException("Не удалось определить пользователя активного сеанса Windows.");
@@ -1272,29 +1345,79 @@ internal static class SetupBootstrapper
         try
         {
             int sessionId = Process.GetCurrentProcess().SessionId;
-            if (sessionId == 0)
+            string processAccount = SessionAccount(sessionId);
+            if (sessionId != 0 && !string.IsNullOrWhiteSpace(processAccount))
             {
-                uint activeSessionId = WTSGetActiveConsoleSessionId();
-                if (activeSessionId != 0xFFFFFFFF)
-                {
-                    sessionId = unchecked((int)activeSessionId);
-                }
-            }
-            string userName = QuerySessionString(sessionId, WtsInfoClass.UserName);
-            if (string.IsNullOrWhiteSpace(userName))
-            {
-                return string.Empty;
+                return processAccount;
             }
 
-            string domainName = QuerySessionString(sessionId, WtsInfoClass.DomainName);
-            return string.IsNullOrWhiteSpace(domainName)
-                ? userName
-                : domainName + "\\" + userName;
+            string activeAccount = FirstActiveSessionAccount();
+            if (!string.IsNullOrWhiteSpace(activeAccount))
+            {
+                return activeAccount;
+            }
+
+            uint activeConsoleSessionId = WTSGetActiveConsoleSessionId();
+            return activeConsoleSessionId == 0xFFFFFFFF
+                ? string.Empty
+                : SessionAccount(unchecked((int)activeConsoleSessionId));
         }
         catch
         {
             return string.Empty;
         }
+    }
+
+    private static string FirstActiveSessionAccount()
+    {
+        IntPtr sessions = IntPtr.Zero;
+        int count = 0;
+        try
+        {
+            if (!WTSEnumerateSessions(IntPtr.Zero, 0, 1, out sessions, out count) || sessions == IntPtr.Zero)
+            {
+                return string.Empty;
+            }
+
+            int size = Marshal.SizeOf(typeof(WtsSessionInfo));
+            for (int index = 0; index < count; index++)
+            {
+                IntPtr current = new IntPtr(sessions.ToInt64() + (long)index * size);
+                WtsSessionInfo info = (WtsSessionInfo)Marshal.PtrToStructure(current, typeof(WtsSessionInfo));
+                if (info.State != WtsConnectState.Active)
+                {
+                    continue;
+                }
+
+                string account = SessionAccount(info.SessionId);
+                if (!string.IsNullOrWhiteSpace(account))
+                {
+                    return account;
+                }
+            }
+            return string.Empty;
+        }
+        finally
+        {
+            if (sessions != IntPtr.Zero)
+            {
+                WTSFreeMemory(sessions);
+            }
+        }
+    }
+
+    private static string SessionAccount(int sessionId)
+    {
+        string userName = QuerySessionString(sessionId, WtsInfoClass.UserName);
+        if (string.IsNullOrWhiteSpace(userName))
+        {
+            return string.Empty;
+        }
+
+        string domainName = QuerySessionString(sessionId, WtsInfoClass.DomainName);
+        return string.IsNullOrWhiteSpace(domainName)
+            ? userName
+            : domainName + "\\" + userName;
     }
 
     private static string QuerySessionString(int sessionId, WtsInfoClass infoClass)
